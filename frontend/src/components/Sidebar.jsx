@@ -1,6 +1,6 @@
 function Sidebar() {
   return (
-    <aside className="border-r border-white/10 bg-darkTeal p-4 py-2">
+    <aside className="border-r border-white/5 bg-[#030b0e] p-4 py-2">
       <div className="flex h-[62px] items-center">
         <img
           className="h-auto w-[160px] object-contain"

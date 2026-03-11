@@ -34,7 +34,7 @@ function App() {
             type: "raster",
             tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
             tileSize: 256,
-            attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+            attribution: "By Adil Aabideen",
           },
           roads: {
             type: "vector",
@@ -56,19 +56,19 @@ function App() {
             source: "roads",
             "source-layer": "roads",
             paint: {
-              "line-color": "#2fe66f",
+              "line-color": "#1a8f47",
               "line-width": [
                 "interpolate",
                 ["linear"],
                 ["zoom"],
                 8,
-                0.8,
+                0.4,
                 12,
-                1.5,
+                0.8,
                 16,
-                3,
+                1.5,
               ],
-              "line-opacity": 0.95,
+              "line-opacity": 0.8,
             },
           },
         ],
@@ -114,7 +114,7 @@ function App() {
           <div ref={mapContainerRef} className="h-full w-full" />
         </div>
 
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-cyan-200/10 bg-[#030b0e] px-3 py-2">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-white/5 bg-[#030b0e] px-3 py-2">
           <div className="flex flex-1 flex-col gap-1">
             {errorMessage ? (
               <span className="rounded-md border border-red-300/50 bg-[#480000b8] px-2 py-1 text-xs text-red-100">

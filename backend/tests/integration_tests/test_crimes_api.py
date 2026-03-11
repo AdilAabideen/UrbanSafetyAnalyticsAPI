@@ -17,6 +17,7 @@ def sample_crime():
         SELECT
             ce.id,
             to_char(ce.month, 'YYYY-MM') AS month_key,
+            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
             ST_X(ce.geom) AS lon,
             ST_Y(ce.geom) AS lat
         FROM crime_events ce
@@ -38,85 +39,158 @@ def sample_crime():
     return row
 
 
-def test_crimes_returns_featurecollection(sample_crime):
-    r = client.get("/crimes", params={"month": sample_crime["month_key"], "limit": 25})
-    assert r.status_code == 200
+def _sample_bbox(sample_crime, delta=0.01):
+    return {
+        "minLon": sample_crime["lon"] - delta,
+        "minLat": sample_crime["lat"] - delta,
+        "maxLon": sample_crime["lon"] + delta,
+        "maxLat": sample_crime["lat"] + delta,
+    }
 
-    data = r.json()
+
+def test_crimes_map_returns_points_featurecollection(sample_crime):
+    params = {
+        **_sample_bbox(sample_crime),
+        "zoom": 13,
+        "month": sample_crime["month_key"],
+        "limit": 25,
+    }
+    response = client.get("/crimes/map", params=params)
+    assert response.status_code == 200
+
+    data = response.json()
     assert data["type"] == "FeatureCollection"
-    assert isinstance(data["features"], list)
-    assert len(data["features"]) > 0
+    assert data["meta"]["mode"] == "points"
+    assert data["meta"]["zoom"] == 13
     assert data["meta"]["limit"] == 25
     assert data["meta"]["returned"] == len(data["features"])
+    assert data["meta"]["filters"]["month"] == sample_crime["month_key"]
+    assert len(data["features"]) > 0
+    assert data["features"][0]["geometry"]["type"] == "Point"
+    assert "id" in data["features"][0]["properties"]
+    assert "month" in data["features"][0]["properties"]
 
-    feature = data["features"][0]
-    assert feature["type"] == "Feature"
-    assert feature["geometry"]["type"] == "Point"
-    assert "crime_type" in feature["properties"]
+
+def test_crimes_map_clusters_mode_returns_cluster_features(sample_crime):
+    params = {
+        **_sample_bbox(sample_crime, delta=0.02),
+        "zoom": 10,
+        "month": sample_crime["month_key"],
+    }
+    response = client.get("/crimes/map", params=params)
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["meta"]["mode"] == "clusters"
+    assert data["meta"]["nextCursor"] is None
+    assert len(data["features"]) > 0
+    assert data["features"][0]["properties"]["cluster"] is True
+    assert "count" in data["features"][0]["properties"]
+
+
+def test_crimes_map_crimetype_filter_works(sample_crime):
+    params = {
+        **_sample_bbox(sample_crime),
+        "zoom": 13,
+        "month": sample_crime["month_key"],
+        "crimeType": sample_crime["crime_type"],
+    }
+    response = client.get("/crimes/map", params=params)
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["meta"]["filters"]["crimeType"] == [sample_crime["crime_type"]]
 
 
 def test_crimes_by_id_returns_feature(sample_crime):
-    r = client.get(f"/crimes/{sample_crime['id']}")
-    assert r.status_code == 200
+    response = client.get(f"/crimes/{sample_crime['id']}")
+    assert response.status_code == 200
 
-    data = r.json()
+    data = response.json()
     assert data["type"] == "Feature"
     assert data["properties"]["id"] == sample_crime["id"]
     assert data["geometry"]["type"] == "Point"
 
 
 def test_crimes_by_id_returns_404_for_missing_row(sample_crime):
-    r = client.get("/crimes/999999999999")
-    assert r.status_code == 404
+    response = client.get("/crimes/999999999999")
+    assert response.status_code == 404
 
 
 def test_crime_stats_respect_bbox_and_month(sample_crime):
-    delta = 0.01
     params = {
+        **_sample_bbox(sample_crime),
         "month": sample_crime["month_key"],
-        "minLon": sample_crime["lon"] - delta,
-        "minLat": sample_crime["lat"] - delta,
-        "maxLon": sample_crime["lon"] + delta,
-        "maxLat": sample_crime["lat"] + delta,
     }
-    r = client.get("/crimes/stats", params=params)
-    assert r.status_code == 200
+    response = client.get("/crimes/stats", params=params)
+    assert response.status_code == 200
 
-    data = r.json()
+    data = response.json()
     assert data["filters"]["month"] == sample_crime["month_key"]
     assert "bbox" in data["filters"]
     assert data["total"] == sum(data["crime_type_counts"].values())
 
 
-def test_crimes_bbox_and_limit_work(sample_crime):
-    delta = 0.01
-    params = {
-        "month": sample_crime["month_key"],
-        "minLon": sample_crime["lon"] - delta,
-        "minLat": sample_crime["lat"] - delta,
-        "maxLon": sample_crime["lon"] + delta,
-        "maxLat": sample_crime["lat"] + delta,
-        "limit": 1,
-    }
-    r = client.get("/crimes", params=params)
-    assert r.status_code == 200
-
-    data = r.json()
-    assert data["meta"]["limit"] == 1
-    assert data["meta"]["returned"] <= 1
-    assert "bbox" in data["meta"]
+def test_crimes_map_invalid_cursor_returns_400():
+    response = client.get(
+        "/crimes/map",
+        params={
+            "minLon": -1.6,
+            "minLat": 53.78,
+            "maxLon": -1.52,
+            "maxLat": 53.82,
+            "zoom": 13,
+            "cursor": "bad-value",
+        },
+    )
+    assert response.status_code == 400
 
 
-def test_crimes_invalid_month_returns_400():
-    r = client.get("/crimes", params={"month": "2024-01-01"})
-    assert r.status_code == 400
+def test_crimes_map_cursor_not_allowed_for_clusters():
+    response = client.get(
+        "/crimes/map",
+        params={
+            "minLon": -1.6,
+            "minLat": 53.78,
+            "maxLon": -1.52,
+            "maxLat": 53.82,
+            "zoom": 10,
+            "cursor": "2024-01|1",
+        },
+    )
+    assert response.status_code == 400
 
 
-def test_crimes_partial_bbox_returns_400():
-    r = client.get("/crimes", params={"minLon": -1.5, "minLat": 53.8})
-    assert r.status_code == 400
+def test_crimes_map_invalid_month_returns_400():
+    response = client.get(
+        "/crimes/map",
+        params={
+            "minLon": -1.6,
+            "minLat": 53.78,
+            "maxLon": -1.52,
+            "maxLat": 53.82,
+            "zoom": 13,
+            "month": "2024-01-01",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_crimes_map_invalid_mode_returns_400():
+    response = client.get(
+        "/crimes/map",
+        params={
+            "minLon": -1.6,
+            "minLat": 53.78,
+            "maxLon": -1.52,
+            "maxLat": 53.82,
+            "zoom": 13,
+            "mode": "bad",
+        },
+    )
+    assert response.status_code == 400
 
 
 def test_crime_stats_partial_bbox_returns_400():
-    r = client.get("/crimes/stats", params={"minLon": -1.5, "minLat": 53.8})
-    assert r.status_code == 400
+    response = client.get("/crimes/stats", params={"minLon": -1.5, "minLat": 53.8})
+    assert response.status_code == 400

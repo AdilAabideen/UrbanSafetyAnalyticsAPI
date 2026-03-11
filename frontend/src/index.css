@@ -1,25 +1,21 @@
-:root {
-  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+@import url("https://fonts.googleapis.com/css2?family=Hind:wght@300;400;500;600;700&display=swap");
 
-* {
-  box-sizing: border-box;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-html,
-body,
-#root {
-  margin: 0;
-  width: 100%;
-  height: 100%;
-}
+@layer base {
+  * {
+    @apply box-border;
+  }
 
-body {
-  min-width: 320px;
-  background: #071316;
-}
+  html,
+  body,
+  #root {
+    @apply m-0 h-full w-full;
+  }
 
+  body {
+    @apply min-w-[320px] bg-[#071316] font-sans antialiased;
+  }
+}

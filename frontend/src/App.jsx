@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GeoJSON, MapContainer, TileLayer, useMapEvents } from "react-leaflet";
-import "./App.css";
+import Sidebar from "./components/Sidebar";
+import TopBar from "./components/TopBar";
 import { config } from "./config/env";
 import { roadsService } from "./services";
 
@@ -86,37 +87,18 @@ function App() {
   }, []);
 
   return (
-    <div className="page-shell">
-      <aside className="sidebar">
-        <div className="brand-block">
-          <img
-            className="brand-logo"
-            src="https://westyorkshire.firearmslicensing.uk/logo"
-            alt="West Yorkshire Police logo"
-          />
-        </div>
-        <button className="nav-item is-active" type="button">
-          Data Map
-        </button>
-      </aside>
+    <div className="flex h-screen w-full">
+      <Sidebar />
 
-      <main className="content-shell">
-        <header className="topbar">
-          <div>
-            <h1>Data Map</h1>
-            <p>View all roads in regions in West Yorkshire.</p>
-          </div>
-          <a className="docs-link" href={docsUrl} target="_blank" rel="noreferrer">
-            Documentation
-          </a>
-        </header>
+      <main className="flex flex-1 flex-col min-h-0 bg-[#071316]">
+        <TopBar docsUrl={docsUrl} />
 
-        <section className="map-panel">
+        <div className="flex flex-1 flex-col min-h-0">
           <MapContainer
             center={WEST_YORKSHIRE_CENTER}
             zoom={12}
             minZoom={6}
-            className="map-canvas"
+            className="h-full w-full"
             zoomControl={false}
           >
             <TileLayer
@@ -134,18 +116,25 @@ function App() {
             />
             <ViewportEvents onViewportChange={fetchRoadsForViewport} />
           </MapContainer>
+        </div>
 
-          <div className="map-status">
-            <span>{loadingRoads ? "Loading roads..." : "Roads loaded"}</span>
-            <strong>{roadsGeoJson.features.length} segments</strong>
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-cyan-200/10 bg-[#030b0e] px-3 py-2">
+          <div className="flex-1">
+            {errorMessage ? (
+              <span className="rounded-md border border-red-300/50 bg-[#480000b8] px-2 py-1 text-xs text-red-100">
+                {errorMessage}
+              </span>
+            ) : null}
           </div>
 
-          {errorMessage ? <div className="map-error">{errorMessage}</div> : null}
-        </section>
+          <div className="flex shrink-0 items-center gap-2 text-xs text-[#d2faf0]">
+            <span>{loadingRoads ? "Loading roads..." : "Roads loaded"}</span>
+            <strong className="text-[#39ef7d]">{roadsGeoJson.features.length} segments</strong>
+          </div>
+        </div>
       </main>
     </div>
   );
 }
 
 export default App;
-

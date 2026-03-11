@@ -1,14 +1,19 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 
 
 router = APIRouter(tags=["roads"])
+
+MVT_MEDIA_TYPE = "application/vnd.mapbox-vector-tile"
+MVT_CACHE_CONTROL = "public, max-age=60"
+MVT_EXTENT = 4096
+MVT_BUFFER = 64
 
 
 def _parse_json(value):
@@ -22,6 +27,31 @@ def _validate_bbox(min_lon, min_lat, max_lon, max_lat):
         raise HTTPException(status_code=400, detail="minLon must be less than maxLon")
     if min_lat >= max_lat:
         raise HTTPException(status_code=400, detail="minLat must be less than maxLat")
+
+
+def _validate_tile_coordinates(z, x, y):
+    max_index = (1 << z) - 1
+    if x < 0 or y < 0 or x > max_index or y > max_index:
+        raise HTTPException(status_code=400, detail="Tile coordinates out of range for zoom level")
+
+
+def _tile_profile(z):
+    if z <= 8:
+        return ("motorway", "trunk", "primary"), 80
+    if z <= 11:
+        return ("motorway", "trunk", "primary", "secondary", "tertiary"), 30
+    if z <= 13:
+        return (
+            "motorway",
+            "trunk",
+            "primary",
+            "secondary",
+            "tertiary",
+            "residential",
+            "unclassified",
+            "service",
+        ), 10
+    return None, 0
 
 
 def _execute(db, query, params):
@@ -164,6 +194,138 @@ def get_road_stats(
         "total": sum(counts.values()),
         "highway_counts": counts,
     }
+
+
+@router.get("/tiles/roads/{z}/{x}/{y}.mvt")
+def get_road_tiles(
+    z: int = Path(..., ge=0, le=22),
+    x: int = Path(..., ge=0),
+    y: int = Path(..., ge=0),
+    db: Session = Depends(get_db),
+):
+    _validate_tile_coordinates(z, x, y)
+
+    highways, simplify_tolerance = _tile_profile(z)
+    highway_filter = ""
+    query_params = {
+        "z": z,
+        "x": x,
+        "y": y,
+        "extent": MVT_EXTENT,
+        "buffer": MVT_BUFFER,
+        "simplify_tolerance": simplify_tolerance,
+    }
+
+    tile_query = text(
+        f"""
+        WITH bounds AS (
+            SELECT
+                ST_TileEnvelope(:z, :x, :y) AS tile_3857,
+                ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326) AS tile_4326
+        ),
+        filtered AS (
+            SELECT
+                rs.id,
+                rs.osm_id,
+                rs.name,
+                rs.highway,
+                rs.length_m,
+                CASE
+                    WHEN :simplify_tolerance > 0 THEN
+                        ST_SimplifyPreserveTopology(ST_Transform(rs.geom, 3857), :simplify_tolerance)
+                    ELSE
+                        ST_Transform(rs.geom, 3857)
+                END AS geom_3857,
+                bounds.tile_3857
+            FROM road_segments_4326 rs
+            CROSS JOIN bounds
+            WHERE rs.geom && bounds.tile_4326
+              AND ST_Intersects(rs.geom, bounds.tile_4326)
+              {highway_filter}
+        ),
+        tile_features AS (
+            SELECT
+                id,
+                osm_id,
+                name,
+                highway,
+                length_m,
+                ST_AsMVTGeom(
+                    geom_3857,
+                    tile_3857,
+                    extent => :extent,
+                    buffer => :buffer,
+                    clip_geom => true
+                ) AS geom
+            FROM filtered
+        )
+        SELECT COALESCE(ST_AsMVT(tile_features, 'roads', :extent, 'geom'), ''::bytea) AS tile
+        FROM tile_features
+        WHERE geom IS NOT NULL
+        """
+    )
+
+    if highways:
+        highway_filter = "AND rs.highway IN :highway_values"
+        tile_query = text(
+            f"""
+            WITH bounds AS (
+                SELECT
+                    ST_TileEnvelope(:z, :x, :y) AS tile_3857,
+                    ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326) AS tile_4326
+            ),
+            filtered AS (
+                SELECT
+                    rs.id,
+                    rs.osm_id,
+                    rs.name,
+                    rs.highway,
+                    rs.length_m,
+                    CASE
+                        WHEN :simplify_tolerance > 0 THEN
+                            ST_SimplifyPreserveTopology(ST_Transform(rs.geom, 3857), :simplify_tolerance)
+                        ELSE
+                            ST_Transform(rs.geom, 3857)
+                    END AS geom_3857,
+                    bounds.tile_3857
+                FROM road_segments_4326 rs
+                CROSS JOIN bounds
+                WHERE rs.geom && bounds.tile_4326
+                  AND ST_Intersects(rs.geom, bounds.tile_4326)
+                  {highway_filter}
+            ),
+            tile_features AS (
+                SELECT
+                    id,
+                    osm_id,
+                    name,
+                    highway,
+                    length_m,
+                    ST_AsMVTGeom(
+                        geom_3857,
+                        tile_3857,
+                        extent => :extent,
+                        buffer => :buffer,
+                        clip_geom => true
+                    ) AS geom
+                FROM filtered
+            )
+            SELECT COALESCE(ST_AsMVT(tile_features, 'roads', :extent, 'geom'), ''::bytea) AS tile
+            FROM tile_features
+            WHERE geom IS NOT NULL
+            """
+        ).bindparams(bindparam("highway_values", expanding=True))
+        query_params["highway_values"] = highways
+
+    tile = _execute(db, tile_query, query_params).scalar_one()
+    if isinstance(tile, memoryview):
+        tile = tile.tobytes()
+
+    return Response(
+        content=tile or b"",
+        media_type=MVT_MEDIA_TYPE,
+        headers={"Cache-Control": MVT_CACHE_CONTROL},
+    )
 
 
 @router.get("/roads/{road_id}")

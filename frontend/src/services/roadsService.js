@@ -22,38 +22,69 @@ async function parseJsonOrThrow(response, fallbackMessage) {
   return response.json();
 }
 
+function toFeatureCollection(payload) {
+  if (!payload) {
+    return { type: "FeatureCollection", features: [] };
+  }
+
+  if (payload.type === "FeatureCollection" && Array.isArray(payload.features)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload)) {
+    return { type: "FeatureCollection", features: payload };
+  }
+
+  if (Array.isArray(payload.features)) {
+    return { type: "FeatureCollection", features: payload.features };
+  }
+
+  return { type: "FeatureCollection", features: [] };
+}
+
+async function fetchJson(url, fallbackMessage, requestOptions = {}) {
+  try {
+    const response = await fetch(url, { signal: requestOptions.signal });
+    return parseJsonOrThrow(response, fallbackMessage);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw error;
+    }
+
+    if (error instanceof TypeError) {
+      throw new Error(`Cannot reach API at ${API_BASE_URL}. Check VITE_API_BASE_URL and backend status.`);
+    }
+
+    throw error;
+  }
+}
+
 export const roadsService = {
   async getRoadsInBoundingBox(
-    { minLon, minLat, maxLon, maxLat, limit = 2000 },
+    { minLon, minLat, maxLon, maxLat, limit = 1200 },
     requestOptions = {},
   ) {
     const query = toQueryString({ minLon, minLat, maxLon, maxLat, limit });
-    const response = await fetch(`${API_BASE_URL}/roads?${query}`, {
-      signal: requestOptions.signal,
-    });
-    return parseJsonOrThrow(response, "Failed to fetch roads in viewport");
+    const data = await fetchJson(
+      `${API_BASE_URL}/roads?${query}`,
+      "Failed to fetch roads in viewport",
+      requestOptions,
+    );
+
+    return toFeatureCollection(data);
   },
 
   async getNearestRoad({ lon, lat }, requestOptions = {}) {
     const query = toQueryString({ lon, lat });
-    const response = await fetch(`${API_BASE_URL}/roads/nearest?${query}`, {
-      signal: requestOptions.signal,
-    });
-    return parseJsonOrThrow(response, "Failed to fetch nearest road");
+    return fetchJson(`${API_BASE_URL}/roads/nearest?${query}`, "Failed to fetch nearest road", requestOptions);
   },
 
   async getRoadStats({ minLon, minLat, maxLon, maxLat }, requestOptions = {}) {
     const query = toQueryString({ minLon, minLat, maxLon, maxLat });
-    const response = await fetch(`${API_BASE_URL}/roads/stats?${query}`, {
-      signal: requestOptions.signal,
-    });
-    return parseJsonOrThrow(response, "Failed to fetch road stats");
+    return fetchJson(`${API_BASE_URL}/roads/stats?${query}`, "Failed to fetch road stats", requestOptions);
   },
 
   async getRoadById(id, requestOptions = {}) {
-    const response = await fetch(`${API_BASE_URL}/roads/${id}`, {
-      signal: requestOptions.signal,
-    });
-    return parseJsonOrThrow(response, "Failed to fetch road details");
+    return fetchJson(`${API_BASE_URL}/roads/${id}`, "Failed to fetch road details", requestOptions);
   },
 };

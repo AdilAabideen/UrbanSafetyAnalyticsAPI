@@ -1,148 +1,117 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GeoJSON, MapContainer, TileLayer, useMapEvents } from "react-leaflet";
+import { useEffect, useMemo, useRef, useState } from "react";
+import maplibregl from "maplibre-gl";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import { config } from "./config/env";
-import { roadsService } from "./services";
 
-const WEST_YORKSHIRE_CENTER = [53.8008, -1.5491];
-
-function ViewportEvents({ onViewportChange }) {
-  const map = useMapEvents({
-    moveend: () => onViewportChange(map),
-    zoomend: () => onViewportChange(map),
-  });
-
-  useEffect(() => {
-    onViewportChange(map);
-  }, [map, onViewportChange]);
-
-  return null;
-}
-
-const EMPTY_FEATURE_COLLECTION = {
-  type: "FeatureCollection",
-  features: [],
-};
-
-const MAX_RENDERED_SEGMENTS = 5000;
-
-function capFeatureCollection(featureCollection, maxFeatures = MAX_RENDERED_SEGMENTS) {
-  const features = featureCollection?.features ?? [];
-  if (features.length <= maxFeatures) {
-    return { featureCollection, total: features.length, rendered: features.length, capped: false };
-  }
-
-  const step = Math.ceil(features.length / maxFeatures);
-  const sampled = features.filter((_, index) => index % step === 0).slice(0, maxFeatures);
-
-  return {
-    featureCollection: { type: "FeatureCollection", features: sampled },
-    total: features.length,
-    rendered: sampled.length,
-    capped: true,
-  };
-}
+const WEST_YORKSHIRE_CENTER = [-1.5491, 53.8008];
 
 function App() {
-  const [roadsGeoJson, setRoadsGeoJson] = useState(EMPTY_FEATURE_COLLECTION);
-  const [loadingRoads, setLoadingRoads] = useState(false);
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
   const [errorMessage, setErrorMessage] = useState("");
-  const [totalSegments, setTotalSegments] = useState(0);
-  const [isCapped, setIsCapped] = useState(false);
-  const lastRequestRef = useRef(0);
-  const abortControllerRef = useRef(null);
+  const [loadingTiles, setLoadingTiles] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
 
   const docsUrl = useMemo(() => `${config.apiBaseUrl}/docs`, []);
 
-  const fetchRoadsForViewport = useCallback(async (map) => {
-    const bounds = map.getBounds();
-    const minLon = bounds.getWest();
-    const minLat = bounds.getSouth();
-    const maxLon = bounds.getEast();
-    const maxLat = bounds.getNorth();
-
-    if (minLon >= maxLon || minLat >= maxLat) {
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) {
       return;
     }
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    const roadsTilesUrl = `${config.apiBaseUrl}/tiles/roads/{z}/{x}/{y}.mvt`;
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const requestId = lastRequestRef.current + 1;
-    lastRequestRef.current = requestId;
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      center: WEST_YORKSHIRE_CENTER,
+      zoom: 12,
+      minZoom: 0,
+      style: {
+        version: 8,
+        sources: {
+          darkBase: {
+            type: "raster",
+            tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+          },
+          roads: {
+            type: "vector",
+            tiles: [roadsTilesUrl],
+            minzoom: 0,
+          },
+        },
+        layers: [
+          {
+            id: "dark-base-layer",
+            type: "raster",
+            source: "darkBase",
+            minzoom: 0,
+            maxzoom: 22,
+          },
+          {
+            id: "roads-layer",
+            type: "line",
+            source: "roads",
+            "source-layer": "roads",
+            paint: {
+              "line-color": "#2fe66f",
+              "line-width": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                8,
+                0.8,
+                12,
+                1.5,
+                16,
+                3,
+              ],
+              "line-opacity": 0.95,
+            },
+          },
+        ],
+      },
+    });
 
-    setLoadingRoads(true);
-    setErrorMessage("");
+    mapRef.current = map;
 
-    try {
-      const result = await roadsService.getRoadsInBoundingBox(
-        { minLon, minLat, maxLon, maxLat, limit: 1200 },
-        { signal: controller.signal },
-      );
+    map.on("load", () => {
+      setMapReady(true);
+      setLoadingTiles(true);
+      setErrorMessage("");
+    });
 
-      if (lastRequestRef.current !== requestId) {
-        return;
-      }
+    map.on("idle", () => {
+      setLoadingTiles(false);
+    });
 
-      const cappedResult = capFeatureCollection(result);
-      setRoadsGeoJson(cappedResult.featureCollection);
-      setTotalSegments(cappedResult.total);
-      setIsCapped(cappedResult.capped);
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        return;
-      }
+    map.on("movestart", () => {
+      setLoadingTiles(true);
+    });
 
-      if (lastRequestRef.current !== requestId) {
-        return;
-      }
+    map.on("error", (event) => {
+      const msg = event?.error?.message || "Failed to load map tiles";
+      setErrorMessage(msg);
+      setLoadingTiles(false);
+    });
 
-      setErrorMessage(error?.message || "Unable to load roads");
-      setRoadsGeoJson(EMPTY_FEATURE_COLLECTION);
-      setTotalSegments(0);
-      setIsCapped(false);
-    } finally {
-      if (lastRequestRef.current === requestId) {
-        setLoadingRoads(false);
-      }
-    }
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
   }, []);
 
   return (
     <div className="flex h-screen w-full">
       <Sidebar />
 
-      <main className="flex flex-1 flex-col min-h-0 bg-[#071316]">
+      <main className="flex min-h-0 flex-1 flex-col bg-[#071316]">
         <TopBar docsUrl={docsUrl} />
 
-        <div className="flex flex-1 flex-col min-h-0">
-          <MapContainer
-            center={WEST_YORKSHIRE_CENTER}
-            zoom={12}
-            minZoom={6}
-            className="h-full w-full"
-            zoomControl={false}
-            preferCanvas
-          >
-            <TileLayer
-              attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            />
-            <GeoJSON
-              key={roadsGeoJson.features.length}
-              data={roadsGeoJson}
-              style={{
-                color: "#2fe66f",
-                weight: 3,
-                opacity: 0.95,
-              }}
-            />
-            <ViewportEvents onViewportChange={fetchRoadsForViewport} />
-          </MapContainer>
+        <div className="min-h-0 flex-1">
+          <div ref={mapContainerRef} className="h-full w-full" />
         </div>
 
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-cyan-200/10 bg-[#030b0e] px-3 py-2">
@@ -156,16 +125,10 @@ function App() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2 text-xs text-[#d2faf0]">
-            <span>{loadingRoads ? "Loading roads..." : "Roads loaded"}</span>
-            <strong className="text-[#39ef7d]">
-              {roadsGeoJson.features.length} rendered
-              {totalSegments > roadsGeoJson.features.length ? ` / ${totalSegments} total` : ""}
-            </strong>
-            {isCapped ? (
-              <span className="rounded-md border border-yellow-200/40 bg-yellow-100/10 px-2 py-1 text-[10px] text-yellow-100">
-                View is sampled for performance
-              </span>
-            ) : null}
+            <span>
+              {!mapReady ? "Starting map..." : loadingTiles ? "Loading roads..." : "Roads loaded"}
+            </span>
+            <strong className="text-[#39ef7d]">Vector tiles</strong>
           </div>
         </div>
       </main>
@@ -174,3 +137,4 @@ function App() {
 }
 
 export default App;
+

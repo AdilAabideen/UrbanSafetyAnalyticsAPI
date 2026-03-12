@@ -18,6 +18,8 @@ def sample_crime():
             ce.id,
             to_char(ce.month, 'YYYY-MM') AS month_key,
             COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
+            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS last_outcome_category,
+            COALESCE(NULLIF(ce.lsoa_name, ''), 'unknown') AS lsoa_name,
             ST_X(ce.geom) AS lon,
             ST_Y(ce.geom) AS lat
         FROM crime_events ce
@@ -100,6 +102,22 @@ def test_crimes_map_crimetype_filter_works(sample_crime):
 
     data = response.json()
     assert data["meta"]["filters"]["crimeType"] == [sample_crime["crime_type"]]
+
+
+def test_crimes_map_additional_filters_work(sample_crime):
+    params = {
+        **_sample_bbox(sample_crime),
+        "zoom": 13,
+        "month": sample_crime["month_key"],
+        "lastOutcomeCategory": sample_crime["last_outcome_category"],
+        "lsoaName": sample_crime["lsoa_name"],
+    }
+    response = client.get("/crimes/map", params=params)
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["meta"]["filters"]["lastOutcomeCategory"] == [sample_crime["last_outcome_category"]]
+    assert data["meta"]["filters"]["lsoaName"] == [sample_crime["lsoa_name"]]
 
 
 def test_crimes_by_id_returns_feature(sample_crime):

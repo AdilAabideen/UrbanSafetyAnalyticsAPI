@@ -184,7 +184,6 @@ def _crime_map_feature(row):
             "falls_within": row["falls_within"],
             "lsoa_code": row["lsoa_code"],
             "lsoa_name": row["lsoa_name"],
-            "segment_id": row["segment_id"],
         },
     }
 
@@ -272,7 +271,6 @@ def _crime_points_payload(
             ce.falls_within,
             ce.lsoa_code,
             ce.lsoa_name,
-            ce.segment_id,
             ST_AsGeoJSON(ce.geom) AS geometry
         FROM crime_events ce
         WHERE {" AND ".join(where_clauses)}
@@ -464,6 +462,7 @@ def _crime_clusters_payload(
     }
 
 
+@router.get("/crimes")
 @router.get("/crimes/map")
 def get_crimes_map(
     minLon: float = Query(..., ge=-180, le=180),
@@ -602,7 +601,6 @@ def get_crime_by_id(
                 'crime_type', ce.crime_type,
                 'last_outcome_category', ce.last_outcome_category,
                 'context', ce.context,
-                'segment_id', ce.segment_id,
                 'created_at', ce.created_at
             )
         ) AS feature

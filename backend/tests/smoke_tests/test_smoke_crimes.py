@@ -43,7 +43,6 @@ class _FakePointsSession:
                 "falls_within": "Leeds",
                 "lsoa_code": "E0001",
                 "lsoa_name": "Leeds 001",
-                "segment_id": 9001,
                 "geometry": {"type": "Point", "coordinates": [-1.55, 53.8]},
             },
             {
@@ -57,7 +56,6 @@ class _FakePointsSession:
                 "falls_within": "Leeds",
                 "lsoa_code": "E0001",
                 "lsoa_name": "Leeds 001",
-                "segment_id": 9002,
                 "geometry": {"type": "Point", "coordinates": [-1.551, 53.801]},
             },
         ]

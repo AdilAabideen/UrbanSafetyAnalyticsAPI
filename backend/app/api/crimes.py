@@ -114,18 +114,17 @@ def _default_limit(zoom, mode):
     return 2000
 
 
-def _cluster_cell_size_meters(zoom):
-    if zoom <= 5:
-        return 50000
+def _cluster_grid_size(bbox, zoom):
     if zoom <= 8:
-        return 20000
-    if zoom == 9:
-        return 10000
-    if zoom == 10:
-        return 5000
-    if zoom == 11:
-        return 2500
-    return 1000
+        divisions = 12
+    elif zoom <= 10:
+        divisions = 16
+    else:
+        divisions = 20
+
+    cell_width = max((bbox["max_lon"] - bbox["min_lon"]) / divisions, 0.0001)
+    cell_height = max((bbox["max_lat"] - bbox["min_lat"]) / divisions, 0.0001)
+    return cell_width, cell_height
 
 
 def _execute(db, query, params):
@@ -340,25 +339,30 @@ def _crime_clusters_payload(
         last_outcome_categories,
         lsoa_names,
     )
+    cell_width, cell_height = _cluster_grid_size(bbox, zoom)
     query_params["row_limit"] = limit + 1
     query_params["zoom"] = zoom
-    query_params["cell_size"] = _cluster_cell_size_meters(zoom)
+    query_params["cell_width"] = cell_width
+    query_params["cell_height"] = cell_height
+
 
     cluster_query = text(
         f"""
         WITH filtered AS (
             SELECT
                 COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-                ST_Transform(ce.geom, 3857) AS geom_3857
+                ce.lon,
+                ce.lat
             FROM crime_events ce
             WHERE {" AND ".join(where_clauses)}
         ),
         bucketed AS (
             SELECT
-                floor(ST_X(geom_3857) / :cell_size)::bigint AS cell_x,
-                floor(ST_Y(geom_3857) / :cell_size)::bigint AS cell_y,
+                floor((lon - :min_lon) / :cell_width)::bigint AS cell_x,
+                floor((lat - :min_lat) / :cell_height)::bigint AS cell_y,
                 crime_type,
-                geom_3857
+                lon,
+                lat
             FROM filtered
         ),
         cluster_geom AS (
@@ -366,8 +370,9 @@ def _crime_clusters_payload(
                 cell_x,
                 cell_y,
                 COUNT(*) AS point_count,
-                ST_AsGeoJSON(
-                    ST_Transform(ST_Centroid(ST_Collect(geom_3857)), 4326)
+                json_build_object(
+                    'type', 'Point',
+                    'coordinates', json_build_array(AVG(lon), AVG(lat))
                 ) AS geometry
             FROM bucketed
             GROUP BY cell_x, cell_y
@@ -427,7 +432,9 @@ def _crime_clusters_payload(
     if lsoa_names:
         cluster_query = cluster_query.bindparams(bindparam("lsoa_names", expanding=True))
 
+
     rows = _execute(db, cluster_query, query_params).mappings().all()
+
     truncated = len(rows) > limit
     page_rows = rows[:limit]
 

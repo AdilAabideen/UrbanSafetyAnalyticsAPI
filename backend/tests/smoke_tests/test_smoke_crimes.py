@@ -132,7 +132,15 @@ def _map_params(**kwargs):
 def test_crimes_map_points_route_returns_envelope():
     app.dependency_overrides[get_db] = _override_points_db
     try:
-        response = client.get("/crimes/map", params=_map_params(limit=1))
+        response = client.get(
+            "/crimes/map",
+            params=_map_params(
+                limit=1,
+                crimeType="burglary",
+                lastOutcomeCategory="Under investigation",
+                lsoaName="Leeds 001",
+            ),
+        )
     finally:
         app.dependency_overrides.clear()
 
@@ -143,6 +151,9 @@ def test_crimes_map_points_route_returns_envelope():
     assert data["meta"]["limit"] == 1
     assert data["meta"]["truncated"] is True
     assert data["meta"]["nextCursor"] == "2024-01|11"
+    assert data["meta"]["filters"]["crimeType"] == ["burglary"]
+    assert data["meta"]["filters"]["lastOutcomeCategory"] == ["Under investigation"]
+    assert data["meta"]["filters"]["lsoaName"] == ["Leeds 001"]
     assert data["features"][0]["geometry"]["type"] == "Point"
 
 

@@ -46,19 +46,19 @@ def _parse_cursor(cursor):
         raise HTTPException(status_code=400, detail="cursor must be in YYYY-MM|id format") from exc
 
 
-def _normalize_crime_types(crime_types):
-    if not crime_types:
+def _normalize_filter_values(values, parameter_name):
+    if not values:
         return None
 
     normalized = []
-    for item in crime_types:
+    for item in values:
         for token in item.split(","):
             value = token.strip()
             if value:
                 normalized.append(value)
 
     if not normalized:
-        raise HTTPException(status_code=400, detail="crimeType must contain at least one value")
+        raise HTTPException(status_code=400, detail=f"{parameter_name} must contain at least one value")
 
     return normalized
 
@@ -138,7 +138,7 @@ def _execute(db, query, params):
         ) from exc
 
 
-def _map_filters(month_date, bbox, crime_types):
+def _map_filters(month_date, bbox, crime_types, last_outcome_categories, lsoa_names):
     where_clauses = [
         "ce.geom IS NOT NULL",
         "ce.lon IS NOT NULL",
@@ -156,6 +156,16 @@ def _map_filters(month_date, bbox, crime_types):
     if crime_types:
         where_clauses.append("COALESCE(NULLIF(ce.crime_type, ''), 'unknown') IN :crime_types")
         query_params["crime_types"] = crime_types
+
+    if last_outcome_categories:
+        where_clauses.append(
+            "COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') IN :last_outcome_categories"
+        )
+        query_params["last_outcome_categories"] = last_outcome_categories
+
+    if lsoa_names:
+        where_clauses.append("COALESCE(NULLIF(ce.lsoa_name, ''), 'unknown') IN :lsoa_names")
+        query_params["lsoa_names"] = lsoa_names
 
     return where_clauses, query_params
 
@@ -193,10 +203,12 @@ def _cluster_feature(row):
     }
 
 
-def _crime_filters_meta(month, crime_types):
+def _crime_filters_meta(month, crime_types, last_outcome_categories, lsoa_names):
     return {
         "month": month,
         "crimeType": crime_types,
+        "lastOutcomeCategory": last_outcome_categories,
+        "lsoaName": lsoa_names,
     }
 
 
@@ -224,10 +236,18 @@ def _crime_points_payload(
     bbox,
     zoom,
     crime_types,
+    last_outcome_categories,
+    lsoa_names,
     limit,
     cursor_data,
 ):
-    where_clauses, query_params = _map_filters(month_date, bbox, crime_types)
+    where_clauses, query_params = _map_filters(
+        month_date,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
     query_params["row_limit"] = limit + 1
 
     cursor_clause = ""
@@ -265,6 +285,12 @@ def _crime_points_payload(
 
     if crime_types:
         point_query = point_query.bindparams(bindparam("crime_types", expanding=True))
+    if last_outcome_categories:
+        point_query = point_query.bindparams(
+            bindparam("last_outcome_categories", expanding=True)
+        )
+    if lsoa_names:
+        point_query = point_query.bindparams(bindparam("lsoa_names", expanding=True))
 
     rows = _execute(db, point_query, query_params).mappings().all()
     truncated = len(rows) > limit
@@ -280,7 +306,12 @@ def _crime_points_payload(
             "limit": limit,
             "truncated": truncated,
             "nextCursor": _point_next_cursor(rows, limit),
-            "filters": _crime_filters_meta(month_label, crime_types),
+            "filters": _crime_filters_meta(
+                month_label,
+                crime_types,
+                last_outcome_categories,
+                lsoa_names,
+            ),
             "bbox": _bbox_meta(
                 bbox["min_lon"],
                 bbox["min_lat"],
@@ -298,9 +329,17 @@ def _crime_clusters_payload(
     bbox,
     zoom,
     crime_types,
+    last_outcome_categories,
+    lsoa_names,
     limit,
 ):
-    where_clauses, query_params = _map_filters(month_date, bbox, crime_types)
+    where_clauses, query_params = _map_filters(
+        month_date,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
     query_params["row_limit"] = limit + 1
     query_params["zoom"] = zoom
     query_params["cell_size"] = _cluster_cell_size_meters(zoom)
@@ -381,6 +420,12 @@ def _crime_clusters_payload(
 
     if crime_types:
         cluster_query = cluster_query.bindparams(bindparam("crime_types", expanding=True))
+    if last_outcome_categories:
+        cluster_query = cluster_query.bindparams(
+            bindparam("last_outcome_categories", expanding=True)
+        )
+    if lsoa_names:
+        cluster_query = cluster_query.bindparams(bindparam("lsoa_names", expanding=True))
 
     rows = _execute(db, cluster_query, query_params).mappings().all()
     truncated = len(rows) > limit
@@ -396,7 +441,12 @@ def _crime_clusters_payload(
             "limit": limit,
             "truncated": truncated,
             "nextCursor": None,
-            "filters": _crime_filters_meta(month_label, crime_types),
+            "filters": _crime_filters_meta(
+                month_label,
+                crime_types,
+                last_outcome_categories,
+                lsoa_names,
+            ),
             "bbox": _bbox_meta(
                 bbox["min_lon"],
                 bbox["min_lat"],
@@ -416,6 +466,8 @@ def get_crimes_map(
     zoom: int = Query(..., ge=0, le=22),
     month: Optional[str] = Query(None),
     crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=MAX_CRIME_LIMIT),
     mode: str = Query("auto"),
     cursor: Optional[str] = Query(None),
@@ -424,7 +476,12 @@ def get_crimes_map(
     month_date = _parse_month(month)
     month_label = month_date.strftime("%Y-%m") if month_date else None
     bbox = _required_bbox(minLon, minLat, maxLon, maxLat)
-    crime_types = _normalize_crime_types(crimeType)
+    crime_types = _normalize_filter_values(crimeType, "crimeType")
+    last_outcome_categories = _normalize_filter_values(
+        lastOutcomeCategory,
+        "lastOutcomeCategory",
+    )
+    lsoa_names = _normalize_filter_values(lsoaName, "lsoaName")
     resolved_mode = _resolve_mode(mode, zoom)
     effective_limit = limit or _default_limit(zoom, resolved_mode)
 
@@ -438,11 +495,13 @@ def get_crimes_map(
             db=db,
             month_date=month_date,
             month_label=month_label,
-            bbox=bbox,
-            zoom=zoom,
-            crime_types=crime_types,
-            limit=effective_limit,
-        )
+        bbox=bbox,
+        zoom=zoom,
+        crime_types=crime_types,
+        last_outcome_categories=last_outcome_categories,
+        lsoa_names=lsoa_names,
+        limit=effective_limit,
+    )
 
     return _crime_points_payload(
         db=db,
@@ -451,6 +510,8 @@ def get_crimes_map(
         bbox=bbox,
         zoom=zoom,
         crime_types=crime_types,
+        last_outcome_categories=last_outcome_categories,
+        lsoa_names=lsoa_names,
         limit=effective_limit,
         cursor_data=cursor_data,
     )

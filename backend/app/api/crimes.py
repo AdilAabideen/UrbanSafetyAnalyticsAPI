@@ -273,6 +273,98 @@ def _bbox_meta(min_lon, min_lat, max_lon, max_lat):
     }
 
 
+def _resolve_from_to_filter(from_month, to_month, required=False):
+    if from_month or to_month:
+        if not (from_month and to_month):
+            raise HTTPException(status_code=400, detail="from and to must be provided together")
+
+        from_month_date = _parse_month(from_month)
+        to_month_date = _parse_month(to_month)
+        if from_month_date > to_month_date:
+            raise HTTPException(status_code=400, detail="from must be less than or equal to to")
+
+        return {
+            "clause": "ce.month BETWEEN :from_month_date AND :to_month_date",
+            "params": {
+                "from_month_date": from_month_date,
+                "to_month_date": to_month_date,
+            },
+            "from": from_month_date.strftime("%Y-%m"),
+            "to": to_month_date.strftime("%Y-%m"),
+        }
+
+    if required:
+        raise HTTPException(status_code=400, detail="from and to are required")
+
+    return {
+        "clause": None,
+        "params": {},
+        "from": None,
+        "to": None,
+    }
+
+
+def _analytics_filters(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names):
+    where_clauses = []
+    query_params = {}
+
+    if range_filter["clause"] is not None:
+        where_clauses.append(range_filter["clause"])
+        query_params.update(range_filter["params"])
+
+    if bbox:
+        where_clauses.extend(
+            [
+                "ce.geom IS NOT NULL",
+                "ce.lon IS NOT NULL",
+                "ce.lat IS NOT NULL",
+                "ce.lon BETWEEN :min_lon AND :max_lon",
+                "ce.lat BETWEEN :min_lat AND :max_lat",
+                "ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)",
+            ]
+        )
+        query_params.update(bbox)
+
+    if crime_types:
+        where_clauses.append("COALESCE(NULLIF(ce.crime_type, ''), 'unknown') IN :crime_types")
+        query_params["crime_types"] = crime_types
+
+    if last_outcome_categories:
+        where_clauses.append(
+            "COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') IN :last_outcome_categories"
+        )
+        query_params["last_outcome_categories"] = last_outcome_categories
+
+    if lsoa_names:
+        where_clauses.append("COALESCE(NULLIF(ce.lsoa_name, ''), 'unknown') IN :lsoa_names")
+        query_params["lsoa_names"] = lsoa_names
+
+    return where_clauses, query_params
+
+
+def _bind_analytics_filter_params(query, crime_types, last_outcome_categories, lsoa_names):
+    if crime_types:
+        query = query.bindparams(bindparam("crime_types", expanding=True))
+    if last_outcome_categories:
+        query = query.bindparams(bindparam("last_outcome_categories", expanding=True))
+    if lsoa_names:
+        query = query.bindparams(bindparam("lsoa_names", expanding=True))
+    return query
+
+
+def _where_sql(where_clauses):
+    if not where_clauses:
+        return ""
+    return "WHERE " + " AND ".join(where_clauses)
+
+
+def _shift_month(month_date, offset):
+    month_index = (month_date.year * 12 + month_date.month - 1) + offset
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return month_date.replace(year=year, month=month, day=1)
+
+
 def _point_next_cursor(rows, limit):
     if len(rows) <= limit or not rows[:limit]:
         return None
@@ -629,6 +721,383 @@ def get_crime_stats(
         "filters": filters,
         "total": sum(crime_type_counts.values()),
         "crime_type_counts": crime_type_counts,
+    }
+
+
+@router.get("/crime/analytics/summary")
+@router.get("/crimes/analytics/summary")
+def get_crime_analytics_summary(
+    from_month: str = Query(..., alias="from"),
+    to_month: str = Query(..., alias="to"),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    db: Session = Depends(get_db),
+):
+    range_filter = _resolve_from_to_filter(from_month, to_month, required=True)
+    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
+    crime_types = _normalize_filter_values(crimeType, "crimeType")
+    last_outcome_categories = _normalize_filter_values(lastOutcomeCategory, "lastOutcomeCategory")
+    lsoa_names = _normalize_filter_values(lsoaName, "lsoaName")
+
+    where_clauses, query_params = _analytics_filters(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    where_sql = _where_sql(where_clauses)
+
+    summary_query = text(
+        f"""
+        SELECT
+            COUNT(*)::bigint AS total_crimes,
+            COUNT(DISTINCT COALESCE(NULLIF(ce.lsoa_code, ''), NULLIF(ce.lsoa_name, '')))::bigint AS unique_lsoas
+        FROM crime_events ce
+        {where_sql}
+        """
+    )
+    top_types_query = text(
+        f"""
+        SELECT
+            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
+            COUNT(*)::bigint AS count
+        FROM crime_events ce
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')
+        ORDER BY count DESC, crime_type ASC
+        LIMIT 10
+        """
+    )
+    top_outcomes_query = text(
+        f"""
+        SELECT
+            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS outcome,
+            COUNT(*)::bigint AS count
+        FROM crime_events ce
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown')
+        ORDER BY count DESC, outcome ASC
+        LIMIT 10
+        """
+    )
+
+    summary_query = _bind_analytics_filter_params(
+        summary_query,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    top_types_query = _bind_analytics_filter_params(
+        top_types_query,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    top_outcomes_query = _bind_analytics_filter_params(
+        top_outcomes_query,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+
+    summary_row = _execute(db, summary_query, query_params).mappings().first() or {}
+    type_rows = _execute(db, top_types_query, query_params).mappings().all()
+    outcome_rows = _execute(db, top_outcomes_query, query_params).mappings().all()
+
+    return {
+        "from": range_filter["from"],
+        "to": range_filter["to"],
+        "total_crimes": summary_row.get("total_crimes", 0),
+        "unique_lsoas": summary_row.get("unique_lsoas", 0),
+        "top_crime_types": [
+            {"crime_type": row["crime_type"], "count": row["count"]}
+            for row in type_rows
+        ],
+        "top_outcomes": [
+            {"outcome": row["outcome"], "count": row["count"]}
+            for row in outcome_rows
+        ],
+    }
+
+
+@router.get("/crime/analytics/timeseries")
+@router.get("/crimes/analytics/timeseries")
+def get_crime_analytics_timeseries(
+    from_month: str = Query(..., alias="from"),
+    to_month: str = Query(..., alias="to"),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    db: Session = Depends(get_db),
+):
+    range_filter = _resolve_from_to_filter(from_month, to_month, required=True)
+    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
+    crime_types = _normalize_filter_values(crimeType, "crimeType")
+    last_outcome_categories = _normalize_filter_values(lastOutcomeCategory, "lastOutcomeCategory")
+    lsoa_names = _normalize_filter_values(lsoaName, "lsoaName")
+
+    where_clauses, query_params = _analytics_filters(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    where_sql = _where_sql(where_clauses)
+
+    query = text(
+        f"""
+        WITH months AS (
+            SELECT generate_series(
+                CAST(:from_month_date AS date),
+                CAST(:to_month_date AS date),
+                interval '1 month'
+            )::date AS month
+        ),
+        counts AS (
+            SELECT
+                ce.month,
+                COUNT(*)::bigint AS count
+            FROM crime_events ce
+            {where_sql}
+            GROUP BY ce.month
+        )
+        SELECT
+            to_char(months.month, 'YYYY-MM') AS month,
+            COALESCE(counts.count, 0)::bigint AS count
+        FROM months
+        LEFT JOIN counts ON counts.month = months.month
+        ORDER BY months.month ASC
+        """
+    )
+    query = _bind_analytics_filter_params(query, crime_types, last_outcome_categories, lsoa_names)
+
+    rows = _execute(db, query, query_params).mappings().all()
+
+    return {
+        "series": [{"month": row["month"], "count": row["count"]} for row in rows],
+        "total": sum(row["count"] for row in rows),
+    }
+
+
+@router.get("/crime/analytics")
+@router.get("/crimes/analytics")
+def get_crime_type_analytics(
+    from_month: Optional[str] = Query(None, alias="from"),
+    to_month: Optional[str] = Query(None, alias="to"),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    range_filter = _resolve_from_to_filter(from_month, to_month, required=False)
+    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
+    crime_types = _normalize_filter_values(crimeType, "crimeType")
+    last_outcome_categories = _normalize_filter_values(lastOutcomeCategory, "lastOutcomeCategory")
+    lsoa_names = _normalize_filter_values(lsoaName, "lsoaName")
+
+    where_clauses, query_params = _analytics_filters(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    where_sql = _where_sql(where_clauses)
+
+    query = text(
+        f"""
+        SELECT
+            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
+            COUNT(*)::bigint AS count
+        FROM crime_events ce
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')
+        ORDER BY count DESC, crime_type ASC
+        """
+    )
+    query = _bind_analytics_filter_params(query, crime_types, last_outcome_categories, lsoa_names)
+
+    rows = _execute(db, query, query_params).mappings().all()
+    items = [{"crime_type": row["crime_type"], "count": row["count"]} for row in rows[:limit]]
+    other_count = sum(row["count"] for row in rows[limit:])
+
+    return {
+        "items": items,
+        "other_count": other_count,
+    }
+
+
+@router.get("/crime/analytics/outcome")
+@router.get("/crimes/analytics/outcome")
+def get_crime_outcome_analytics(
+    from_month: Optional[str] = Query(None, alias="from"),
+    to_month: Optional[str] = Query(None, alias="to"),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    range_filter = _resolve_from_to_filter(from_month, to_month, required=False)
+    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
+    crime_types = _normalize_filter_values(crimeType, "crimeType")
+    last_outcome_categories = _normalize_filter_values(lastOutcomeCategory, "lastOutcomeCategory")
+    lsoa_names = _normalize_filter_values(lsoaName, "lsoaName")
+
+    where_clauses, query_params = _analytics_filters(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    where_sql = _where_sql(where_clauses)
+
+    query = text(
+        f"""
+        SELECT
+            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS outcome,
+            COUNT(*)::bigint AS count
+        FROM crime_events ce
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown')
+        ORDER BY count DESC, outcome ASC
+        """
+    )
+    query = _bind_analytics_filter_params(query, crime_types, last_outcome_categories, lsoa_names)
+
+    rows = _execute(db, query, query_params).mappings().all()
+    items = [{"outcome": row["outcome"], "count": row["count"]} for row in rows[:limit]]
+    other_count = sum(row["count"] for row in rows[limit:])
+
+    return {
+        "items": items,
+        "other_count": other_count,
+    }
+
+
+@router.get("/crime/analytics/anomoly")
+@router.get("/crime/analytics/anomaly")
+@router.get("/crimes/analytics/anomaly")
+def get_crime_analytics_anomaly(
+    target: str = Query(...),
+    baselineMonths: int = Query(6, ge=1, le=24),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    db: Session = Depends(get_db),
+):
+    target_month_date = _parse_month(target)
+    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
+    crime_types = _normalize_filter_values(crimeType, "crimeType")
+    last_outcome_categories = _normalize_filter_values(lastOutcomeCategory, "lastOutcomeCategory")
+    lsoa_names = _normalize_filter_values(lsoaName, "lsoaName")
+
+    base_filter = {
+        "clause": None,
+        "params": {},
+        "from": None,
+        "to": None,
+    }
+    where_clauses, query_params = _analytics_filters(
+        base_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+
+    target_where = list(where_clauses) + ["ce.month = :target_month_date"]
+    target_params = dict(query_params)
+    target_params["target_month_date"] = target_month_date
+
+    baseline_end_date = _shift_month(target_month_date, -1)
+    baseline_start_date = _shift_month(target_month_date, -baselineMonths)
+    baseline_where = list(where_clauses) + ["ce.month BETWEEN :baseline_start_date AND :baseline_end_date"]
+    baseline_params = dict(query_params)
+    baseline_params["baseline_start_date"] = baseline_start_date
+    baseline_params["baseline_end_date"] = baseline_end_date
+
+    target_query = text(
+        f"""
+        SELECT COUNT(*)::bigint AS target_count
+        FROM crime_events ce
+        {_where_sql(target_where)}
+        """
+    )
+    baseline_query = text(
+        f"""
+        WITH months AS (
+            SELECT generate_series(
+                CAST(:baseline_start_date AS date),
+                CAST(:baseline_end_date AS date),
+                interval '1 month'
+            )::date AS month
+        ),
+        counts AS (
+            SELECT
+                ce.month,
+                COUNT(*)::bigint AS count
+            FROM crime_events ce
+            {_where_sql(baseline_where)}
+            GROUP BY ce.month
+        )
+        SELECT COALESCE(AVG(COALESCE(counts.count, 0)), 0)::float AS baseline_mean
+        FROM months
+        LEFT JOIN counts ON counts.month = months.month
+        """
+    )
+
+    target_query = _bind_analytics_filter_params(
+        target_query,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    baseline_query = _bind_analytics_filter_params(
+        baseline_query,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+
+    target_row = _execute(db, target_query, target_params).mappings().first() or {}
+    baseline_row = _execute(db, baseline_query, baseline_params).mappings().first() or {}
+
+    target_count = target_row.get("target_count", 0)
+    baseline_mean = baseline_row.get("baseline_mean", 0) or 0
+    ratio = None if baseline_mean == 0 else target_count / baseline_mean
+
+    return {
+        "target": target_month_date.strftime("%Y-%m"),
+        "target_count": target_count,
+        "baseline_mean": baseline_mean,
+        "ratio": ratio,
+        "flag": ratio is not None and ratio >= 1.5,
     }
 
 

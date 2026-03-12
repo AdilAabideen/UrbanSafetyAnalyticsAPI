@@ -201,7 +201,7 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
                 ranked_scores.pct,
                 CASE
                     WHEN ranked_scores.pct >= 0.95 THEN 'red'
-                    WHEN ranked_scores.pct >= 0.80 THEN 'orange'
+                    WHEN ranked_scores.pct >= 0.60 THEN 'orange'
                     ELSE 'green'
                 END AS band,
                 ST_AsMVTGeom({geom_expression}, bounds.geom, :extent, :buffer, true) AS geom

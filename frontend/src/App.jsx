@@ -9,6 +9,7 @@ import {
   CRIME_TYPE_OPTIONS,
   OUTCOME_CATEGORY_OPTIONS,
   createMonthOptions,
+  toMonthValue,
 } from "./constants/crimeFilterOptions";
 import { crimeService, roadsService } from "./services";
 
@@ -23,8 +24,13 @@ const CRIME_CLUSTER_CIRCLE_LAYER_ID = "crime-cluster-circle-layer";
 const CRIME_POINT_CIRCLE_LAYER_ID = "crime-point-circle-layer";
 const CRIME_LABEL_LAYER_ID = "crime-label-layer";
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+const DEFAULT_MONTH_FROM = toMonthValue(
+  new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1),
+);
+const DEFAULT_MONTH_TO = toMonthValue(new Date());
 const DEFAULT_CRIME_FILTERS = {
-  month: "",
+  monthFrom: DEFAULT_MONTH_FROM,
+  monthTo: DEFAULT_MONTH_TO,
   crimeType: "",
   outcomeCategory: "",
   lsoaName: "",
@@ -142,13 +148,17 @@ function getViewportQuery(map) {
   };
 }
 
-function ensureRoadsLayer(map) {
+function ensureRoadsLayer(map, { startMonth, endMonth } = {}) {
+  const tileUrl = roadsService.getVectorTilesUrl({ startMonth, endMonth });
+
   if (!map.getSource(ROADS_SOURCE_ID)) {
     map.addSource(ROADS_SOURCE_ID, {
       type: "vector",
-      tiles: [roadsService.getVectorTilesUrl()],
+      tiles: [tileUrl],
       minzoom: 0,
     });
+  } else {
+    map.getSource(ROADS_SOURCE_ID).setTiles([tileUrl]);
   }
 
   if (!map.getLayer(ROADS_LAYER_ID)) {
@@ -158,7 +168,17 @@ function ensureRoadsLayer(map) {
       source: ROADS_SOURCE_ID,
       "source-layer": "roads",
       paint: {
-        "line-color": "#39ef7d",
+        "line-color": [
+          "match",
+          ["downcase", ["coalesce", ["get", "band"], ""]],
+          "green",
+          "#22c55e",
+          "orange",
+          "#f97316",
+          "red",
+          "#ef4444",
+          "#39ef7d",
+        ],
         "line-width": [
           "interpolate",
           ["linear"],
@@ -174,6 +194,20 @@ function ensureRoadsLayer(map) {
       },
     });
   }
+}
+
+function logRoadDebugInfo(map) {
+  const roadFeatures = map
+    .querySourceFeatures(ROADS_SOURCE_ID, { sourceLayer: "roads" })
+    .slice(0, 10)
+    .map((feature) => feature.properties || {});
+
+  console.log("roadsService.getVectorTilesUrl()", roadsService.getVectorTilesUrl());
+  console.log(`${ROADS_LAYER_ID} line-color`, map.getPaintProperty(ROADS_LAYER_ID, "line-color"));
+  console.log(
+    `${ROADS_SOURCE_ID} feature properties`,
+    roadFeatures.length > 0 ? roadFeatures : "No road features loaded in the current viewport yet.",
+  );
 }
 
 function ensureCrimeLayers(map, data) {
@@ -229,7 +263,15 @@ function ensureCrimeLayers(map, data) {
     source: CRIME_SOURCE_ID,
     filter: ["all", ["==", ["geometry-type"], "Point"], HAS_CLUSTER_COUNT_EXPRESSION],
     paint: {
-      "circle-color": "#3b82f6",
+      "circle-color": [
+        "step",
+        CLUSTER_COUNT_EXPRESSION,
+        "#22c55e",
+        1000,
+        "#f97316",
+        4000,
+        "#ef4444",
+      ],
       "circle-radius": [
         "interpolate",
         ["linear"],
@@ -357,6 +399,7 @@ function App() {
       minZoom: 0,
       style: MAPBOX_STYLE,
     });
+    let hasLoggedRoadDebugInfo = false;
 
     const clearCrimeRequest = () => {
       if (crimeRequestRef.current.controller) {
@@ -380,10 +423,16 @@ function App() {
       setLoadingCrimes(true);
       setCrimeErrorMessage("");
 
+      ensureRoadsLayer(map, {
+        startMonth: activeFilters.monthFrom || undefined,
+        endMonth: activeFilters.monthTo || undefined,
+      });
+
       try {
         const requestBase = {
           ...getViewportQuery(map),
-          month: activeFilters.month || undefined,
+          startMonth: activeFilters.monthFrom || undefined,
+          endMonth: activeFilters.monthTo || undefined,
           crimeTypes: activeFilters.crimeType ? [activeFilters.crimeType] : undefined,
           lastOutcomeCategories: activeFilters.outcomeCategory
             ? [activeFilters.outcomeCategory]
@@ -491,12 +540,24 @@ function App() {
       setRoadErrorMessage("");
       setCrimeErrorMessage("");
 
-      ensureRoadsLayer(map);
+      ensureRoadsLayer(map, {
+        startMonth: crimeFiltersRef.current.monthFrom || undefined,
+        endMonth: crimeFiltersRef.current.monthTo || undefined,
+      });
       ensureCrimeLayers(map, EMPTY_FEATURE_COLLECTION);
       void loadCrimesForViewport();
     });
 
     map.on("idle", () => {
+      if (
+        !hasLoggedRoadDebugInfo &&
+        map.getLayer(ROADS_LAYER_ID) &&
+        map.isSourceLoaded(ROADS_SOURCE_ID)
+      ) {
+        hasLoggedRoadDebugInfo = true;
+        logRoadDebugInfo(map);
+      }
+
       setLoadingTiles(false);
     });
 

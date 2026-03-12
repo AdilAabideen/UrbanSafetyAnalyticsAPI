@@ -42,7 +42,7 @@ function toOption(value) {
   return { value, label: value };
 }
 
-function toMonthValue(date) {
+export function toMonthValue(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   return `${date.getFullYear()}-${month}`;
 }

@@ -37,12 +37,12 @@ function FilterComponent({
         <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
           Time Range
         </h3>
-        <SelectFilterField
-          label="Month and Year"
-          value={filters.month}
-          options={monthOptions}
-          placeholder="All months"
-          onChange={(value) => onChange("month", value)}
+        <MonthRangeSlider
+          monthOptions={monthOptions}
+          fromValue={filters.monthFrom}
+          toValue={filters.monthTo}
+          onChangeFrom={(value) => onChange("monthFrom", value)}
+          onChangeTo={(value) => onChange("monthTo", value)}
         />
       </section>
 
@@ -237,6 +237,98 @@ function SearchSelectField({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function MonthRangeSlider({ monthOptions, fromValue, toValue, onChangeFrom, onChangeTo }) {
+  const reversed = useMemo(() => [...monthOptions].reverse(), [monthOptions]);
+  const maxIndex = reversed.length - 1;
+
+  const fromIndex = useMemo(() => {
+    if (!fromValue) return 0;
+    const idx = reversed.findIndex((opt) => opt.value === fromValue);
+    return idx >= 0 ? idx : 0;
+  }, [reversed, fromValue]);
+
+  const toIndex = useMemo(() => {
+    if (!toValue) return maxIndex;
+    const idx = reversed.findIndex((opt) => opt.value === toValue);
+    return idx >= 0 ? idx : maxIndex;
+  }, [reversed, toValue, maxIndex]);
+
+  const leftPercent = maxIndex > 0 ? (fromIndex / maxIndex) * 100 : 0;
+  const rightPercent = maxIndex > 0 ? ((maxIndex - toIndex) / maxIndex) * 100 : 0;
+
+  const handleFromChange = (event) => {
+    const nextIndex = Math.min(Number(event.target.value), toIndex);
+    onChangeFrom(nextIndex === 0 ? "" : reversed[nextIndex].value);
+  };
+
+  const handleToChange = (event) => {
+    const nextIndex = Math.max(Number(event.target.value), fromIndex);
+    onChangeTo(nextIndex === maxIndex ? "" : reversed[nextIndex].value);
+  };
+
+  if (reversed.length < 2) return null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between text-xs text-cyan-100/60">
+        <span>{reversed[fromIndex]?.label}</span>
+        <span className="text-cyan-100/30">to</span>
+        <span>{reversed[toIndex]?.label}</span>
+      </div>
+
+      <div className="relative h-6">
+        <div className="absolute top-1/2 h-1 w-full -translate-y-1/2 rounded-full bg-cyan-100/10" />
+        <div
+          className="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-cyan-400/60"
+          style={{ left: `${leftPercent}%`, right: `${rightPercent}%` }}
+        />
+        <input
+          type="range"
+          min={0}
+          max={maxIndex}
+          value={fromIndex}
+          onChange={handleFromChange}
+          className="range-thumb-cyan pointer-events-none absolute inset-0 m-0 h-full w-full cursor-pointer appearance-none bg-transparent"
+          style={{ zIndex: fromIndex > maxIndex - 10 ? 5 : 3 }}
+        />
+        <input
+          type="range"
+          min={0}
+          max={maxIndex}
+          value={toIndex}
+          onChange={handleToChange}
+          className="range-thumb-cyan pointer-events-none absolute inset-0 m-0 h-full w-full cursor-pointer appearance-none bg-transparent"
+          style={{ zIndex: 4 }}
+        />
+      </div>
+
+      <style>{`
+        .range-thumb-cyan::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          pointer-events: auto;
+          height: 16px;
+          width: 16px;
+          border-radius: 9999px;
+          background: #22d3ee;
+          border: 2px solid #071316;
+          cursor: pointer;
+          box-shadow: 0 0 4px rgba(34, 211, 238, 0.4);
+        }
+        .range-thumb-cyan::-moz-range-thumb {
+          pointer-events: auto;
+          height: 16px;
+          width: 16px;
+          border-radius: 9999px;
+          background: #22d3ee;
+          border: 2px solid #071316;
+          cursor: pointer;
+          box-shadow: 0 0 4px rgba(34, 211, 238, 0.4);
+        }
+      `}</style>
     </div>
   );
 }

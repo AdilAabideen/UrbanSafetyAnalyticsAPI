@@ -66,3 +66,33 @@ export function createMonthOptions(totalMonths = 48) {
 
   return options;
 }
+
+export function createMonthOptionsFromRange(minMonth, maxMonth) {
+  if (!minMonth || !maxMonth) {
+    return [];
+  }
+
+  const [minYear, minValue] = minMonth.split("-").map(Number);
+  const [maxYear, maxValue] = maxMonth.split("-").map(Number);
+
+  if (!minYear || !minValue || !maxYear || !maxValue) {
+    return [];
+  }
+
+  const options = [];
+  const minIndex = minYear * 12 + (minValue - 1);
+  const maxIndex = maxYear * 12 + (maxValue - 1);
+
+  for (let index = maxIndex; index >= minIndex; index -= 1) {
+    const year = Math.floor(index / 12);
+    const month = (index % 12) + 1;
+    const monthDate = new Date(year, month - 1, 1);
+
+    options.push({
+      value: toMonthValue(monthDate),
+      label: monthFormatter.format(monthDate),
+    });
+  }
+
+  return options;
+}

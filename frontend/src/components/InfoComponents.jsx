@@ -30,22 +30,35 @@ const CRIME_TYPE_DESCRIPTIONS = {
 };
 
 function InfoComponents({
+  recordId,
+  crimeId,
   crimeType,
   month,
   reportedBy,
+  fallsWithin,
   location,
   lsoaCode,
   lsoaName,
   outcomeCategory,
   context,
   onClose,
+  className = "",
+  showActionButton = true,
+  compact = false,
 }) {
   const crimeDescription = crimeType ? CRIME_TYPE_DESCRIPTIONS[crimeType] : null;
+  const titleClassName = compact ? "text-lg" : "text-xl";
+  const sectionHeadingClassName = compact ? "text-base" : "text-lg";
+  const crimeTypeValueClassName = compact ? "text-lg font-semibold" : "text-xl font-semibold";
 
   return (
-    <div className="pointer-events-auto flex h-full w-[375px] flex-col gap-3 overflow-y-auto rounded-xl border border-cyan-200/10 bg-[#071316]/85 p-4 shadow-2xl backdrop-blur-md">
+    <div
+      className={`pointer-events-auto flex h-full w-full max-w-[375px] flex-col gap-3 overflow-y-auto rounded-xl border border-cyan-200/10 bg-[#071316]/85 ${compact ? "p-3" : "p-4"} shadow-2xl backdrop-blur-md ${className}`.trim()}
+    >
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold tracking-wide text-cyan-50">Crime Information</h2>
+        <h2 className={`${titleClassName} font-semibold tracking-wide text-cyan-50`}>
+          Crime Information
+        </h2>
         <button
           type="button"
           onClick={onClose}
@@ -59,11 +72,11 @@ function InfoComponents({
       </div>
 
       <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
-        <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
+        <h3 className={`${sectionHeadingClassName} font-medium uppercase tracking-wider text-cyan-100/50`}>
           Type of Crime
         </h3>
         <div className="flex items-center justify-between text-sm text-cyan-50">
-          <span className="text-xl font-semibold">{crimeType ?? "—"}</span>
+          <span className={crimeTypeValueClassName}>{crimeType ?? "—"}</span>
         </div>
         {crimeDescription && (
           <div className="flex items-center gap-2 text-xs text-cyan-100/60">
@@ -73,40 +86,53 @@ function InfoComponents({
       </section>
 
       <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
-        <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
+        <h3 className={`${sectionHeadingClassName} font-medium uppercase tracking-wider text-cyan-100/50`}>
           Crime Location Report
         </h3>
-        <InfoField label="Month" value={month} />
-        <InfoField label="Reported By" value={reportedBy} />
-        <InfoField label="Location" value={location} />
-        <InfoField label="LSOA Code" value={lsoaCode} />
-        <InfoField label="LSOA Name" value={lsoaName} />
-        <InfoField label="Last Outcome Category" value={outcomeCategory} />
+        <InfoField label="Record ID" value={recordId} compact={compact} subtle />
+        <InfoField label="Crime ID" value={crimeId} compact={compact} subtle />
+        <InfoField label="Month" value={month} compact={compact} />
+        <InfoField label="Reported By" value={reportedBy} compact={compact} />
+        <InfoField label="Falls Within" value={fallsWithin} compact={compact} />
+        <InfoField label="Location" value={location} compact={compact} />
+        <InfoField label="LSOA Code" value={lsoaCode} compact={compact} />
+        <InfoField label="LSOA Name" value={lsoaName} compact={compact} />
+        <InfoField label="Last Outcome Category" value={outcomeCategory} compact={compact} />
       </section>
 
       <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
-        <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
+        <h3 className={`${sectionHeadingClassName} font-medium uppercase tracking-wider text-cyan-100/50`}>
           Further Information
         </h3>
-        <InfoField label="Context" value={context} />
-        <button
-          type="button"
-          className="w-full rounded-md bg-cyan-100/5 px-4 py-2 text-sm font-medium uppercase tracking-wider text-cyan-50 transition-colors hover:bg-cyan-100/10"
-        >
-          Provide More Information
-        </button>
+        <InfoField label="Context" value={context} compact={compact} />
+        {showActionButton ? (
+          <button
+            type="button"
+            className="w-full rounded-md bg-cyan-100/5 px-4 py-2 text-sm font-medium uppercase tracking-wider text-cyan-50 transition-colors hover:bg-cyan-100/10"
+          >
+            Provide More Information
+          </button>
+        ) : null}
       </section>
     </div>
   );
 }
 
-function InfoField({ label, value }) {
+function InfoField({ label, value, compact = false, subtle = false }) {
+  const valueClassName = subtle
+    ? compact
+      ? "text-sm font-medium break-all"
+      : "text-base font-semibold break-all"
+    : compact
+      ? "text-base font-semibold"
+      : "text-xl font-semibold";
+
   return (
     <div className="flex flex-col items-start text-sm text-cyan-50">
       <span className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">
         {label}:
       </span>
-      <span className="text-xl font-semibold">{value ?? "—"}</span>
+      <span className={valueClassName}>{value ?? "—"}</span>
     </div>
   );
 }

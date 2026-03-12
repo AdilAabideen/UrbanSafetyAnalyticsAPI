@@ -26,7 +26,32 @@ export function toQueryString(params) {
 export async function parseJsonOrThrow(response, fallbackMessage) {
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || fallbackMessage);
+
+    if (message) {
+      try {
+        const parsed = JSON.parse(message);
+        const detail =
+          typeof parsed?.detail === "string"
+            ? parsed.detail
+            : Array.isArray(parsed?.detail)
+              ? parsed.detail.map((item) => item?.msg || item?.message || String(item)).join(", ")
+              : typeof parsed?.message === "string"
+                ? parsed.message
+                : typeof parsed?.error === "string"
+                  ? parsed.error
+                  : message;
+
+        throw new Error(detail || fallbackMessage);
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          throw new Error(message || fallbackMessage);
+        }
+
+        throw error;
+      }
+    }
+
+    throw new Error(fallbackMessage);
   }
 
   return response.json();

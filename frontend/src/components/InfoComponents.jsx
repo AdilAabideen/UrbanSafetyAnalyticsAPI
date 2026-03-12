@@ -31,6 +31,7 @@ const CRIME_TYPE_DESCRIPTIONS = {
 
 function InfoComponents({
   crimeType,
+  month,
   reportedBy,
   location,
   lsoaCode,
@@ -75,6 +76,7 @@ function InfoComponents({
         <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
           Crime Location Report
         </h3>
+        <InfoField label="Month" value={month} />
         <InfoField label="Reported By" value={reportedBy} />
         <InfoField label="Location" value={location} />
         <InfoField label="LSOA Code" value={lsoaCode} />

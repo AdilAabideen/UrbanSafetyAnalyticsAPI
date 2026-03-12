@@ -70,7 +70,20 @@ function resolveCursor(payload) {
 
 export const crimeService = {
   async getCrimesForViewport(
-    { minLon, minLat, maxLon, maxLat, zoom, month, crimeTypes, limit, mode = "auto", cursor },
+    {
+      minLon,
+      minLat,
+      maxLon,
+      maxLat,
+      zoom,
+      month,
+      crimeTypes,
+      lastOutcomeCategories,
+      lsoaNames,
+      limit,
+      mode = "auto",
+      cursor,
+    },
     requestOptions = {},
   ) {
     const query = toQueryString({
@@ -81,6 +94,8 @@ export const crimeService = {
       zoom: clampZoom(zoom),
       month,
       crimeType: crimeTypes,
+      lastOutcomeCategory: lastOutcomeCategories,
+      lsoaName: lsoaNames,
       limit,
       mode,
       cursor,

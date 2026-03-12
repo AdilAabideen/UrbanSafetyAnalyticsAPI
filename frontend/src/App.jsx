@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
+import FilterComponent from "./components/FilterComponent";
 import InfoComponents from "./components/InfoComponents";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import { config } from "./config/env";
+import {
+  CRIME_TYPE_OPTIONS,
+  OUTCOME_CATEGORY_OPTIONS,
+  createMonthOptions,
+} from "./constants/crimeFilterOptions";
 import { crimeService, roadsService } from "./services";
 
 const WEST_YORKSHIRE_CENTER = [-1.5491, 53.8008];
@@ -17,6 +23,13 @@ const CRIME_CLUSTER_CIRCLE_LAYER_ID = "crime-cluster-circle-layer";
 const CRIME_POINT_CIRCLE_LAYER_ID = "crime-point-circle-layer";
 const CRIME_LABEL_LAYER_ID = "crime-label-layer";
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+const DEFAULT_CRIME_FILTERS = {
+  month: "",
+  crimeType: "",
+  outcomeCategory: "",
+  lsoaName: "",
+};
+const MAX_POINT_FILTER_PAGES = 8;
 const CLUSTER_COUNT_EXPRESSION = [
   "coalesce",
   ["to-number", ["get", "count"]],
@@ -38,29 +51,83 @@ function getCrimeProperty(properties, ...keys) {
   return null;
 }
 
-function normalizeCrimeSelection(feature) {
+function hasClusterCount(properties = {}) {
+  return ["count", "point_count", "cluster_count"].some((key) => {
+    const value = Number(properties?.[key]);
+    return Number.isFinite(value) && value > 0;
+  });
+}
+
+function normalizeCrimeFeature(feature) {
   const properties = feature?.properties || {};
   const coordinates = feature?.geometry?.type === "Point" ? feature.geometry.coordinates : null;
   const locationLabel =
-    getCrimeProperty(properties, "location", "street_name", "street", "display_location") ||
-    (Array.isArray(coordinates) ? `${coordinates[1]}, ${coordinates[0]}` : null);
+    getCrimeProperty(
+      properties,
+      "location",
+      "Location",
+      "street_name",
+      "street",
+      "display_location",
+    ) || (Array.isArray(coordinates) ? `${coordinates[1]}, ${coordinates[0]}` : null);
 
   return {
     ...properties,
-    crimeType: getCrimeProperty(properties, "crimeType", "crime_type", "category"),
-    reportedBy: getCrimeProperty(properties, "reportedBy", "reported_by", "reported-by"),
+    crimeId: getCrimeProperty(properties, "crimeId", "crime_id", "Crime ID", "id"),
+    month: getCrimeProperty(properties, "month", "Month"),
+    crimeType: getCrimeProperty(
+      properties,
+      "crimeType",
+      "crime_type",
+      "crime-type",
+      "Crime type",
+      "category",
+    ),
+    reportedBy: getCrimeProperty(
+      properties,
+      "reportedBy",
+      "reported_by",
+      "reported-by",
+      "Reported by",
+    ),
+    fallsWithin: getCrimeProperty(
+      properties,
+      "fallsWithin",
+      "falls_within",
+      "falls-within",
+      "Falls within",
+    ),
     location: locationLabel,
-    lsoaCode: getCrimeProperty(properties, "lsoaCode", "lsoa_code", "lsoa-code"),
-    lsoaName: getCrimeProperty(properties, "lsoaName", "lsoa_name", "lsoa-name"),
+    lsoaCode: getCrimeProperty(properties, "lsoaCode", "lsoa_code", "lsoa-code", "LSOA code"),
+    lsoaName: getCrimeProperty(properties, "lsoaName", "lsoa_name", "lsoa-name", "LSOA name"),
     outcomeCategory: getCrimeProperty(
       properties,
       "outcomeCategory",
       "outcome_category",
+      "outcome-category",
       "last_outcome_category",
+      "last-outcome-category",
+      "Last outcome category",
       "lastOutcomeCategory",
     ),
-    context: getCrimeProperty(properties, "context"),
+    context: getCrimeProperty(properties, "context", "Context"),
   };
+}
+
+function normalizeCrimeSelection(feature) {
+  return normalizeCrimeFeature(feature);
+}
+
+function toSearchOptions(values, selectedValue = "") {
+  const uniqueValues = [...new Set(values.filter(Boolean))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+
+  if (selectedValue && !uniqueValues.includes(selectedValue)) {
+    uniqueValues.unshift(selectedValue);
+  }
+
+  return uniqueValues.map((value) => ({ value, label: value }));
 }
 
 function getViewportQuery(map) {
@@ -230,6 +297,9 @@ function App() {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const crimeRequestRef = useRef({ controller: null, requestId: 0 });
+  const crimeFiltersRef = useRef(DEFAULT_CRIME_FILTERS);
+  const mapReadyRef = useRef(false);
+  const reloadCrimesRef = useRef(() => Promise.resolve());
   const [roadErrorMessage, setRoadErrorMessage] = useState("");
   const [crimeErrorMessage, setCrimeErrorMessage] = useState("");
   const [loadingTiles, setLoadingTiles] = useState(true);
@@ -238,11 +308,26 @@ function App() {
   const [crimeFeatureCount, setCrimeFeatureCount] = useState(0);
   const [crimeHasMore, setCrimeHasMore] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+  const [crimeFilters, setCrimeFilters] = useState(DEFAULT_CRIME_FILTERS);
+  const [lsoaOptions, setLsoaOptions] = useState([]);
   const [selectedCrime, setSelectedCrime] = useState(null);
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
 
   const docsUrl = useMemo(() => `${config.apiBaseUrl}/docs`, []);
+  const monthOptions = useMemo(() => createMonthOptions(48), []);
   const errorMessage = [roadErrorMessage, crimeErrorMessage].filter(Boolean).join(" | ");
+
+  useEffect(() => {
+    mapReadyRef.current = mapReady;
+  }, [mapReady]);
+
+  useEffect(() => {
+    crimeFiltersRef.current = crimeFilters;
+
+    if (mapReadyRef.current && reloadCrimesRef.current) {
+      void reloadCrimesRef.current();
+    }
+  }, [crimeFilters]);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -286,6 +371,8 @@ function App() {
 
       clearCrimeRequest();
 
+      const activeFilters = crimeFiltersRef.current;
+      const forcePointsMode = Boolean(activeFilters.outcomeCategory || activeFilters.lsoaName);
       const controller = new AbortController();
       const requestId = crimeRequestRef.current.requestId + 1;
       crimeRequestRef.current = { controller, requestId };
@@ -294,7 +381,18 @@ function App() {
       setCrimeErrorMessage("");
 
       try {
-        const result = await crimeService.getCrimesForViewport(getViewportQuery(map), {
+        const requestBase = {
+          ...getViewportQuery(map),
+          month: activeFilters.month || undefined,
+          crimeTypes: activeFilters.crimeType ? [activeFilters.crimeType] : undefined,
+          lastOutcomeCategories: activeFilters.outcomeCategory
+            ? [activeFilters.outcomeCategory]
+            : undefined,
+          lsoaNames: activeFilters.lsoaName ? [activeFilters.lsoaName] : undefined,
+          mode: forcePointsMode ? "points" : "auto",
+        };
+
+        const result = await crimeService.getCrimesForViewport(requestBase, {
           signal: controller.signal,
         });
 
@@ -306,10 +404,62 @@ function App() {
           return;
         }
 
-        ensureCrimeLayers(map, result.data);
+        let nextCursor = result.nextCursor;
+        let pageCount = 1;
+        const combinedFeatures = [...result.data.features];
+
+        while (
+          forcePointsMode &&
+          nextCursor &&
+          pageCount < MAX_POINT_FILTER_PAGES &&
+          !controller.signal.aborted
+        ) {
+          const nextPage = await crimeService.getCrimesForViewport(
+            {
+              ...requestBase,
+              mode: "points",
+              cursor: nextCursor,
+            },
+            { signal: controller.signal },
+          );
+
+          if (
+            controller.signal.aborted ||
+            !mapRef.current ||
+            crimeRequestRef.current.requestId !== requestId
+          ) {
+            return;
+          }
+
+          combinedFeatures.push(...nextPage.data.features);
+          nextCursor = nextPage.nextCursor;
+          pageCount += 1;
+        }
+
+        const rawFeatureCollection = forcePointsMode
+          ? { type: "FeatureCollection", features: combinedFeatures }
+          : result.data;
+
+        const normalizedPointEntries = rawFeatureCollection.features
+          .filter((feature) => feature?.geometry?.type === "Point" && !hasClusterCount(feature.properties))
+          .map((feature) => ({
+            feature,
+            normalized: normalizeCrimeFeature(feature),
+          }));
+
+        setLsoaOptions(
+          toSearchOptions(
+            normalizedPointEntries.map(({ normalized }) => normalized.lsoaName),
+            activeFilters.lsoaName,
+          ),
+        );
+
+        const filteredFeatureCollection = rawFeatureCollection;
+
+        ensureCrimeLayers(map, filteredFeatureCollection);
         setCrimeMode(result.mode);
-        setCrimeFeatureCount(result.featureCount);
-        setCrimeHasMore(Boolean(result.nextCursor));
+        setCrimeFeatureCount(filteredFeatureCollection.features.length);
+        setCrimeHasMore(Boolean(nextCursor));
       } catch (error) {
         if (error?.name === "AbortError") {
           return;
@@ -322,6 +472,7 @@ function App() {
         setCrimeMode("unavailable");
         setCrimeFeatureCount(0);
         setCrimeHasMore(false);
+        setLsoaOptions([]);
         setCrimeErrorMessage(error?.message || "Failed to load crimes for the current viewport");
       } finally {
         if (!controller.signal.aborted && crimeRequestRef.current.requestId === requestId) {
@@ -330,6 +481,7 @@ function App() {
       }
     };
 
+    reloadCrimesRef.current = () => loadCrimesForViewport();
     mapRef.current = map;
 
     map.on("load", () => {
@@ -397,6 +549,7 @@ function App() {
 
     return () => {
       clearCrimeRequest();
+      reloadCrimesRef.current = () => Promise.resolve();
       map.remove();
       mapRef.current = null;
     };
@@ -427,10 +580,32 @@ function App() {
         <div className="relative min-h-0 flex-1">
           <div ref={mapContainerRef} className="h-full w-full" />
 
+          <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex items-end">
+            <FilterComponent
+              filters={crimeFilters}
+              monthOptions={monthOptions}
+              crimeTypeOptions={CRIME_TYPE_OPTIONS}
+              outcomeOptions={OUTCOME_CATEGORY_OPTIONS}
+              lsoaOptions={lsoaOptions}
+              visibleCrimeCount={crimeFeatureCount}
+              mode={crimeMode}
+              onChange={(key, value) => {
+                setCrimeFilters((current) => ({
+                  ...current,
+                  [key]: value,
+                }));
+              }}
+              onClear={() => {
+                setCrimeFilters(DEFAULT_CRIME_FILTERS);
+              }}
+            />
+          </div>
+
           {infoPanelOpen && (
             <div className="pointer-events-none absolute inset-y-0 right-0 z-10 flex items-stretch p-4">
               <InfoComponents
                 crimeType={selectedCrime?.crimeType}
+                month={selectedCrime?.month}
                 reportedBy={selectedCrime?.reportedBy}
                 location={selectedCrime?.location}
                 lsoaCode={selectedCrime?.lsoaCode}

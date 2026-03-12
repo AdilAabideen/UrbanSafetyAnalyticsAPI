@@ -49,6 +49,17 @@ def test_roads_pbf_tile_returns_binary_payload(leeds_tile_has_roads):
     assert len(response.content) > 0
 
 
+def test_roads_mvt_tile_returns_binary_payload(leeds_tile_has_roads):
+    response = client.get(
+        f"/tiles/roads/{LEEDS_TILE['z']}/{LEEDS_TILE['x']}/{LEEDS_TILE['y']}.mvt"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.mapbox-vector-tile"
+    assert response.headers["cache-control"] == "public, max-age=60"
+    assert len(response.content) > 0
+
+
 def test_roads_pbf_tile_with_risk_returns_binary_payload(leeds_tile_has_roads):
     response = client.get(
         f"/tiles/roads/{LEEDS_TILE['z']}/{LEEDS_TILE['x']}/{LEEDS_TILE['y']}.pbf",
@@ -57,4 +68,15 @@ def test_roads_pbf_tile_with_risk_returns_binary_payload(leeds_tile_has_roads):
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/x-protobuf"
+    assert len(response.content) > 0
+
+
+def test_roads_mvt_tile_with_risk_returns_vector_tile_payload(leeds_tile_has_roads):
+    response = client.get(
+        f"/tiles/roads/{LEEDS_TILE['z']}/{LEEDS_TILE['x']}/{LEEDS_TILE['y']}.mvt",
+        params={"includeRisk": "true", "month": "2023-03"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.mapbox-vector-tile"
     assert len(response.content) > 0

@@ -11,10 +11,11 @@ from ..db import get_db
 
 router = APIRouter(tags=["tiles"])
 
+MVT_MEDIA_TYPE = "application/vnd.mapbox-vector-tile"
 PBF_MEDIA_TYPE = "application/x-protobuf"
-PBF_CACHE_CONTROL = "public, max-age=60"
-PBF_EXTENT = 4096
-PBF_BUFFER = 64
+TILE_CACHE_CONTROL = "public, max-age=60"
+TILE_EXTENT = 4096
+TILE_BUFFER = 64
 
 
 def _validate_tile_coordinates(z, x, y):
@@ -72,84 +73,61 @@ def _roads_with_risk_tile_query(include_crime_type_filter):
         WITH bounds AS (
             SELECT ST_TileEnvelope(:z, :x, :y) AS geom
         ),
-        roads_in_tile AS (
-            SELECT
-                rs.id AS segment_id,
-                rs.highway,
-                rs.name,
-                rs.length_m,
-                ST_AsMVTGeom(rs.geom, bounds.geom, :extent, :buffer, true) AS geom
-            FROM road_segments rs
-            CROSS JOIN bounds
-            WHERE rs.geom && bounds.geom
-        ),
         crime_counts AS (
             SELECT
                 c.segment_id,
                 COUNT(*) AS crimes
             FROM crime_events c
-            JOIN roads_in_tile r ON r.segment_id = c.segment_id
             WHERE c.month = :month_date
+              AND c.segment_id IS NOT NULL
               {crime_type_clause}
             GROUP BY c.segment_id
         ),
-        scored AS (
+        ranked_scores AS (
             SELECT
-                r.segment_id,
-                r.highway,
-                r.name,
+                rs.id AS segment_id,
                 COALESCE(cc.crimes, 0) AS crimes,
-                COALESCE(COALESCE(cc.crimes, 0) / NULLIF(r.length_m / 1000.0, 0), 0) AS crimes_per_km,
-                r.geom
-            FROM roads_in_tile r
-            LEFT JOIN crime_counts cc ON cc.segment_id = r.segment_id
-        ),
-        ranked AS (
-            SELECT
-                *,
-                percent_rank() OVER (ORDER BY crimes_per_km) AS pct
-            FROM scored
+                COALESCE(COALESCE(cc.crimes, 0) / NULLIF(rs.length_m / 1000.0, 0), 0) AS crimes_per_km,
+                percent_rank() OVER (
+                    ORDER BY COALESCE(COALESCE(cc.crimes, 0) / NULLIF(rs.length_m / 1000.0, 0), 0)
+                ) AS pct
+            FROM road_segments rs
+            LEFT JOIN crime_counts cc ON cc.segment_id = rs.id
         )
         SELECT COALESCE(ST_AsMVT(mvt, 'roads', :extent, 'geom'), ''::bytea) AS tile
         FROM (
             SELECT
-                segment_id,
-                highway,
-                name,
-                crimes,
-                crimes_per_km,
-                pct,
+                rs.id AS segment_id,
+                rs.highway,
+                rs.name,
+                ranked_scores.crimes,
+                ranked_scores.crimes_per_km,
+                ranked_scores.pct,
                 CASE
-                    WHEN pct >= 0.95 THEN 'red'
-                    WHEN pct >= 0.80 THEN 'amber'
+                    WHEN ranked_scores.pct >= 0.95 THEN 'red'
+                    WHEN ranked_scores.pct >= 0.80 THEN 'orange'
                     ELSE 'green'
                 END AS band,
-                geom
-            FROM ranked
+                ST_AsMVTGeom(rs.geom, bounds.geom, :extent, :buffer, true) AS geom
+            FROM road_segments rs
+            CROSS JOIN bounds
+            LEFT JOIN ranked_scores ON ranked_scores.segment_id = rs.id
+            WHERE rs.geom && bounds.geom
         ) AS mvt
         WHERE geom IS NOT NULL
         """
     )
 
 
-@router.get("/tiles/roads/{z}/{x}/{y}.mvt")
-def get_road_tiles_pbf(
-    z: int = Path(..., ge=0, le=22),
-    x: int = Path(..., ge=0),
-    y: int = Path(..., ge=0),
-    month: Optional[str] = Query(None),
-    crimeType: Optional[str] = Query(None),
-    includeRisk: bool = Query(False),
-    db: Session = Depends(get_db),
-):
+def _build_tile_bytes(z, x, y, month, crimeType, includeRisk, db):
     _validate_tile_coordinates(z, x, y)
 
     query_params = {
         "z": z,
         "x": x,
         "y": y,
-        "extent": PBF_EXTENT,
-        "buffer": PBF_BUFFER,
+        "extent": TILE_EXTENT,
+        "buffer": TILE_BUFFER,
     }
 
     if includeRisk:
@@ -166,10 +144,39 @@ def get_road_tiles_pbf(
 
     tile = _execute(db, tile_query, query_params).scalar_one()
     if isinstance(tile, memoryview):
-        tile = tile.tobytes()
+        return tile.tobytes()
+    return tile or b""
 
+
+@router.get("/tiles/roads/{z}/{x}/{y}.mvt")
+def get_road_tiles_mvt(
+    z: int = Path(..., ge=0, le=22),
+    x: int = Path(..., ge=0),
+    y: int = Path(..., ge=0),
+    month: Optional[str] = Query(None),
+    crimeType: Optional[str] = Query(None),
+    includeRisk: bool = Query(False),
+    db: Session = Depends(get_db),
+):
     return Response(
-        content=tile or b"",
+        content=_build_tile_bytes(z, x, y, month, crimeType, includeRisk, db),
+        media_type=MVT_MEDIA_TYPE,
+        headers={"Cache-Control": TILE_CACHE_CONTROL},
+    )
+
+
+@router.get("/tiles/roads/{z}/{x}/{y}.pbf")
+def get_road_tiles_pbf(
+    z: int = Path(..., ge=0, le=22),
+    x: int = Path(..., ge=0),
+    y: int = Path(..., ge=0),
+    month: Optional[str] = Query(None),
+    crimeType: Optional[str] = Query(None),
+    includeRisk: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    return Response(
+        content=_build_tile_bytes(z, x, y, month, crimeType, includeRisk, db),
         media_type=PBF_MEDIA_TYPE,
-        headers={"Cache-Control": PBF_CACHE_CONTROL},
+        headers={"Cache-Control": TILE_CACHE_CONTROL},
     )

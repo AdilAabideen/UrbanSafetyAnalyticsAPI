@@ -1,65 +1,11 @@
 import { API_BASE_URL } from "../config/env";
-
-function toQueryString(params) {
-  const searchParams = new URLSearchParams();
-
-  Object.entries(params).forEach(([key, value]) => {
-    if (value === undefined || value === null) {
-      return;
-    }
-    searchParams.append(key, String(value));
-  });
-
-  return searchParams.toString();
-}
-
-async function parseJsonOrThrow(response, fallbackMessage) {
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || fallbackMessage);
-  }
-
-  return response.json();
-}
-
-function toFeatureCollection(payload) {
-  if (!payload) {
-    return { type: "FeatureCollection", features: [] };
-  }
-
-  if (payload.type === "FeatureCollection" && Array.isArray(payload.features)) {
-    return payload;
-  }
-
-  if (Array.isArray(payload)) {
-    return { type: "FeatureCollection", features: payload };
-  }
-
-  if (Array.isArray(payload.features)) {
-    return { type: "FeatureCollection", features: payload.features };
-  }
-
-  return { type: "FeatureCollection", features: [] };
-}
-
-async function fetchJson(url, fallbackMessage, requestOptions = {}) {
-  try {
-    const response = await fetch(url, { signal: requestOptions.signal });
-    return parseJsonOrThrow(response, fallbackMessage);
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw error;
-    }
-
-    if (error instanceof TypeError) {
-      throw new Error(`Cannot reach API at ${API_BASE_URL}. Check VITE_API_BASE_URL and backend status.`);
-    }
-
-    throw error;
-  }
-}
+import { fetchJson, toFeatureCollection, toQueryString } from "./serviceUtils";
 
 export const roadsService = {
+  getVectorTilesUrl() {
+    return `${API_BASE_URL}/tiles/roads/{z}/{x}/{y}.mvt`;
+  },
+
   async getRoadsInBoundingBox(
     { minLon, minLat, maxLon, maxLat, limit = 1200 },
     requestOptions = {},

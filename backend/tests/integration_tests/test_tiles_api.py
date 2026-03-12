@@ -80,3 +80,24 @@ def test_roads_mvt_tile_with_risk_returns_vector_tile_payload(leeds_tile_has_roa
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/vnd.mapbox-vector-tile"
     assert len(response.content) > 0
+
+
+def test_roads_mvt_tile_with_risk_month_range_returns_vector_tile_payload(leeds_tile_has_roads):
+    response = client.get(
+        f"/tiles/roads/{LEEDS_TILE['z']}/{LEEDS_TILE['x']}/{LEEDS_TILE['y']}.mvt",
+        params={"includeRisk": "true", "startMonth": "2023-03", "endMonth": "2023-05"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.mapbox-vector-tile"
+    assert len(response.content) > 0
+
+
+def test_roads_tile_risk_range_requires_both_month_bounds():
+    response = client.get(
+        f"/tiles/roads/{LEEDS_TILE['z']}/{LEEDS_TILE['x']}/{LEEDS_TILE['y']}.mvt",
+        params={"includeRisk": "true", "startMonth": "2023-03"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "startMonth and endMonth must be provided together"

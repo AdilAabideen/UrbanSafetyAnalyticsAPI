@@ -32,6 +32,58 @@ def _parse_month(month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM format") from exc
 
 
+def _resolve_month_filter(month, startMonth, endMonth):
+    if month and (startMonth or endMonth):
+        raise HTTPException(
+            status_code=400,
+            detail="Use either month or startMonth/endMonth, not both",
+        )
+
+    if startMonth or endMonth:
+        if not (startMonth and endMonth):
+            raise HTTPException(
+                status_code=400,
+                detail="startMonth and endMonth must be provided together",
+            )
+
+        start_month_date = _parse_month(startMonth)
+        end_month_date = _parse_month(endMonth)
+        if start_month_date > end_month_date:
+            raise HTTPException(
+                status_code=400,
+                detail="startMonth must be less than or equal to endMonth",
+            )
+
+        return {
+            "clause": "ce.month BETWEEN :start_month_date AND :end_month_date",
+            "params": {
+                "start_month_date": start_month_date,
+                "end_month_date": end_month_date,
+            },
+            "month": None,
+            "startMonth": start_month_date.strftime("%Y-%m"),
+            "endMonth": end_month_date.strftime("%Y-%m"),
+        }
+
+    month_date = _parse_month(month)
+    if month_date is None:
+        return {
+            "clause": None,
+            "params": {},
+            "month": None,
+            "startMonth": None,
+            "endMonth": None,
+        }
+
+    return {
+        "clause": "ce.month = :month_date",
+        "params": {"month_date": month_date},
+        "month": month_date.strftime("%Y-%m"),
+        "startMonth": None,
+        "endMonth": None,
+    }
+
+
 def _parse_cursor(cursor):
     if cursor is None:
         return None
@@ -137,7 +189,7 @@ def _execute(db, query, params):
         ) from exc
 
 
-def _map_filters(month_date, bbox, crime_types, last_outcome_categories, lsoa_names):
+def _map_filters(month_filter, bbox, crime_types, last_outcome_categories, lsoa_names):
     where_clauses = [
         "ce.geom IS NOT NULL",
         "ce.lon IS NOT NULL",
@@ -148,9 +200,9 @@ def _map_filters(month_date, bbox, crime_types, last_outcome_categories, lsoa_na
     ]
     query_params = dict(bbox)
 
-    if month_date is not None:
-        where_clauses.append("ce.month = :month_date")
-        query_params["month_date"] = month_date
+    if month_filter["clause"] is not None:
+        where_clauses.append(month_filter["clause"])
+        query_params.update(month_filter["params"])
 
     if crime_types:
         where_clauses.append("COALESCE(NULLIF(ce.crime_type, ''), 'unknown') IN :crime_types")
@@ -201,9 +253,11 @@ def _cluster_feature(row):
     }
 
 
-def _crime_filters_meta(month, crime_types, last_outcome_categories, lsoa_names):
+def _crime_filters_meta(month, start_month, end_month, crime_types, last_outcome_categories, lsoa_names):
     return {
         "month": month,
+        "startMonth": start_month,
+        "endMonth": end_month,
         "crimeType": crime_types,
         "lastOutcomeCategory": last_outcome_categories,
         "lsoaName": lsoa_names,
@@ -229,8 +283,7 @@ def _point_next_cursor(rows, limit):
 
 def _crime_points_payload(
     db,
-    month_date,
-    month_label,
+    month_filter,
     bbox,
     zoom,
     crime_types,
@@ -240,7 +293,7 @@ def _crime_points_payload(
     cursor_data,
 ):
     where_clauses, query_params = _map_filters(
-        month_date,
+        month_filter,
         bbox,
         crime_types,
         last_outcome_categories,
@@ -304,7 +357,9 @@ def _crime_points_payload(
             "truncated": truncated,
             "nextCursor": _point_next_cursor(rows, limit),
             "filters": _crime_filters_meta(
-                month_label,
+                month_filter["month"],
+                month_filter["startMonth"],
+                month_filter["endMonth"],
                 crime_types,
                 last_outcome_categories,
                 lsoa_names,
@@ -321,8 +376,7 @@ def _crime_points_payload(
 
 def _crime_clusters_payload(
     db,
-    month_date,
-    month_label,
+    month_filter,
     bbox,
     zoom,
     crime_types,
@@ -331,7 +385,7 @@ def _crime_clusters_payload(
     limit,
 ):
     where_clauses, query_params = _map_filters(
-        month_date,
+        month_filter,
         bbox,
         crime_types,
         last_outcome_categories,
@@ -447,7 +501,9 @@ def _crime_clusters_payload(
             "truncated": truncated,
             "nextCursor": None,
             "filters": _crime_filters_meta(
-                month_label,
+                month_filter["month"],
+                month_filter["startMonth"],
+                month_filter["endMonth"],
                 crime_types,
                 last_outcome_categories,
                 lsoa_names,
@@ -471,6 +527,8 @@ def get_crimes_map(
     maxLat: float = Query(..., ge=-90, le=90),
     zoom: int = Query(..., ge=0, le=22),
     month: Optional[str] = Query(None),
+    startMonth: Optional[str] = Query(None),
+    endMonth: Optional[str] = Query(None),
     crimeType: Optional[List[str]] = Query(None),
     lastOutcomeCategory: Optional[List[str]] = Query(None),
     lsoaName: Optional[List[str]] = Query(None),
@@ -479,8 +537,7 @@ def get_crimes_map(
     cursor: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    month_date = _parse_month(month)
-    month_label = month_date.strftime("%Y-%m") if month_date else None
+    month_filter = _resolve_month_filter(month, startMonth, endMonth)
     bbox = _required_bbox(minLon, minLat, maxLon, maxLat)
     crime_types = _normalize_filter_values(crimeType, "crimeType")
     last_outcome_categories = _normalize_filter_values(
@@ -499,20 +556,18 @@ def get_crimes_map(
     if resolved_mode == "clusters":
         return _crime_clusters_payload(
             db=db,
-            month_date=month_date,
-            month_label=month_label,
-        bbox=bbox,
-        zoom=zoom,
-        crime_types=crime_types,
-        last_outcome_categories=last_outcome_categories,
-        lsoa_names=lsoa_names,
-        limit=effective_limit,
-    )
+            month_filter=month_filter,
+            bbox=bbox,
+            zoom=zoom,
+            crime_types=crime_types,
+            last_outcome_categories=last_outcome_categories,
+            lsoa_names=lsoa_names,
+            limit=effective_limit,
+        )
 
     return _crime_points_payload(
         db=db,
-        month_date=month_date,
-        month_label=month_label,
+        month_filter=month_filter,
         bbox=bbox,
         zoom=zoom,
         crime_types=crime_types,

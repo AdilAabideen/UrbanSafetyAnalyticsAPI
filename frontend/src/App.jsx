@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
+import InfoComponents from "./components/InfoComponents";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import { config } from "./config/env";
@@ -24,6 +25,43 @@ const CLUSTER_COUNT_EXPRESSION = [
   0,
 ];
 const HAS_CLUSTER_COUNT_EXPRESSION = [">", CLUSTER_COUNT_EXPRESSION, 0];
+
+function getCrimeProperty(properties, ...keys) {
+  for (const key of keys) {
+    const value = properties?.[key];
+
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function normalizeCrimeSelection(feature) {
+  const properties = feature?.properties || {};
+  const coordinates = feature?.geometry?.type === "Point" ? feature.geometry.coordinates : null;
+  const locationLabel =
+    getCrimeProperty(properties, "location", "street_name", "street", "display_location") ||
+    (Array.isArray(coordinates) ? `${coordinates[1]}, ${coordinates[0]}` : null);
+
+  return {
+    ...properties,
+    crimeType: getCrimeProperty(properties, "crimeType", "crime_type", "category"),
+    reportedBy: getCrimeProperty(properties, "reportedBy", "reported_by", "reported-by"),
+    location: locationLabel,
+    lsoaCode: getCrimeProperty(properties, "lsoaCode", "lsoa_code", "lsoa-code"),
+    lsoaName: getCrimeProperty(properties, "lsoaName", "lsoa_name", "lsoa-name"),
+    outcomeCategory: getCrimeProperty(
+      properties,
+      "outcomeCategory",
+      "outcome_category",
+      "last_outcome_category",
+      "lastOutcomeCategory",
+    ),
+    context: getCrimeProperty(properties, "context"),
+  };
+}
 
 function getViewportQuery(map) {
   const bounds = map.getBounds();
@@ -124,23 +162,22 @@ function ensureCrimeLayers(map, data) {
     source: CRIME_SOURCE_ID,
     filter: ["all", ["==", ["geometry-type"], "Point"], HAS_CLUSTER_COUNT_EXPRESSION],
     paint: {
-      "circle-color": "#38bdf8",
+      "circle-color": "#3b82f6",
       "circle-radius": [
         "interpolate",
         ["linear"],
         CLUSTER_COUNT_EXPRESSION,
         1,
-        12,
         10,
-        18,
+        10,
+        15,
         50,
-        24,
+        20,
         200,
-        34,
+        28,
       ],
       "circle-opacity": 0.9,
-      "circle-stroke-color": "#fff4e8",
-      "circle-stroke-width": 1.2,
+      "circle-stroke-width": 0,
     },
   });
 
@@ -150,21 +187,20 @@ function ensureCrimeLayers(map, data) {
     source: CRIME_SOURCE_ID,
     filter: ["all", ["==", ["geometry-type"], "Point"], ["!", HAS_CLUSTER_COUNT_EXPRESSION]],
     paint: {
-      "circle-color": "#ff7a45",
+      "circle-color": "#3b82f6",
       "circle-radius": [
         "interpolate",
         ["linear"],
         ["zoom"],
         7,
-        4,
+        3,
         11,
-        6,
+        4.5,
         15,
-        8,
+        6,
       ],
       "circle-opacity": 0.9,
-      "circle-stroke-color": "#fff4e8",
-      "circle-stroke-width": 1.2,
+      "circle-stroke-width": 0,
     },
   });
 
@@ -202,6 +238,8 @@ function App() {
   const [crimeFeatureCount, setCrimeFeatureCount] = useState(0);
   const [crimeHasMore, setCrimeHasMore] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+  const [selectedCrime, setSelectedCrime] = useState(null);
+  const [infoPanelOpen, setInfoPanelOpen] = useState(false);
 
   const docsUrl = useMemo(() => `${config.apiBaseUrl}/docs`, []);
   const errorMessage = [roadErrorMessage, crimeErrorMessage].filter(Boolean).join(" | ");
@@ -319,6 +357,25 @@ function App() {
       void loadCrimesForViewport();
     });
 
+    map.on("click", CRIME_POINT_CIRCLE_LAYER_ID, (event) => {
+      const feature = event.features?.[0];
+
+      if (!feature) {
+        return;
+      }
+
+      setSelectedCrime(normalizeCrimeSelection(feature));
+      setInfoPanelOpen(true);
+    });
+
+    map.on("mouseenter", CRIME_POINT_CIRCLE_LAYER_ID, () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+
+    map.on("mouseleave", CRIME_POINT_CIRCLE_LAYER_ID, () => {
+      map.getCanvas().style.cursor = "";
+    });
+
     map.on("error", (event) => {
       const message = event?.error?.message;
 
@@ -367,8 +424,23 @@ function App() {
       <main className="flex min-h-0 flex-1 flex-col bg-[#071316]">
         <TopBar docsUrl={docsUrl} />
 
-        <div className="min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1">
           <div ref={mapContainerRef} className="h-full w-full" />
+
+          {infoPanelOpen && (
+            <div className="pointer-events-none absolute inset-y-0 right-0 z-10 flex items-stretch p-4">
+              <InfoComponents
+                crimeType={selectedCrime?.crimeType}
+                reportedBy={selectedCrime?.reportedBy}
+                location={selectedCrime?.location}
+                lsoaCode={selectedCrime?.lsoaCode}
+                lsoaName={selectedCrime?.lsoaName}
+                outcomeCategory={selectedCrime?.outcomeCategory}
+                context={selectedCrime?.context}
+                onClose={() => setInfoPanelOpen(false)}
+              />
+            </div>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-cyan-200/10 bg-[#030b0e] px-3 py-2">

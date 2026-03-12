@@ -12,7 +12,30 @@ const ROADS_LAYER_ID = "roads-layer";
 const CRIME_SOURCE_ID = "crimes";
 const CRIME_FILL_LAYER_ID = "crime-fill-layer";
 const CRIME_LINE_LAYER_ID = "crime-line-layer";
-const CRIME_CIRCLE_LAYER_ID = "crime-circle-layer";
+const CRIME_CLUSTER_CIRCLE_LAYER_ID = "crime-cluster-circle-layer";
+const CRIME_POINT_CIRCLE_LAYER_ID = "crime-point-circle-layer";
+const CRIME_LABEL_LAYER_ID = "crime-label-layer";
+const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+const CLUSTER_COUNT_EXPRESSION = [
+  "coalesce",
+  ["to-number", ["get", "count"]],
+  ["to-number", ["get", "point_count"]],
+  ["to-number", ["get", "cluster_count"]],
+  0,
+];
+const HAS_CLUSTER_COUNT_EXPRESSION = [">", CLUSTER_COUNT_EXPRESSION, 0];
+
+function getViewportQuery(map) {
+  const bounds = map.getBounds();
+
+  return {
+    minLon: bounds.getWest(),
+    minLat: bounds.getSouth(),
+    maxLon: bounds.getEast(),
+    maxLat: bounds.getNorth(),
+    zoom: map.getZoom(),
+  };
+}
 
 function ensureRoadsLayer(map) {
   if (!map.getSource(ROADS_SOURCE_ID)) {
@@ -36,13 +59,13 @@ function ensureRoadsLayer(map) {
           ["linear"],
           ["zoom"],
           8,
-          0.8,
+          0.4,
           12,
-          1.5,
+          0.75,
           16,
-          3,
+          1.5,
         ],
-        "line-opacity": 0.95,
+        "line-opacity": 0.75,
       },
     });
   }
@@ -96,22 +119,38 @@ function ensureCrimeLayers(map, data) {
   });
 
   map.addLayer({
-    id: CRIME_CIRCLE_LAYER_ID,
+    id: CRIME_CLUSTER_CIRCLE_LAYER_ID,
     type: "circle",
     source: CRIME_SOURCE_ID,
-    filter: ["==", ["geometry-type"], "Point"],
+    filter: ["all", ["==", ["geometry-type"], "Point"], HAS_CLUSTER_COUNT_EXPRESSION],
     paint: {
-      "circle-color": [
-        "match",
-        ["get", "severity"],
-        "high",
-        "#ff5e5e",
-        "medium",
-        "#ffb257",
-        "low",
-        "#ffd166",
-        "#ff835c",
+      "circle-color": "#38bdf8",
+      "circle-radius": [
+        "interpolate",
+        ["linear"],
+        CLUSTER_COUNT_EXPRESSION,
+        1,
+        12,
+        10,
+        18,
+        50,
+        24,
+        200,
+        34,
       ],
+      "circle-opacity": 0.9,
+      "circle-stroke-color": "#fff4e8",
+      "circle-stroke-width": 1.2,
+    },
+  });
+
+  map.addLayer({
+    id: CRIME_POINT_CIRCLE_LAYER_ID,
+    type: "circle",
+    source: CRIME_SOURCE_ID,
+    filter: ["all", ["==", ["geometry-type"], "Point"], ["!", HAS_CLUSTER_COUNT_EXPRESSION]],
+    paint: {
+      "circle-color": "#ff7a45",
       "circle-radius": [
         "interpolate",
         ["linear"],
@@ -121,11 +160,32 @@ function ensureCrimeLayers(map, data) {
         11,
         6,
         15,
-        9,
+        8,
       ],
       "circle-opacity": 0.9,
       "circle-stroke-color": "#fff4e8",
       "circle-stroke-width": 1.2,
+    },
+  });
+
+  map.addLayer({
+    id: CRIME_LABEL_LAYER_ID,
+    type: "symbol",
+    source: CRIME_SOURCE_ID,
+    filter: HAS_CLUSTER_COUNT_EXPRESSION,
+    layout: {
+      "text-field": [
+        "coalesce",
+        ["to-string", ["get", "count"]],
+        ["to-string", ["get", "point_count"]],
+        ["to-string", ["get", "cluster_count"]],
+        "",
+      ],
+      "text-size": 11,
+      "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+    },
+    paint: {
+      "text-color": "#042433",
     },
   });
 }
@@ -133,13 +193,18 @@ function ensureCrimeLayers(map, data) {
 function App() {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
-  const [errorMessage, setErrorMessage] = useState("");
+  const crimeRequestRef = useRef({ controller: null, requestId: 0 });
+  const [roadErrorMessage, setRoadErrorMessage] = useState("");
+  const [crimeErrorMessage, setCrimeErrorMessage] = useState("");
   const [loadingTiles, setLoadingTiles] = useState(true);
   const [loadingCrimes, setLoadingCrimes] = useState(true);
-  const [crimeSourceLabel, setCrimeSourceLabel] = useState("GeoJSON");
+  const [crimeMode, setCrimeMode] = useState("points");
+  const [crimeFeatureCount, setCrimeFeatureCount] = useState(0);
+  const [crimeHasMore, setCrimeHasMore] = useState(false);
   const [mapReady, setMapReady] = useState(false);
 
   const docsUrl = useMemo(() => `${config.apiBaseUrl}/docs`, []);
+  const errorMessage = [roadErrorMessage, crimeErrorMessage].filter(Boolean).join(" | ");
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -147,14 +212,14 @@ function App() {
     }
 
     if (!config.mapboxAccessToken) {
-      setErrorMessage("Set VITE_MAPBOX_ACCESS_TOKEN to render the Mapbox dark map.");
+      setRoadErrorMessage("Set VITE_MAPBOX_ACCESS_TOKEN to render the Mapbox dark map.");
       setLoadingTiles(false);
       setLoadingCrimes(false);
       return;
     }
 
     if (!mapboxgl.supported()) {
-      setErrorMessage("Mapbox GL JS is not supported in this browser.");
+      setRoadErrorMessage("Mapbox GL JS is not supported in this browser.");
       setLoadingTiles(false);
       setLoadingCrimes(false);
       return;
@@ -162,7 +227,6 @@ function App() {
 
     mapboxgl.accessToken = config.mapboxAccessToken;
 
-    const abortController = new AbortController();
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
       center: WEST_YORKSHIRE_CENTER,
@@ -171,26 +235,58 @@ function App() {
       style: MAPBOX_STYLE,
     });
 
-    const loadCrimeOverlay = async () => {
-      try {
-        const { data, sourceLabel } = await crimeService.getCrimes({ signal: abortController.signal });
+    const clearCrimeRequest = () => {
+      if (crimeRequestRef.current.controller) {
+        crimeRequestRef.current.controller.abort();
+      }
+    };
 
-        if (!mapRef.current || abortController.signal.aborted) {
+    const loadCrimesForViewport = async () => {
+      if (!mapRef.current) {
+        return;
+      }
+
+      clearCrimeRequest();
+
+      const controller = new AbortController();
+      const requestId = crimeRequestRef.current.requestId + 1;
+      crimeRequestRef.current = { controller, requestId };
+
+      setLoadingCrimes(true);
+      setCrimeErrorMessage("");
+
+      try {
+        const result = await crimeService.getCrimesForViewport(getViewportQuery(map), {
+          signal: controller.signal,
+        });
+
+        if (
+          controller.signal.aborted ||
+          !mapRef.current ||
+          crimeRequestRef.current.requestId !== requestId
+        ) {
           return;
         }
 
-        ensureCrimeLayers(map, data);
-        setCrimeSourceLabel(sourceLabel);
-        setErrorMessage("");
+        ensureCrimeLayers(map, result.data);
+        setCrimeMode(result.mode);
+        setCrimeFeatureCount(result.featureCount);
+        setCrimeHasMore(Boolean(result.nextCursor));
       } catch (error) {
         if (error?.name === "AbortError") {
           return;
         }
 
-        setCrimeSourceLabel("unavailable");
-        setErrorMessage(error?.message || "Failed to load crime GeoJSON");
+        if (mapRef.current) {
+          ensureCrimeLayers(map, EMPTY_FEATURE_COLLECTION);
+        }
+
+        setCrimeMode("unavailable");
+        setCrimeFeatureCount(0);
+        setCrimeHasMore(false);
+        setCrimeErrorMessage(error?.message || "Failed to load crimes for the current viewport");
       } finally {
-        if (!abortController.signal.aborted) {
+        if (!controller.signal.aborted && crimeRequestRef.current.requestId === requestId) {
           setLoadingCrimes(false);
         }
       }
@@ -202,10 +298,12 @@ function App() {
       setMapReady(true);
       setLoadingTiles(true);
       setLoadingCrimes(true);
-      setErrorMessage("");
+      setRoadErrorMessage("");
+      setCrimeErrorMessage("");
 
       ensureRoadsLayer(map);
-      void loadCrimeOverlay();
+      ensureCrimeLayers(map, EMPTY_FEATURE_COLLECTION);
+      void loadCrimesForViewport();
     });
 
     map.on("idle", () => {
@@ -214,6 +312,11 @@ function App() {
 
     map.on("movestart", () => {
       setLoadingTiles(true);
+      setLoadingCrimes(true);
+    });
+
+    map.on("moveend", () => {
+      void loadCrimesForViewport();
     });
 
     map.on("error", (event) => {
@@ -223,7 +326,12 @@ function App() {
         return;
       }
 
-      setErrorMessage(message);
+      if (event?.sourceId === CRIME_SOURCE_ID) {
+        setCrimeErrorMessage(message);
+        return;
+      }
+
+      setRoadErrorMessage(message);
 
       if (event?.sourceId === ROADS_SOURCE_ID) {
         setLoadingTiles(false);
@@ -231,7 +339,7 @@ function App() {
     });
 
     return () => {
-      abortController.abort();
+      clearCrimeRequest();
       map.remove();
       mapRef.current = null;
     };
@@ -246,6 +354,11 @@ function App() {
       : errorMessage
         ? "Map loaded with errors"
         : "Roads and crimes loaded";
+
+  const crimeStatusLabel =
+    crimeMode === "unavailable"
+      ? "crime API unavailable"
+      : `${crimeMode} ${crimeFeatureCount}${crimeHasMore ? "+" : ""}`;
 
   return (
     <div className="flex h-screen w-full">
@@ -271,7 +384,7 @@ function App() {
           <div className="flex shrink-0 items-center gap-2 text-xs text-[#d2faf0]">
             <span>{mapStatus}</span>
             <strong className="text-[#39ef7d]">Mapbox GL JS</strong>
-            <span className="text-cyan-100/60">Road tiles + {crimeSourceLabel}</span>
+            <span className="text-cyan-100/60">Road tiles + {crimeStatusLabel}</span>
           </div>
         </div>
       </main>

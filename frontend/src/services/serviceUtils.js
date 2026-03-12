@@ -6,6 +6,17 @@ export function toQueryString(params) {
       return;
     }
 
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item === undefined || item === null) {
+          return;
+        }
+
+        searchParams.append(key, String(item));
+      });
+      return;
+    }
+
     searchParams.append(key, String(value));
   });
 

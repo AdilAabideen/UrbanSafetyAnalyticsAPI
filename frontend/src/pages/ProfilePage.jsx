@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
 function ProfilePage({
-  apiBaseUrl,
   loading,
   user,
   onRefresh,

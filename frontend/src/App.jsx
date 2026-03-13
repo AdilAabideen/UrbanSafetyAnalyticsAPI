@@ -39,7 +39,6 @@ function LoginRoute() {
 
   return (
     <LoginPage
-      apiBaseUrl={config.apiBaseUrl}
       onLogin={handleLogin}
       onRegister={handleRegister}
     />
@@ -48,6 +47,7 @@ function LoginRoute() {
 
 function DashboardRoute() {
   const [activePage, setActivePage] = useState("map");
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState(null);
   const [session, setSession] = useState(() => authService.getStoredSession());
   const [user, setUser] = useState(session.user);
   const [loadingUser, setLoadingUser] = useState(false);
@@ -57,12 +57,33 @@ function DashboardRoute() {
   useEffect(() => {
     if (!session.accessToken) return;
 
-    setLoadingUser(true);
-    authService
-      .getCurrentUser(session.accessToken)
-      .then((fetchedUser) => setUser(fetchedUser))
-      .catch(() => {})
-      .finally(() => setLoadingUser(false));
+    let isActive = true;
+
+    const loadCurrentUser = async () => {
+      setLoadingUser(true);
+
+      try {
+        const fetchedUser = await authService.getCurrentUser(session.accessToken);
+
+        if (isActive) {
+          setUser(fetchedUser);
+        }
+      } catch {
+        if (isActive) {
+          setUser(null);
+        }
+      } finally {
+        if (isActive) {
+          setLoadingUser(false);
+        }
+      }
+    };
+
+    void loadCurrentUser();
+
+    return () => {
+      isActive = false;
+    };
   }, [session.accessToken]);
 
   const handleLogout = useCallback(() => {
@@ -83,6 +104,16 @@ function DashboardRoute() {
     return updatedUser;
   }, [session.accessToken]);
 
+  const handleWatchlistCreated = useCallback((watchlist) => {
+    setSelectedWatchlistId(watchlist?.id || null);
+    setActivePage("view-watchlist");
+  }, []);
+
+  const handleOpenWatchlist = useCallback((watchlistId) => {
+    setSelectedWatchlistId(watchlistId || null);
+    setActivePage("view-watchlist");
+  }, []);
+
   return (
     <div className="flex h-screen w-full">
       <Sidebar
@@ -94,7 +125,6 @@ function DashboardRoute() {
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#071316]">
         {activePage === "profile" ? (
           <ProfilePage
-            apiBaseUrl={config.apiBaseUrl}
             loading={loadingUser}
             user={user}
             onRefresh={handleRefreshProfile}
@@ -107,9 +137,19 @@ function DashboardRoute() {
         ) : activePage === "roads" ? (
           <RoadsPage docsUrl={docsUrl} />
         ) : activePage === "watchlist" ? (
-          <WatchlistPage docsUrl={docsUrl} />
+          <WatchlistPage
+            docsUrl={docsUrl}
+            accessToken={session.accessToken}
+            onWatchlistCreated={handleWatchlistCreated}
+          />
         ) : activePage === "view-watchlist" ? (
-          <ViewWatchlistPage />
+          <ViewWatchlistPage
+            docsUrl={docsUrl}
+            accessToken={session.accessToken}
+            selectedWatchlistId={selectedWatchlistId}
+            onSelectWatchlist={handleOpenWatchlist}
+            onCreateNew={() => setActivePage("watchlist")}
+          />
         ) : (
           <MapPage docsUrl={docsUrl} />
         )}

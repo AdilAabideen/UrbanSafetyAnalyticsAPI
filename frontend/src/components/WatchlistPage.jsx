@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import TopBar from "./TopBar";
+import { createMonthOptionsFromRange } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
-import { roadsService } from "../services";
+import { roadsService, watchlistService } from "../services";
 import {
   DEFAULT_MONTH_FROM,
   DEFAULT_MONTH_TO,
@@ -17,29 +18,52 @@ const DRAW_FILL_LAYER_ID = "watchlist-draw-fill";
 const DRAW_LINE_LAYER_ID = "watchlist-draw-line";
 const DRAW_POINT_LAYER_ID = "watchlist-draw-point";
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+const WATCHLIST_WINDOW_MONTH_OPTIONS = createMonthOptionsFromRange("2023-04", "2026-01").reverse();
+const WATCHLIST_CRIME_TYPE_OPTIONS = [
+  { value: "Violence and sexual offences", label: "Violence and sexual offences", count: 387354 },
+  { value: "Public order", label: "Public order", count: 86244 },
+  { value: "Anti-social behaviour", label: "Anti-social behaviour", count: 83299 },
+  { value: "Criminal damage and arson", label: "Criminal damage and arson", count: 69343 },
+  { value: "Shoplifting", label: "Shoplifting", count: 65850 },
+  { value: "Other theft", label: "Other theft", count: 61197 },
+  { value: "Vehicle crime", label: "Vehicle crime", count: 50566 },
+  { value: "Burglary", label: "Burglary", count: 45396 },
+  { value: "Drugs", label: "Drugs", count: 29074 },
+  { value: "Other crime", label: "Other crime", count: 27602 },
+  { value: "Robbery", label: "Robbery", count: 10311 },
+  { value: "Theft from the person", label: "Theft from the person", count: 8448 },
+  { value: "Possession of weapons", label: "Possession of weapons", count: 7786 },
+  { value: "Bicycle theft", label: "Bicycle theft", count: 5352 },
+];
+const WATCHLIST_MODE_OPTIONS = ["Walking", "Cycling", "Driving"];
 
-function WatchlistPage({ docsUrl }) {
+function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
   const [watchlistForm, setWatchlistForm] = useState(createDefaultWatchlistForm);
   const [polygonPoints, setPolygonPoints] = useState([]);
   const [polygonClosed, setPolygonClosed] = useState(false);
+  const [creatingWatchlist, setCreatingWatchlist] = useState(false);
+  const [watchlistErrorMessage, setWatchlistErrorMessage] = useState("");
   const parsedBbox = useMemo(() => parseBboxFromForm(watchlistForm), [watchlistForm]);
   const isFormComplete = useMemo(
     () =>
       [
-        watchlistForm.id,
-        watchlistForm.userId,
         watchlistForm.name,
-        watchlistForm.createdAt,
-        watchlistForm.minLon,
-        watchlistForm.minLat,
-        watchlistForm.maxLon,
-        watchlistForm.maxLat,
+        watchlistForm.mode,
       ].every((value) => String(value).trim().length > 0),
     [watchlistForm],
   );
-  const canProceed = isFormComplete && Boolean(parsedBbox) && polygonClosed;
+  const hasWindowMonths = Number(watchlistForm.windowMonths) > 0;
+  const hasCrimeTypes = watchlistForm.crimeTypes.length > 0;
+  const canProceed =
+    isFormComplete &&
+    hasWindowMonths &&
+    hasCrimeTypes &&
+    Boolean(parsedBbox) &&
+    polygonClosed &&
+    !creatingWatchlist;
 
   const handleFieldChange = (key, value) => {
+    setWatchlistErrorMessage("");
     setWatchlistForm((current) => ({
       ...current,
       [key]: value,
@@ -79,22 +103,40 @@ function WatchlistPage({ docsUrl }) {
     }));
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (!canProceed || !parsedBbox) {
       return;
     }
 
-    console.log("watchlistDraft", {
-      id: watchlistForm.id,
-      user_id: watchlistForm.userId,
-      name: watchlistForm.name,
+    if (!accessToken) {
+      setWatchlistErrorMessage("You need to sign in before creating watchlists.");
+      return;
+    }
+
+    const payload = {
+      name: watchlistForm.name.trim(),
       min_lon: parsedBbox.minLon,
       min_lat: parsedBbox.minLat,
       max_lon: parsedBbox.maxLon,
       max_lat: parsedBbox.maxLat,
-      created_at: watchlistForm.createdAt,
-      polygon: toClosedPolygonCoordinates(polygonPoints),
-    });
+      preference: {
+        window_months: Number(watchlistForm.windowMonths),
+        crime_types: watchlistForm.crimeTypes.map(toCrimeTypePayloadValue),
+        travel_mode: watchlistForm.mode.toLowerCase(),
+      },
+    };
+
+    setCreatingWatchlist(true);
+    setWatchlistErrorMessage("");
+
+    try {
+      const createdWatchlist = await watchlistService.createWatchlist(payload, accessToken);
+      onWatchlistCreated?.(createdWatchlist);
+    } catch (error) {
+      setWatchlistErrorMessage(error?.message || "Failed to create the watchlist.");
+    } finally {
+      setCreatingWatchlist(false);
+    }
   };
 
   return (
@@ -102,92 +144,102 @@ function WatchlistPage({ docsUrl }) {
       <TopBar
         docsUrl={docsUrl}
         title="Watchlists"
-        subtitle="Create a watchlist by entering the fields on the left and drawing a polygon on the map."
+        subtitle="Create a watchlist by defining the name, preference, and bounding box, then drawing the area on the map."
       />
 
       <div className="min-h-0 flex-1 p-4">
-        <div className="grid grid-cols-2 grid-rows-1 h-full min-h-0 overflow-hidden rounded-[26px] border border-white/5  ">
-          <section className="flex h-full min-h-0 flex-col border-r-2 border-r-white/5 ">
+        <div className="grid h-full min-h-0 grid-cols-2 grid-rows-1 overflow-hidden rounded-[26px] border border-white/5">
+          <section className="flex h-full min-h-0 flex-col border-r-2 border-r-white/5">
             <div className="border-b border-white/5 px-5 py-4">
               <p className="text-[11px] uppercase tracking-[0.35em] text-cyan-100/40">
                 Watchlist Setup
               </p>
-              <h2 className="mt-2 text-xl font-semibold text-cyan-50">Input Fields</h2>
+              <h2 className="mt-2 text-xl font-semibold text-cyan-50">Create Watchlist</h2>
+              <p className="mt-2 max-w-xl text-sm text-cyan-100/55">
+                Define the watchlist preference on the left, then draw the operational area on the map to populate the bbox.
+              </p>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-0 ">
-              <div className="space-y-3 rounded-[24px]  p-4">
-                <WatchlistField
-                  label="ID"
-                  value={watchlistForm.id}
-                  placeholder="1001"
-                  onChange={(value) => handleFieldChange("id", value)}
-                />
-                <WatchlistField
-                  label="USER_ID"
-                  value={watchlistForm.userId}
-                  placeholder="42"
-                  onChange={(value) => handleFieldChange("userId", value)}
-                />
+            <div className="min-h-0 flex-1 overflow-y-auto px-3 py-0">
+              <div className="space-y-3 rounded-[24px] p-4">
                 <WatchlistField
                   label="NAME"
                   value={watchlistForm.name}
-                  placeholder="City Centre Risk Watch"
+                  placeholder="Leeds Centre"
                   onChange={(value) => handleFieldChange("name", value)}
                 />
-                <WatchlistField
-                  label="CREATED_AT"
-                  type="datetime-local"
-                  value={watchlistForm.createdAt}
-                  onChange={(value) => handleFieldChange("createdAt", value)}
+                <WatchlistMonthSlider
+                  label="WINDOW MONTHS"
+                  value={watchlistForm.windowMonths}
+                  options={WATCHLIST_WINDOW_MONTH_OPTIONS}
+                  onChange={(value) => handleFieldChange("windowMonths", value)}
+                />
+                <WatchlistCrimeTypeMultiSelect
+                  label="CRIME TYPE"
+                  values={watchlistForm.crimeTypes}
+                  options={WATCHLIST_CRIME_TYPE_OPTIONS}
+                  onChange={(value) => handleFieldChange("crimeTypes", value)}
+                />
+                <WatchlistModeSelect
+                  label="MODE"
+                  value={watchlistForm.mode}
+                  options={WATCHLIST_MODE_OPTIONS}
+                  onChange={(value) => handleFieldChange("mode", value)}
                 />
                 <WatchlistField
-                  label="MIN_LON"
+                  label="MIN LONGITUDE"
                   value={watchlistForm.minLon}
                   placeholder="-1.620000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("minLon", value)}
                 />
                 <WatchlistField
-                  label="MIN_LAT"
+                  label="MIN LATITUDE"
                   value={watchlistForm.minLat}
                   placeholder="53.780000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("minLat", value)}
                 />
                 <WatchlistField
-                  label="MAX_LON"
+                  label="MAX LONGITUDE"
                   value={watchlistForm.maxLon}
                   placeholder="-1.500000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("maxLon", value)}
                 />
                 <WatchlistField
-                  label="MAX_LAT"
+                  label="MAX LATITUDE"
                   value={watchlistForm.maxLat}
                   placeholder="53.840000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("maxLat", value)}
                 />
+
+                {watchlistErrorMessage ? (
+                  <div className="rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
+                    {watchlistErrorMessage}
+                  </div>
+                ) : null}
               </div>
             </div>
 
             <div className="border-t border-white/5 px-5 py-4">
               <p className="text-sm text-cyan-100/55">
-                {canProceed
-                  ? "Polygon captured and all fields are populated."
-                  : "Complete every field and finish the polygon on the map to continue."}
+                {!accessToken
+                  ? "Log in to create and store watchlists."
+                  : canProceed
+                    ? "The payload is valid and ready to create."
+                    : "Complete the name, preference, and polygon area to create this watchlist."}
               </p>
 
-              {canProceed ? (
-                <button
-                  type="button"
-                  onClick={handleNext}
-                  className="mt-4 w-full rounded-[16px] bg-cyan-50 px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[#021116] transition-colors hover:bg-white"
-                >
-                  Next
-                </button>
-              ) : null}
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={!canProceed || !accessToken}
+                className="mt-4 w-full rounded-[16px] bg-cyan-50 px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[#021116] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-cyan-100/20 disabled:text-cyan-100/40"
+              >
+                {creatingWatchlist ? "Creating..." : "Create Watchlist"}
+              </button>
             </div>
           </section>
 
@@ -535,17 +587,196 @@ function WatchlistField({ label, value, onChange, placeholder, type = "text", in
   );
 }
 
+function WatchlistMonthSlider({ label, value, options, onChange }) {
+  const totalOptions = options.length;
+  const numericValue = Number(value) || totalOptions;
+  const clampedValue = Math.min(Math.max(numericValue, 1), totalOptions);
+  const selectedOption = options[clampedValue - 1] || options[0];
+
+  return (
+    <div className="flex flex-col gap-3 rounded-[12px] border border-cyan-200/10 bg-[#071316]/70 px-4 py-4 ">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">{label}</p>
+          <p className="mt-2 text-base font-semibold text-cyan-50">
+            {selectedOption?.label || "No window selected"}
+          </p>
+        </div>
+        <div className="rounded-full border border-cyan-100/10 bg-[#030b0e]/80 px-3 py-1 text-xs uppercase tracking-[0.18em] text-cyan-100/60">
+          {clampedValue} months
+        </div>
+      </div>
+
+      <input
+        type="range"
+        min="1"
+        max={String(totalOptions)}
+        step="1"
+        value={clampedValue}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="h-2 w-full cursor-pointer appearance-none rounded-full bg-cyan-100/10 accent-cyan-50"
+      />
+
+      <div className="flex items-center justify-between text-xs uppercase tracking-[0.18em] text-cyan-100/40">
+        <span>{options[0]?.label}</span>
+        <span>{options[totalOptions - 1]?.label}</span>
+      </div>
+    </div>
+  );
+}
+
+function WatchlistCrimeTypeMultiSelect({ label, values, options, onChange }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+
+  const filteredOptions = useMemo(() => {
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
+
+    if (!normalizedQuery) {
+      return options;
+    }
+
+    return options.filter((option) => option.label.toLowerCase().includes(normalizedQuery));
+  }, [deferredQuery, options]);
+
+  const selectedOptions = useMemo(
+    () => options.filter((option) => values.includes(option.value)),
+    [options, values],
+  );
+
+  const toggleValue = (nextValue) => {
+    onChange(
+      values.includes(nextValue)
+        ? values.filter((value) => value !== nextValue)
+        : [...values, nextValue],
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-3 rounded-[12px] border border-cyan-200/10 bg-[#071316]/70 px-4 py-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">{label}</p>
+          <p className="mt-2 text-sm text-cyan-100/55">
+            Search and select one or more crime types for this watchlist.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setIsOpen((current) => !current)}
+          className="rounded-full border border-cyan-100/10 bg-[#030b0e]/80 px-3 py-1 text-xs uppercase tracking-[0.18em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
+        >
+          {isOpen ? "Hide" : "Browse"}
+        </button>
+      </div>
+
+      {selectedOptions.length ? (
+        <div className="flex flex-wrap gap-2">
+          {selectedOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => toggleValue(option.value)}
+              className="rounded-full border border-cyan-100/10 bg-cyan-50/10 px-3 py-1.5 text-xs font-medium text-cyan-50 transition-colors hover:bg-cyan-50/20"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-cyan-100/35">No crime types selected yet.</p>
+      )}
+
+      {isOpen ? (
+        <div className="flex flex-col gap-3 rounded-[16px] border border-cyan-100/10 bg-[#030b0e]/80 p-3">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search crime types"
+            className="rounded-md border border-cyan-200/10 bg-[#071316]/90 px-3 py-2 text-sm font-medium text-cyan-50 outline-none transition-colors placeholder:text-cyan-100/30 focus:border-cyan-400/40"
+          />
+
+          <div className="max-h-56 overflow-y-auto">
+            <div className="flex flex-col gap-2">
+              {filteredOptions.map((option) => {
+                const isSelected = values.includes(option.value);
+
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => toggleValue(option.value)}
+                    className={`flex items-center justify-between gap-3 rounded-[14px] border px-3 py-3 text-left transition-colors ${
+                      isSelected
+                        ? "border-cyan-300/35 bg-cyan-50/10 text-cyan-50"
+                        : "border-cyan-100/10 bg-[#071316]/80 text-cyan-100/75 hover:bg-cyan-100/10 hover:text-cyan-50"
+                    }`}
+                  >
+                    <span className="text-sm font-medium">{option.label}</span>
+                    <span className="text-xs uppercase tracking-[0.16em] text-cyan-100/45">
+                      {formatCount(option.count)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WatchlistModeSelect({ label, value, options, onChange }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-[12px] border border-cyan-200/10 bg-[#071316]/70 px-4 py-4">
+      <div>
+        <p className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">{label}</p>
+        <p className="mt-2 text-sm text-cyan-100/55">
+          Choose the travel mode that this watchlist should track against.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        {options.map((option) => {
+          const isSelected = value === option;
+
+          return (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onChange(option)}
+              className={`rounded-[14px] border px-3 py-3 text-sm font-medium transition-colors ${
+                isSelected
+                  ? "border-cyan-300/40 bg-cyan-50/12 text-cyan-50"
+                  : "border-cyan-100/10 bg-[#030b0e]/80 text-cyan-100/70 hover:bg-cyan-100/10 hover:text-cyan-50"
+              }`}
+            >
+              {option}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function createDefaultWatchlistForm() {
   return {
-    id: "",
-    userId: "",
     name: "",
+    windowMonths: WATCHLIST_WINDOW_MONTH_OPTIONS.length,
+    crimeTypes: [],
+    mode: "",
     minLon: "",
     minLat: "",
     maxLon: "",
     maxLat: "",
-    createdAt: toLocalDateTimeValue(new Date()),
   };
+}
+
+function toCrimeTypePayloadValue(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function parseBboxFromForm(form) {
@@ -660,9 +891,8 @@ function formatCoordinateInput(value) {
   return Number(value).toFixed(6);
 }
 
-function toLocalDateTimeValue(date) {
-  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+function formatCount(value) {
+  return Number(value || 0).toLocaleString("en-GB");
 }
 
 export default WatchlistPage;

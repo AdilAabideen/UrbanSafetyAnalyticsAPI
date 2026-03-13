@@ -2,19 +2,40 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import FilterComponent from "./FilterComponent";
 import TopBar from "./TopBar";
-import { createMonthOptions } from "../constants/crimeFilterOptions";
+import { createMonthOptionsFromRange } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
 import { collisionsService } from "../services";
-import { DEFAULT_CRIME_FILTERS, WEST_YORKSHIRE_BBOX, toSearchOptions } from "../utils/crimeUtils";
+import { WEST_YORKSHIRE_BBOX, toSearchOptions } from "../utils/crimeUtils";
 
-const COLLISIONS_PAGE_LIMIT = 250;
+const COLLISION_PAGE_LIMIT = 250;
+const COLLISION_BREAKDOWN_LIMIT = 1000;
 const BREAKDOWN_LIMIT = 10;
 const FILTER_REQUEST_DEBOUNCE_MS = 450;
+const COLLISION_MONTHS = {
+  min: "2025-01",
+  max: "2025-06",
+};
+const DEFAULT_COLLISION_FILTERS = {
+  monthFrom: COLLISION_MONTHS.min,
+  monthTo: COLLISION_MONTHS.max,
+  collisionSeverity: "",
+  roadType: "",
+  weatherCondition: "",
+  lightCondition: "",
+  roadSurfaceCondition: "",
+  lsoaCode: "",
+};
 const WORKSPACE_TABS = [
   { id: "feed", label: "Incident Feed" },
   { id: "timeseries", label: "Time Series" },
-  { id: "types", label: "Collision Types" },
-  { id: "severity", label: "Severity" },
+  { id: "casualties", label: "Casualty Severity" },
+  { id: "severity", label: "Collision Severity" },
+  { id: "road-type", label: "Road Type" },
+  { id: "weather", label: "Weather" },
+  { id: "light", label: "Light" },
+  { id: "surface", label: "Road Surface" },
+  { id: "speed", label: "Speed Limit" },
+  { id: "hour", label: "By Hour" },
 ];
 
 const DRAWER_MAP_SOURCE_ID = "collision-drawer-source";
@@ -44,19 +65,26 @@ const DRAWER_MAP_STYLE = {
 
 function CollisionsPage({ docsUrl }) {
   const [activeTab, setActiveTab] = useState("feed");
-  const [collisionFilters, setCollisionFilters] = useState({ ...DEFAULT_CRIME_FILTERS });
-  const [appliedCollisionFilters, setAppliedCollisionFilters] = useState({ ...DEFAULT_CRIME_FILTERS });
+  const [collisionFilters, setCollisionFilters] = useState({ ...DEFAULT_COLLISION_FILTERS });
+  const [appliedCollisionFilters, setAppliedCollisionFilters] = useState({
+    ...DEFAULT_COLLISION_FILTERS,
+  });
   const [incidentPageIndex, setIncidentPageIndex] = useState(0);
   const [incidentCursorStack, setIncidentCursorStack] = useState([null]);
   const [collisionRows, setCollisionRows] = useState([]);
+  const [breakdownRows, setBreakdownRows] = useState([]);
+  const [catalogRows, setCatalogRows] = useState([]);
   const [incidentsMeta, setIncidentsMeta] = useState(null);
+  const [breakdownMeta, setBreakdownMeta] = useState(null);
   const [summaryData, setSummaryData] = useState(null);
   const [timeseriesData, setTimeseriesData] = useState({ series: [], total: 0 });
   const [selectedCollision, setSelectedCollision] = useState(null);
   const [loadingIncidents, setLoadingIncidents] = useState(true);
   const [loadingAnalytics, setLoadingAnalytics] = useState(true);
+  const [loadingBreakdowns, setLoadingBreakdowns] = useState(true);
   const [collisionErrorMessage, setCollisionErrorMessage] = useState("");
   const [analyticsErrorMessage, setAnalyticsErrorMessage] = useState("");
+  const [breakdownErrorMessage, setBreakdownErrorMessage] = useState("");
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
@@ -72,49 +100,15 @@ function CollisionsPage({ docsUrl }) {
     };
   }, [collisionFilters]);
 
-  const monthOptions = useMemo(() => createMonthOptions(48), []);
-
-  const collisionTypeOptions = useMemo(
-    () =>
-      toSearchOptions(
-        [
-          ...collisionRows.map((item) => item.collisionType),
-          ...resolveItems(
-            getCollisionProperty(summaryData, "top_collision_types", "top_incident_types", "top_crime_types"),
-          ).map((item) =>
-            getCollisionProperty(item, "collision_type", "incident_type", "crime_type", "label"),
-          ),
-        ],
-        collisionFilters.crimeType,
-      ),
-    [collisionFilters.crimeType, collisionRows, summaryData],
-  );
-
-  const severityOptions = useMemo(
-    () =>
-      toSearchOptions(
-        [
-          ...collisionRows.map((item) => item.severityLabel),
-          ...resolveItems(
-            getCollisionProperty(summaryData, "top_severities", "top_outcomes", "top_outcome_categories"),
-          ).map((item) =>
-            getCollisionProperty(item, "severity", "outcome", "label", "last_outcome_category"),
-          ),
-        ],
-        collisionFilters.outcomeCategory,
-      ),
-    [collisionFilters.outcomeCategory, collisionRows, summaryData],
-  );
-
-  const lsoaOptions = useMemo(
-    () => toSearchOptions(collisionRows.map((item) => item.lsoaName), collisionFilters.lsoaName),
-    [collisionFilters.lsoaName, collisionRows],
+  const monthOptions = useMemo(
+    () => createMonthOptionsFromRange(COLLISION_MONTHS.min, COLLISION_MONTHS.max),
+    [],
   );
 
   const effectiveDateRange = useMemo(
     () => ({
-      from: appliedCollisionFilters.monthFrom || DEFAULT_CRIME_FILTERS.monthFrom,
-      to: appliedCollisionFilters.monthTo || DEFAULT_CRIME_FILTERS.monthTo,
+      from: appliedCollisionFilters.monthFrom || COLLISION_MONTHS.min,
+      to: appliedCollisionFilters.monthTo || COLLISION_MONTHS.max,
     }),
     [appliedCollisionFilters.monthFrom, appliedCollisionFilters.monthTo],
   );
@@ -124,23 +118,44 @@ function CollisionsPage({ docsUrl }) {
       from: effectiveDateRange.from,
       to: effectiveDateRange.to,
       bbox: WEST_YORKSHIRE_BBOX,
-      collisionTypes: appliedCollisionFilters.crimeType
-        ? [appliedCollisionFilters.crimeType]
+      collisionSeverities: appliedCollisionFilters.collisionSeverity
+        ? [appliedCollisionFilters.collisionSeverity]
         : undefined,
-      severityValues: appliedCollisionFilters.outcomeCategory
-        ? [appliedCollisionFilters.outcomeCategory]
+      roadTypes: appliedCollisionFilters.roadType
+        ? [appliedCollisionFilters.roadType]
         : undefined,
-      lsoaNames: appliedCollisionFilters.lsoaName
-        ? [appliedCollisionFilters.lsoaName]
+      weatherConditions: appliedCollisionFilters.weatherCondition
+        ? [appliedCollisionFilters.weatherCondition]
+        : undefined,
+      lightConditions: appliedCollisionFilters.lightCondition
+        ? [appliedCollisionFilters.lightCondition]
+        : undefined,
+      roadSurfaceConditions: appliedCollisionFilters.roadSurfaceCondition
+        ? [appliedCollisionFilters.roadSurfaceCondition]
+        : undefined,
+      lsoaCodes: appliedCollisionFilters.lsoaCode
+        ? [appliedCollisionFilters.lsoaCode]
         : undefined,
     }),
     [
-      appliedCollisionFilters.crimeType,
-      appliedCollisionFilters.lsoaName,
-      appliedCollisionFilters.outcomeCategory,
+      appliedCollisionFilters.collisionSeverity,
+      appliedCollisionFilters.lightCondition,
+      appliedCollisionFilters.lsoaCode,
+      appliedCollisionFilters.roadSurfaceCondition,
+      appliedCollisionFilters.roadType,
+      appliedCollisionFilters.weatherCondition,
       effectiveDateRange.from,
       effectiveDateRange.to,
     ],
+  );
+
+  const catalogQuery = useMemo(
+    () => ({
+      from: effectiveDateRange.from,
+      to: effectiveDateRange.to,
+      bbox: WEST_YORKSHIRE_BBOX,
+    }),
+    [effectiveDateRange.from, effectiveDateRange.to],
   );
 
   useEffect(() => {
@@ -161,7 +176,7 @@ function CollisionsPage({ docsUrl }) {
         const incidentsResult = await collisionsService.getCollisionIncidents(
           {
             ...sharedCollisionQuery,
-            limit: COLLISIONS_PAGE_LIMIT,
+            limit: COLLISION_PAGE_LIMIT,
             cursor: currentCursor,
           },
           {
@@ -269,42 +284,197 @@ function CollisionsPage({ docsUrl }) {
     };
   }, [sharedCollisionQuery]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadBreakdowns = async () => {
+      setLoadingBreakdowns(true);
+      setBreakdownErrorMessage("");
+
+      try {
+        const [breakdownResult, catalogResult] = await Promise.allSettled([
+          collisionsService.getCollisionIncidents(
+            {
+              ...sharedCollisionQuery,
+              limit: COLLISION_BREAKDOWN_LIMIT,
+            },
+            {
+              signal: controller.signal,
+            },
+          ),
+          collisionsService.getCollisionIncidents(
+            {
+              ...catalogQuery,
+              limit: COLLISION_BREAKDOWN_LIMIT,
+            },
+            {
+              signal: controller.signal,
+            },
+          ),
+        ]);
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const breakdownErrors = [];
+
+        if (breakdownResult.status === "fulfilled") {
+          setBreakdownRows(
+            resolveItems(breakdownResult.value?.items).map((item) =>
+              normalizeCollisionRecord(item),
+            ),
+          );
+          setBreakdownMeta(breakdownResult.value?.meta || null);
+        } else {
+          setBreakdownRows([]);
+          setBreakdownMeta(null);
+          breakdownErrors.push(
+            breakdownResult.reason?.message || "Grouped incident breakdowns unavailable",
+          );
+        }
+
+        if (catalogResult.status === "fulfilled") {
+          setCatalogRows(
+            resolveItems(catalogResult.value?.items).map((item) => normalizeCollisionRecord(item)),
+          );
+        } else {
+          setCatalogRows([]);
+          breakdownErrors.push(
+            catalogResult.reason?.message || "Filter catalogue unavailable",
+          );
+        }
+
+        setBreakdownErrorMessage(breakdownErrors.join(" | "));
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingBreakdowns(false);
+        }
+      }
+    };
+
+    void loadBreakdowns();
+
+    return () => {
+      controller.abort();
+    };
+  }, [catalogQuery, sharedCollisionQuery]);
+
+  const collisionSeverityOptions = useMemo(
+    () =>
+      toSearchOptions(
+        catalogRows.map((item) => item.severityLabel),
+        collisionFilters.collisionSeverity,
+      ),
+    [catalogRows, collisionFilters.collisionSeverity],
+  );
+
+  const roadTypeOptions = useMemo(
+    () => toSearchOptions(catalogRows.map((item) => item.roadType), collisionFilters.roadType),
+    [catalogRows, collisionFilters.roadType],
+  );
+
+  const weatherConditionOptions = useMemo(
+    () =>
+      toSearchOptions(
+        catalogRows.map((item) => item.weatherCondition),
+        collisionFilters.weatherCondition,
+      ),
+    [catalogRows, collisionFilters.weatherCondition],
+  );
+
+  const lightConditionOptions = useMemo(
+    () =>
+      toSearchOptions(
+        catalogRows.map((item) => item.lightCondition),
+        collisionFilters.lightCondition,
+      ),
+    [catalogRows, collisionFilters.lightCondition],
+  );
+
+  const roadSurfaceOptions = useMemo(
+    () =>
+      toSearchOptions(
+        catalogRows.map((item) => item.roadSurfaceCondition),
+        collisionFilters.roadSurfaceCondition,
+      ),
+    [catalogRows, collisionFilters.roadSurfaceCondition],
+  );
+
+  const lsoaCodeOptions = useMemo(
+    () => buildLsoaCodeOptions(catalogRows, collisionFilters.lsoaCode),
+    [catalogRows, collisionFilters.lsoaCode],
+  );
+
+  const customFilterFields = useMemo(
+    () => [
+      {
+        key: "collisionSeverity",
+        label: "Collision Severity",
+        options: collisionSeverityOptions,
+        placeholder: "All severities",
+      },
+      {
+        key: "roadType",
+        label: "Road Type",
+        options: roadTypeOptions,
+        placeholder: "All road types",
+      },
+      {
+        key: "weatherCondition",
+        label: "Weather Condition",
+        options: weatherConditionOptions,
+        placeholder: "All weather conditions",
+      },
+      {
+        key: "lightCondition",
+        label: "Light Condition",
+        options: lightConditionOptions,
+        placeholder: "All light conditions",
+      },
+      {
+        key: "roadSurfaceCondition",
+        label: "Road Surface",
+        options: roadSurfaceOptions,
+        placeholder: "All road surfaces",
+      },
+      {
+        key: "lsoaCode",
+        label: "LSOA Code",
+        options: lsoaCodeOptions,
+        placeholder: "Search LSOA code",
+      },
+    ],
+    [
+      collisionSeverityOptions,
+      lightConditionOptions,
+      lsoaCodeOptions,
+      roadSurfaceOptions,
+      roadTypeOptions,
+      weatherConditionOptions,
+    ],
+  );
+
   const summaryCards = useMemo(() => {
-    const totalCollisions = getCollisionNumber(
+    const totalCollisions = getCollisionNumber(summaryData, "total_collisions");
+    const totalCasualties = getCollisionNumber(summaryData, "total_casualties");
+    const avgCasualtiesPerCollision = getCollisionNumber(
       summaryData,
-      "total_collisions",
-      "total_incidents",
-      "total_crimes",
+      "avg_casualties_per_collision",
     );
-    const uniqueLsoas = getCollisionNumber(summaryData, "unique_lsoas");
-    const uniqueCollisionTypes = getCollisionNumber(
+    const fatalCasualties = getCollisionNumber(summaryData, "fatal_casualties");
+    const topSeverity = resolveSummaryLeader(
       summaryData,
-      "unique_collision_types",
-      "unique_incident_types",
-      "unique_crime_types",
+      ["top_collision_severity", "top_severity"],
+      ["collision_severity", "severity", "label"],
     );
-    const collisionsWithSeverity = getCollisionNumber(
+    const topRoadType = resolveSummaryLeader(
       summaryData,
-      "collisions_with_severity",
-      "collisions_with_outcomes",
-      "incidents_with_outcomes",
-      "crimes_with_outcomes",
+      ["top_road_type"],
+      ["road_type", "roadType", "label"],
     );
-    const topCollisionType =
-      getCollisionProperty(summaryData, "top_collision_type", "top_incident_type", "top_crime_type")
-      || null;
-    const severityCoverage =
-      totalCollisions > 0 ? Math.round((collisionsWithSeverity / totalCollisions) * 100) : 0;
 
     return [
-      {
-        label: "Returned Collisions",
-        value: formatCount(collisionRows.length),
-        meta: incidentsMeta?.nextCursor
-          ? `Page ${incidentPageIndex + 1} with more collisions available`
-          : `Page ${incidentPageIndex + 1} collision feed`,
-        accent: "text-[#39ef7d]",
-      },
       {
         label: "Total Collisions",
         value: formatCount(totalCollisions),
@@ -312,70 +482,111 @@ function CollisionsPage({ docsUrl }) {
         accent: "text-cyan-50",
       },
       {
-        label: "Unique LSOAs",
-        value: formatCount(uniqueLsoas),
-        meta: "Spatial coverage in filter set",
+        label: "Total Casualties",
+        value: formatCount(totalCasualties),
+        meta: "Direct from summary analytics",
+        accent: "text-[#39ef7d]",
+      },
+      {
+        label: "Avg Casualties / Collision",
+        value: formatDecimal(avgCasualtiesPerCollision),
+        meta: "Current filtered selection",
         accent: "text-[#60a5fa]",
       },
       {
-        label: "Collision Categories",
-        value: formatCount(uniqueCollisionTypes),
-        meta: "Distinct types returned",
+        label: "Fatal Casualties",
+        value: formatCount(fatalCasualties),
+        meta: "Most severe casualty total",
+        accent: "text-[#ff6b6b]",
+      },
+      {
+        label: "Top Severity",
+        value: topSeverity?.label || "No data",
+        meta: topSeverity ? `${formatCount(topSeverity.count)} collisions` : "No collisions",
         accent: "text-[#f59e0b]",
       },
       {
-        label: "Top Collision Type",
-        value:
-          getCollisionProperty(topCollisionType, "collision_type", "incident_type", "crime_type")
-          || "No data",
-        meta: topCollisionType
-          ? `${formatCount(getCollisionNumber(topCollisionType, "count"))} records`
-          : "No collisions",
+        label: "Top Road Type",
+        value: topRoadType?.label || "No data",
+        meta: topRoadType ? `${formatCount(topRoadType.count)} collisions` : "No collisions",
         accent: "text-[#ffb072]",
       },
-      {
-        label: "Records With Severity",
-        value: formatCount(collisionsWithSeverity),
-        meta: `${severityCoverage}% with severity data`,
-        accent: "text-[#22c55e]",
-      },
     ];
-  }, [collisionRows.length, effectiveDateRange.from, effectiveDateRange.to, incidentPageIndex, incidentsMeta?.nextCursor, summaryData]);
+  }, [effectiveDateRange.from, effectiveDateRange.to, summaryData]);
 
-  const typeBreakdownItems = useMemo(
+  const casualtySeverityItems = useMemo(
     () =>
-      normalizeBreakdownItems(
-        getCollisionProperty(summaryData, "top_collision_types", "top_incident_types", "top_crime_types"),
-        "collision_type",
-        "incident_type",
-        "crime_type",
-      ),
+      summaryData
+        ? [
+            {
+              label: "Fatal",
+              count: getCollisionNumber(summaryData, "fatal_casualties"),
+            },
+            {
+              label: "Serious",
+              count: getCollisionNumber(summaryData, "serious_casualties"),
+            },
+            {
+              label: "Slight",
+              count: getCollisionNumber(summaryData, "slight_casualties"),
+            },
+          ]
+        : [],
     [summaryData],
   );
 
   const severityBreakdownItems = useMemo(
-    () =>
-      normalizeBreakdownItems(
-        getCollisionProperty(summaryData, "top_severities", "top_outcomes", "top_outcome_categories"),
-        "severity",
-        "outcome",
-        "last_outcome_category",
-      ),
-    [summaryData],
+    () => buildCollisionBreakdown(breakdownRows, (item) => item.severityLabel),
+    [breakdownRows],
   );
 
+  const roadTypeBreakdownItems = useMemo(
+    () => buildCollisionBreakdown(breakdownRows, (item) => item.roadType),
+    [breakdownRows],
+  );
+
+  const weatherBreakdownItems = useMemo(
+    () => buildCollisionBreakdown(breakdownRows, (item) => item.weatherCondition),
+    [breakdownRows],
+  );
+
+  const lightBreakdownItems = useMemo(
+    () => buildCollisionBreakdown(breakdownRows, (item) => item.lightCondition),
+    [breakdownRows],
+  );
+
+  const roadSurfaceBreakdownItems = useMemo(
+    () => buildCollisionBreakdown(breakdownRows, (item) => item.roadSurfaceCondition),
+    [breakdownRows],
+  );
+
+  const speedLimitBreakdownItems = useMemo(
+    () =>
+      buildCollisionBreakdown(
+        breakdownRows,
+        (item) => item.speedLimit,
+        sortSpeedBreakdownItems,
+      ),
+    [breakdownRows],
+  );
+
+  const hourlyBreakdownItems = useMemo(
+    () => buildHourlyBreakdown(breakdownRows),
+    [breakdownRows],
+  );
+
+  const filteredCollisionCount = getCollisionNumber(summaryData, "total_collisions") || breakdownRows.length;
   const isApplyingFilters = useMemo(
     () => !areCollisionFiltersEqual(collisionFilters, appliedCollisionFilters),
     [appliedCollisionFilters, collisionFilters],
   );
-
   const collisionStatusLabel = isApplyingFilters
     ? "Applying filters..."
-    : loadingIncidents
+    : loadingIncidents || loadingAnalytics || loadingBreakdowns
       ? "Loading collisions..."
-      : collisionErrorMessage
-        ? "Collision feed unavailable"
-        : `Showing ${formatCount(collisionRows.length)} collisions`;
+      : collisionErrorMessage || analyticsErrorMessage || breakdownErrorMessage
+        ? "Collision workspace unavailable"
+        : `Showing ${formatCount(filteredCollisionCount)} collisions`;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#071316]">
@@ -391,17 +602,13 @@ function CollisionsPage({ docsUrl }) {
             <FilterComponent
               filters={collisionFilters}
               monthOptions={monthOptions}
-              crimeTypeOptions={collisionTypeOptions}
-              outcomeOptions={severityOptions}
-              lsoaOptions={lsoaOptions}
-              visibleCrimeCount={collisionRows.length}
+              customFields={customFilterFields}
+              visibleCrimeCount={filteredCollisionCount}
               mode={isApplyingFilters ? "pending" : loadingIncidents ? "loading" : "collisions"}
               layout="panel"
               title="Collision Filters"
-              visibleLabel="Visible collisions"
+              visibleLabel="Filtered collisions"
               categorySectionTitle="Shared Filters"
-              crimeTypeLabel="Collision Type"
-              outcomeLabel="Severity / Outcome"
               onChange={(key, value) => {
                 setCollisionFilters((current) => ({
                   ...current,
@@ -409,7 +616,7 @@ function CollisionsPage({ docsUrl }) {
                 }));
               }}
               onClear={() => {
-                setCollisionFilters({ ...DEFAULT_CRIME_FILTERS });
+                setCollisionFilters({ ...DEFAULT_COLLISION_FILTERS });
               }}
             />
           </div>
@@ -444,6 +651,12 @@ function CollisionsPage({ docsUrl }) {
               </div>
             ) : null}
 
+            {breakdownErrorMessage ? (
+              <div className="rounded-[20px] border border-amber-300/25 bg-amber-300/5 px-4 py-3 text-sm text-amber-100/85">
+                {breakdownErrorMessage}
+              </div>
+            ) : null}
+
             <div className="flex min-h-0 flex-1 flex-col rounded-[24px] border border-white/5 bg-[#030b0e]/90 shadow-2xl">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-4 py-4">
                 <div>
@@ -457,7 +670,9 @@ function CollisionsPage({ docsUrl }) {
                 </div>
 
                 <div className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-xs uppercase tracking-[0.25em] text-cyan-100/55">
-                  {isApplyingFilters ? "Debounced filters" : "Incidents + summary + timeseries"}
+                  {isApplyingFilters
+                    ? "Debounced filters"
+                    : "Summary + timeseries + grouped incidents"}
                 </div>
               </div>
 
@@ -514,27 +729,95 @@ function CollisionsPage({ docsUrl }) {
                   />
                 ) : null}
 
-                {activeTab === "types" ? (
+                {activeTab === "casualties" ? (
                   <CollisionBreakdownTab
-                    title="Collision type breakdown"
-                    subtitle="Ranked distribution from the summary endpoint."
-                    items={typeBreakdownItems}
+                    title="Casualty severity totals"
+                    subtitle="Fatal, serious, and slight casualty totals from `/collisions/analytics/summary`."
+                    items={casualtySeverityItems}
                     isLoading={loadingAnalytics}
-                    emptyMessage="No collision type analytics are available for the current selection."
+                    emptyMessage="No casualty severity totals are available for the current selection."
+                    limit={casualtySeverityItems.length}
                   />
                 ) : null}
 
                 {activeTab === "severity" ? (
                   <CollisionBreakdownTab
-                    title="Severity breakdown"
-                    subtitle="Ranked severity distribution from the summary endpoint."
+                    title="Collision severity breakdown"
+                    subtitle="Grouped from `/collisions/incidents` using collision severity."
                     items={severityBreakdownItems}
-                    isLoading={loadingAnalytics}
-                    emptyMessage="No severity analytics are available for the current selection."
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No collision severity breakdown is available for the current selection."
+                  />
+                ) : null}
+
+                {activeTab === "road-type" ? (
+                  <CollisionBreakdownTab
+                    title="Road type breakdown"
+                    subtitle="Grouped from `/collisions/incidents` using road type."
+                    items={roadTypeBreakdownItems}
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No road type breakdown is available for the current selection."
+                  />
+                ) : null}
+
+                {activeTab === "weather" ? (
+                  <CollisionBreakdownTab
+                    title="Weather condition breakdown"
+                    subtitle="Grouped from `/collisions/incidents` using weather conditions."
+                    items={weatherBreakdownItems}
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No weather breakdown is available for the current selection."
+                  />
+                ) : null}
+
+                {activeTab === "light" ? (
+                  <CollisionBreakdownTab
+                    title="Light condition breakdown"
+                    subtitle="Grouped from `/collisions/incidents` using light conditions."
+                    items={lightBreakdownItems}
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No light condition breakdown is available for the current selection."
+                  />
+                ) : null}
+
+                {activeTab === "surface" ? (
+                  <CollisionBreakdownTab
+                    title="Road surface breakdown"
+                    subtitle="Grouped from `/collisions/incidents` using road surface conditions."
+                    items={roadSurfaceBreakdownItems}
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No road surface breakdown is available for the current selection."
+                  />
+                ) : null}
+
+                {activeTab === "speed" ? (
+                  <CollisionBreakdownTab
+                    title="Speed limit breakdown"
+                    subtitle="Grouped from `/collisions/incidents` using speed limit values."
+                    items={speedLimitBreakdownItems}
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No speed limit breakdown is available for the current selection."
+                  />
+                ) : null}
+
+                {activeTab === "hour" ? (
+                  <CollisionBreakdownTab
+                    title="Collisions by hour of day"
+                    subtitle="Grouped from `/collisions/incidents` using the reported collision time."
+                    items={hourlyBreakdownItems}
+                    isLoading={loadingBreakdowns}
+                    emptyMessage="No hour-of-day breakdown is available for the current selection."
+                    limit={hourlyBreakdownItems.length}
                   />
                 ) : null}
               </div>
             </div>
+
+            {breakdownMeta?.nextCursor ? (
+              <div className="rounded-[20px] border border-cyan-200/10 bg-[#030b0e]/70 px-4 py-3 text-xs text-cyan-100/60">
+                Breakdown charts are built from the first {formatCount(COLLISION_BREAKDOWN_LIMIT)} incidents returned by `/collisions/incidents`.
+              </div>
+            ) : null}
           </section>
         </div>
       </div>
@@ -552,7 +835,7 @@ function CollisionsPage({ docsUrl }) {
         <div className="flex shrink-0 items-center gap-2 text-xs text-[#d2faf0]">
           <span>{collisionStatusLabel}</span>
           <strong className="text-[#39ef7d]">Collisions API</strong>
-          <span className="text-cyan-100/60">Drawer + charts</span>
+          <span className="text-cyan-100/60">Feed + cards + grouped charts</span>
         </div>
       </div>
 
@@ -619,7 +902,7 @@ function CollisionFeedTab({
         <div className="divide-y divide-white/5">
           {collisionRows.map((collision) => (
             <CollisionFeedRow
-              key={`${collision.recordId ?? collision.collisionId ?? collision.location}-${collision.month}`}
+              key={`${collision.recordId ?? collision.collisionId ?? collision.location}-${collision.date ?? collision.month}`}
               collision={collision}
               isSelected={collision.recordId === selectedCollision?.recordId}
               onSelect={() => {
@@ -659,7 +942,7 @@ function CollisionTimeSeriesTab({ series, total, isLoading }) {
         <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Time Series</p>
         <h3 className="mt-2 text-lg font-semibold text-cyan-50">Monthly collision curve</h3>
         <p className="mt-1 text-sm text-cyan-100/60">
-          Monthly counts returned by `/collisions/analytics/timeseries`.
+          Monthly collision counts returned by `/collisions/analytics/timeseries`.
         </p>
         <div className="mt-6">
           <TimeSeriesChart series={series} />
@@ -671,19 +954,26 @@ function CollisionTimeSeriesTab({ series, total, isLoading }) {
         <MiniMetricCard
           label="Peak month"
           value={peakMonth ? formatMonthLabel(peakMonth.month) : "No data"}
-          meta={peakMonth ? `${formatCount(peakMonth.count)} records` : ""}
+          meta={peakMonth ? `${formatCount(peakMonth.count)} collisions` : ""}
         />
         <MiniMetricCard
           label="Quietest month"
           value={quietestMonth ? formatMonthLabel(quietestMonth.month) : "No data"}
-          meta={quietestMonth ? `${formatCount(quietestMonth.count)} records` : ""}
+          meta={quietestMonth ? `${formatCount(quietestMonth.count)} collisions` : ""}
         />
       </section>
     </div>
   );
 }
 
-function CollisionBreakdownTab({ title, subtitle, items, isLoading, emptyMessage }) {
+function CollisionBreakdownTab({
+  title,
+  subtitle,
+  items,
+  isLoading,
+  emptyMessage,
+  limit = BREAKDOWN_LIMIT,
+}) {
   if (isLoading) {
     return <EmptyAnalyticsState message={`Loading ${title.toLowerCase()} analytics.`} />;
   }
@@ -692,7 +982,12 @@ function CollisionBreakdownTab({ title, subtitle, items, isLoading, emptyMessage
     return <EmptyAnalyticsState message={emptyMessage} />;
   }
 
-  const topItems = items.slice(0, BREAKDOWN_LIMIT);
+  const visibleItems = items.slice(0, limit);
+  const topCategory =
+    [...items].sort(
+      (left, right) => right.count - left.count || left.label.localeCompare(right.label),
+    )[0] || null;
+  const totalCount = items.reduce((sum, item) => sum + item.count, 0);
 
   return (
     <div className="grid h-full gap-4 overflow-y-auto p-4 xl:grid-cols-[minmax(0,1.2fr),320px]">
@@ -702,8 +997,12 @@ function CollisionBreakdownTab({ title, subtitle, items, isLoading, emptyMessage
         <p className="mt-1 text-sm text-cyan-100/60">{subtitle}</p>
 
         <div className="mt-6 space-y-4">
-          {topItems.map((item) => (
-            <BarRow key={item.label} item={item} maxValue={topItems[0]?.count || 1} />
+          {visibleItems.map((item) => (
+            <BarRow
+              key={item.label}
+              item={item}
+              maxValue={topCategory?.count || 1}
+            />
           ))}
         </div>
       </section>
@@ -711,13 +1010,13 @@ function CollisionBreakdownTab({ title, subtitle, items, isLoading, emptyMessage
       <section className="space-y-3">
         <MiniMetricCard
           label="Top category"
-          value={topItems[0]?.label || "No data"}
-          meta={topItems[0] ? `${formatCount(topItems[0].count)} records` : ""}
+          value={topCategory?.label || "No data"}
+          meta={topCategory ? `${formatCount(topCategory.count)} collisions` : ""}
         />
         <MiniMetricCard
           label="Visible categories"
-          value={formatCount(items.length)}
-          meta="Direct ranked result"
+          value={formatCount(visibleItems.length)}
+          meta={`${formatCount(totalCount)} total collisions plotted`}
         />
       </section>
     </div>
@@ -729,43 +1028,47 @@ function CollisionFeedRow({ collision, isSelected, onSelect }) {
     <button
       type="button"
       onClick={onSelect}
-      className={`grid w-full gap-4 px-4 py-4 text-left transition-colors lg:grid-cols-[minmax(0,1.25fr),minmax(0,1.05fr),minmax(0,0.85fr),minmax(0,0.95fr)] ${
+      className={`grid w-full gap-4 px-4 py-4 text-left transition-colors lg:grid-cols-[minmax(0,1.05fr),minmax(0,1fr),minmax(0,1.1fr),minmax(0,0.85fr)] ${
         isSelected ? "bg-cyan-100/10" : "bg-transparent hover:bg-white/[0.03]"
       }`}
     >
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Collision type</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Severity</p>
         <p className="mt-2 truncate text-sm font-semibold text-cyan-50">
-          {collision.collisionType || "Unknown"}
+          {collision.severityLabel || "Unknown"}
         </p>
         <p className="mt-1 text-xs text-cyan-100/55">
-          Record {collision.recordId || "—"}
-          {collision.collisionId ? ` / Collision ${collision.collisionId}` : ""}
+          Record {collision.recordId || "—"} {collision.collisionId ? `· ${collision.collisionId}` : ""}
         </p>
       </div>
 
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Location</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Road + speed</p>
         <p className="mt-2 truncate text-sm text-cyan-50">
-          {collision.location || "Location unavailable"}
+          {collision.roadType || "Road type unavailable"}
         </p>
         <p className="mt-1 truncate text-xs text-cyan-100/55">
-          {collision.lsoaName || "No LSOA recorded"}
+          {collision.speedLimit || "Speed not recorded"}
         </p>
       </div>
 
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Reported</p>
-        <p className="mt-2 text-sm text-cyan-50">{formatMonthLabel(collision.month)}</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Conditions</p>
+        <p className="mt-2 truncate text-sm text-cyan-50">
+          {collision.weatherCondition || "Weather unavailable"}
+        </p>
         <p className="mt-1 truncate text-xs text-cyan-100/55">
-          {collision.reportedBy || "Unknown source"}
+          {collision.lightCondition || "Light unavailable"} · {collision.roadSurfaceCondition || "Surface unavailable"}
         </p>
       </div>
 
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Severity</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Impact</p>
         <p className="mt-2 text-sm text-cyan-50">
-          {collision.severityLabel || "Pending or not recorded"}
+          {formatCount(collision.casualties)} casualties · {formatCount(collision.vehicles)} vehicles
+        </p>
+        <p className="mt-1 truncate text-xs text-cyan-100/55">
+          {formatCollisionTimestamp(collision)} · {collision.lsoaCode || collision.lsoaName || "No LSOA"}
         </p>
       </div>
     </button>
@@ -826,32 +1129,35 @@ function CollisionInfoPanel({ collision, onClose }) {
 
       <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
         <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
-          Type of Collision
+          Collision Snapshot
         </h3>
-        <div className="flex items-center justify-between text-sm text-cyan-50">
-          <span className="text-lg font-semibold">{collision.collisionType ?? "—"}</span>
-        </div>
+        <CollisionInfoField label="Severity" value={collision.severityLabel} />
+        <CollisionInfoField label="Timestamp" value={formatCollisionTimestamp(collision)} />
+        <CollisionInfoField label="Record ID" value={collision.recordId} subtle />
+        <CollisionInfoField label="Collision ID" value={collision.collisionId} subtle />
       </section>
 
       <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
         <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
-          Collision Report
+          Road Conditions
         </h3>
-        <CollisionInfoField label="Record ID" value={collision.recordId} subtle />
-        <CollisionInfoField label="Collision ID" value={collision.collisionId} subtle />
-        <CollisionInfoField label="Month" value={collision.month} />
-        <CollisionInfoField label="Reported By" value={collision.reportedBy} />
-        <CollisionInfoField label="Falls Within" value={collision.fallsWithin} />
+        <CollisionInfoField label="Road Type" value={collision.roadType} />
+        <CollisionInfoField label="Speed Limit" value={collision.speedLimit} />
+        <CollisionInfoField label="Weather" value={collision.weatherCondition} />
+        <CollisionInfoField label="Light" value={collision.lightCondition} />
+        <CollisionInfoField label="Road Surface" value={collision.roadSurfaceCondition} />
+      </section>
+
+      <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
+        <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
+          Impact + Location
+        </h3>
+        <CollisionInfoField label="Casualties" value={collision.casualties} />
+        <CollisionInfoField label="Vehicles" value={collision.vehicles} />
         <CollisionInfoField label="Location" value={collision.location} />
         <CollisionInfoField label="LSOA Code" value={collision.lsoaCode} />
         <CollisionInfoField label="LSOA Name" value={collision.lsoaName} />
-        <CollisionInfoField label="Severity" value={collision.severityLabel} />
-      </section>
-
-      <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
-        <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
-          Further Information
-        </h3>
+        <CollisionInfoField label="Falls Within" value={collision.fallsWithin} />
         <CollisionInfoField label="Context" value={collision.context} />
       </section>
     </div>
@@ -961,7 +1267,7 @@ function CollisionLocationMap({ collision }) {
           <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
             Collision Location
           </p>
-          <p className="mt-1 text-sm text-cyan-100/70">Rendered from row GeoJSON / coordinates</p>
+          <p className="mt-1 text-sm text-cyan-100/70">Rendered from incident geometry / coordinates</p>
         </div>
         {collisionFeature ? (
           <span className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-cyan-100/60">
@@ -999,7 +1305,7 @@ function toCollisionGeoJsonFeature(collision) {
       properties: {
         id: collision.recordId,
         collision_id: collision.collisionId,
-        collision_type: collision.collisionType,
+        collision_severity: collision.severityLabel,
       },
     };
   }
@@ -1014,7 +1320,7 @@ function toCollisionGeoJsonFeature(collision) {
       properties: {
         id: collision.recordId,
         collision_id: collision.collisionId,
-        collision_type: collision.collisionType,
+        collision_severity: collision.severityLabel,
       },
     };
   }
@@ -1149,11 +1455,11 @@ function TimeSeriesChart({ series }) {
           }}
         >
           <p className="font-semibold text-cyan-50">{formatMonthLabel(hovered.month)}</p>
-          <p className="mt-0.5 text-cyan-100/60">{formatCount(hovered.count)} records</p>
+          <p className="mt-0.5 text-cyan-100/60">{formatCount(hovered.count)} collisions</p>
         </div>
       )}
 
-      <div className="mt-3 grid gap-2 text-xs text-cyan-100/60 md:grid-cols-4">
+      <div className="mt-3 grid gap-2 text-xs text-cyan-100/60 md:grid-cols-3 xl:grid-cols-6">
         {series.map((item) => (
           <div
             key={item.month}
@@ -1187,7 +1493,7 @@ function BarRow({ item, maxValue }) {
   );
 }
 
-function MiniMetricCard({ label, value, meta = "Current filtered feed" }) {
+function MiniMetricCard({ label, value, meta = "Current filtered view" }) {
   return (
     <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
       <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">{label}</p>
@@ -1212,9 +1518,12 @@ function areCollisionFiltersEqual(left, right) {
   return (
     left?.monthFrom === right?.monthFrom &&
     left?.monthTo === right?.monthTo &&
-    left?.crimeType === right?.crimeType &&
-    left?.outcomeCategory === right?.outcomeCategory &&
-    left?.lsoaName === right?.lsoaName
+    left?.collisionSeverity === right?.collisionSeverity &&
+    left?.roadType === right?.roadType &&
+    left?.weatherCondition === right?.weatherCondition &&
+    left?.lightCondition === right?.lightCondition &&
+    left?.roadSurfaceCondition === right?.roadSurfaceCondition &&
+    left?.lsoaCode === right?.lsoaCode
   );
 }
 
@@ -1251,6 +1560,13 @@ function normalizeCollisionRecord(feature) {
       : Number.isFinite(Number(properties?.lon)) && Number.isFinite(Number(properties?.lat))
         ? [Number(properties.lon), Number(properties.lat)]
         : null;
+  const dateValue = getCollisionProperty(
+    properties,
+    "date",
+    "collision_date",
+    "accident_date",
+    "reported_date",
+  );
 
   return {
     ...properties,
@@ -1262,63 +1578,212 @@ function normalizeCollisionRecord(feature) {
       properties,
       "collisionId",
       "collision_id",
-      "incident_id",
-      "reference",
       "collision_reference",
+      "reference",
+      "accident_index",
     ),
-    month: getCollisionProperty(properties, "month", "Month"),
-    collisionType: getCollisionProperty(
+    month:
+      getCollisionProperty(properties, "month", "Month")
+      || (typeof dateValue === "string" ? dateValue.slice(0, 7) : null),
+    date: dateValue,
+    time: getCollisionProperty(
       properties,
-      "collisionType",
-      "collision_type",
-      "incident_type",
-      "accident_type",
-      "crime_type",
+      "time",
+      "collision_time",
+      "accident_time",
+      "reported_time",
     ),
     severityLabel: getCollisionProperty(
       properties,
+      "collision_severity",
+      "collisionSeverity",
       "severity",
       "severity_label",
       "accident_severity",
-      "casualty_severity",
-      "outcomeCategory",
-      "last_outcome_category",
     ),
-    reportedBy: getCollisionProperty(
+    roadType: getCollisionProperty(properties, "road_type", "roadType"),
+    weatherCondition: getCollisionProperty(
       properties,
-      "reportedBy",
-      "reported_by",
-      "police_force",
-      "source",
+      "weather_conditions",
+      "weatherCondition",
+      "weather_condition",
     ),
+    lightCondition: getCollisionProperty(
+      properties,
+      "light_conditions",
+      "lightCondition",
+      "light_condition",
+    ),
+    roadSurfaceCondition: getCollisionProperty(
+      properties,
+      "road_surface_conditions",
+      "roadSurfaceCondition",
+      "road_surface_condition",
+    ),
+    speedLimit: getCollisionProperty(properties, "speed_limit", "speedLimit"),
+    casualties: getCollisionNumber(
+      properties,
+      "number_of_casualties",
+      "casualties",
+      "casualty_count",
+    ),
+    vehicles: getCollisionNumber(
+      properties,
+      "number_of_vehicles",
+      "vehicles",
+      "vehicle_count",
+    ),
+    reportedBy: getCollisionProperty(properties, "reportedBy", "reported_by", "police_force", "source"),
     fallsWithin: getCollisionProperty(
       properties,
       "fallsWithin",
       "falls_within",
-      "area_name",
-      "borough",
+      "local_authority_name",
+      "local_authority",
     ),
-    location: getCollisionProperty(
-      properties,
-      "location",
-      "location_text",
-      "road_name",
-      "street_name",
-      "display_location",
-    ) || (coordinates ? `${coordinates[1]}, ${coordinates[0]}` : null),
+    location:
+      getCollisionProperty(
+        properties,
+        "location",
+        "location_text",
+        "road_name",
+        "street_name",
+        "display_location",
+      ) || (coordinates ? `${coordinates[1]}, ${coordinates[0]}` : null),
     lsoaCode: getCollisionProperty(properties, "lsoaCode", "lsoa_code"),
     lsoaName: getCollisionProperty(properties, "lsoaName", "lsoa_name"),
     context: getCollisionProperty(properties, "context", "Context"),
   };
 }
 
-function normalizeBreakdownItems(items, ...labelKeys) {
-  return resolveItems(items)
-    .map((item) => ({
-      label: getCollisionProperty(item, ...labelKeys) || "Unknown",
-      count: getCollisionNumber(item, "count"),
-    }))
-    .filter((item) => item.label);
+function resolveSummaryLeader(source, fieldKeys, labelKeys) {
+  const leader = getCollisionProperty(source, ...fieldKeys);
+
+  if (!leader) {
+    return null;
+  }
+
+  if (typeof leader === "string") {
+    return { label: leader, count: 0 };
+  }
+
+  return {
+    label: getCollisionProperty(leader, ...labelKeys) || "Unknown",
+    count: getCollisionNumber(leader, "count"),
+  };
+}
+
+function buildCollisionBreakdown(rows, getLabel, customSort) {
+  const counts = new Map();
+
+  rows.forEach((row) => {
+    const label = getLabel(row);
+
+    if (!label) {
+      return;
+    }
+
+    counts.set(label, (counts.get(label) || 0) + 1);
+  });
+
+  const items = [...counts.entries()].map(([label, count]) => ({ label, count }));
+
+  if (customSort) {
+    return customSort(items);
+  }
+
+  return items.sort(
+    (left, right) => right.count - left.count || left.label.localeCompare(right.label),
+  );
+}
+
+function buildHourlyBreakdown(rows) {
+  if (!rows.length) {
+    return [];
+  }
+
+  const hourlyCounts = new Map();
+
+  for (let hour = 0; hour < 24; hour += 1) {
+    hourlyCounts.set(String(hour).padStart(2, "0"), 0);
+  }
+
+  rows.forEach((row) => {
+    const hour = parseCollisionHour(row.time);
+
+    if (hour === null) {
+      return;
+    }
+
+    const hourKey = String(hour).padStart(2, "0");
+    hourlyCounts.set(hourKey, (hourlyCounts.get(hourKey) || 0) + 1);
+  });
+
+  return [...hourlyCounts.entries()].map(([hour, count]) => ({
+    label: `${hour}:00`,
+    count,
+  }));
+}
+
+function parseCollisionHour(timeValue) {
+  if (!timeValue || typeof timeValue !== "string") {
+    return null;
+  }
+
+  const matched = timeValue.match(/^(\d{1,2})/);
+
+  if (!matched) {
+    return null;
+  }
+
+  const hour = Number(matched[1]);
+
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
+function sortSpeedBreakdownItems(items) {
+  return [...items].sort((left, right) => {
+    const leftSpeed = parseLeadingNumber(left.label);
+    const rightSpeed = parseLeadingNumber(right.label);
+
+    if (leftSpeed !== null && rightSpeed !== null && leftSpeed !== rightSpeed) {
+      return leftSpeed - rightSpeed;
+    }
+
+    return right.count - left.count || left.label.localeCompare(right.label);
+  });
+}
+
+function parseLeadingNumber(value) {
+  const matched = typeof value === "string" ? value.match(/^(\d+)/) : null;
+  return matched ? Number(matched[1]) : null;
+}
+
+function buildLsoaCodeOptions(rows, selectedValue = "") {
+  const labels = new Map();
+
+  rows.forEach((row) => {
+    if (!row.lsoaCode) {
+      return;
+    }
+
+    if (!labels.has(row.lsoaCode)) {
+      labels.set(
+        row.lsoaCode,
+        row.lsoaName ? `${row.lsoaCode} · ${row.lsoaName}` : row.lsoaCode,
+      );
+    }
+  });
+
+  const options = [...labels.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([value, label]) => ({ value, label }));
+
+  if (selectedValue && !options.some((option) => option.value === selectedValue)) {
+    options.unshift({ value: selectedValue, label: selectedValue });
+  }
+
+  return options;
 }
 
 function formatMonthLabel(month) {
@@ -1338,8 +1803,39 @@ function formatMonthLabel(month) {
   }).format(new Date(Date.UTC(year, value - 1, 1)));
 }
 
+function formatDateLabel(dateValue) {
+  if (!dateValue) {
+    return "Unknown date";
+  }
+
+  const normalizedDate = dateValue.length === 10 ? `${dateValue}T00:00:00Z` : dateValue;
+  const parsedDate = new Date(normalizedDate);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return dateValue;
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(parsedDate);
+}
+
+function formatCollisionTimestamp(collision) {
+  const dateLabel = collision.date ? formatDateLabel(collision.date) : formatMonthLabel(collision.month);
+  return collision.time ? `${dateLabel} · ${collision.time}` : dateLabel;
+}
+
 function formatCount(value) {
   return new Intl.NumberFormat("en-GB").format(Number(value) || 0);
+}
+
+function formatDecimal(value) {
+  return new Intl.NumberFormat("en-GB", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
 }
 
 export default CollisionsPage;

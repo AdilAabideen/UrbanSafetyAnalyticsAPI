@@ -6,6 +6,7 @@ function FilterComponent({
   crimeTypeOptions,
   outcomeOptions,
   lsoaOptions,
+  customFields,
   visibleCrimeCount,
   mode,
   onChange,
@@ -25,6 +26,33 @@ function FilterComponent({
   const containerClassName = isPanelLayout
     ? "flex h-full min-h-0 w-full flex-col gap-3 overflow-y-auto rounded-[24px] border border-cyan-200/10 bg-[#030b0e]/90 p-4 shadow-2xl"
     : "pointer-events-auto flex w-[340px] max-h-[35%] max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto rounded-xl border border-cyan-200/10 bg-[#071316]/85 p-4 shadow-2xl backdrop-blur-md";
+  const categoryFields = customFields?.length
+    ? customFields
+    : [
+        {
+          key: "crimeType",
+          label: crimeTypeLabel,
+          value: filters.crimeType,
+          options: crimeTypeOptions,
+          placeholder: "All crime types",
+        },
+        {
+          key: "outcomeCategory",
+          label: outcomeLabel,
+          value: filters.outcomeCategory,
+          options: outcomeOptions,
+          placeholder: "All outcomes",
+        },
+        {
+          key: "lsoaName",
+          label: lsoaLabel,
+          value: filters.lsoaName,
+          options: lsoaOptions,
+          placeholder: lsoaPlaceholder,
+          emptyMessage: lsoaEmptyMessage,
+          allowCustomValue: true,
+        },
+      ];
 
   return (
     <div className={containerClassName}>
@@ -63,29 +91,18 @@ function FilterComponent({
         <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
           {categorySectionTitle}
         </h3>
-        <SearchSelectField
-          label={crimeTypeLabel}
-          value={filters.crimeType}
-          options={crimeTypeOptions}
-          placeholder="All crime types"
-          onChange={(value) => onChange("crimeType", value)}
-        />
-        <SearchSelectField
-          label={outcomeLabel}
-          value={filters.outcomeCategory}
-          options={outcomeOptions}
-          placeholder="All outcomes"
-          onChange={(value) => onChange("outcomeCategory", value)}
-        />
-        <SearchSelectField
-          label={lsoaLabel}
-          value={filters.lsoaName}
-          options={lsoaOptions}
-          placeholder={lsoaPlaceholder}
-          emptyMessage={lsoaEmptyMessage}
-          allowCustomValue
-          onChange={(value) => onChange("lsoaName", value)}
-        />
+        {categoryFields.map((field) => (
+          <SearchSelectField
+            key={field.key}
+            label={field.label}
+            value={field.value ?? filters[field.key] ?? ""}
+            options={field.options || []}
+            placeholder={field.placeholder || "Search"}
+            emptyMessage={field.emptyMessage}
+            allowCustomValue={Boolean(field.allowCustomValue)}
+            onChange={(value) => onChange(field.key, value)}
+          />
+        ))}
       </section>
     </div>
   );

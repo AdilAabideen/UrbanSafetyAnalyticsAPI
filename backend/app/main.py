@@ -5,6 +5,7 @@ from .api.auth import router as auth_router
 from .api.collisions import router as collisions_router
 from .api.crimes import router as crimes_router
 from .api.lsoa import router as lsoa_router
+from .api.report_events import router as report_events_router
 from .api.roads import router as roads_router
 from .api.tiles import router as tiles_router
 from .api.watchlist import router as watchlist_router
@@ -19,6 +20,7 @@ app.include_router(tiles_router)
 app.include_router(analytics_router)
 app.include_router(auth_router)
 app.include_router(lsoa_router)
+app.include_router(report_events_router)
 app.include_router(watchlist_router)
 
 app.add_middleware(

@@ -35,7 +35,7 @@ This file summarizes the current live backend endpoint surface.
 
 ## Global Discoverability
 
-- `GET /meta`
+- `GET /analytics/meta`
   Global metadata endpoint for available months, crime types, and top-level dataset counts.
 
 ## Crimes

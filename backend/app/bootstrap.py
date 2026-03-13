@@ -40,6 +40,60 @@ DDL_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS user_reported_events (
+        id BIGSERIAL PRIMARY KEY,
+        event_kind TEXT NOT NULL,
+        reporter_type TEXT NOT NULL,
+        user_id BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+        event_date DATE NOT NULL,
+        event_time TIME,
+        month DATE NOT NULL,
+        longitude DOUBLE PRECISION NOT NULL,
+        latitude DOUBLE PRECISION NOT NULL,
+        geom geometry(Point,4326) NOT NULL,
+        segment_id BIGINT,
+        snap_distance_m DOUBLE PRECISION,
+        description TEXT,
+        admin_approved BOOLEAN NOT NULL DEFAULT FALSE,
+        moderation_status TEXT NOT NULL DEFAULT 'pending',
+        moderation_notes TEXT,
+        moderated_by BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+        moderated_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT user_reported_events_kind_chk
+            CHECK (event_kind IN ('crime', 'collision')),
+        CONSTRAINT user_reported_events_reporter_type_chk
+            CHECK (reporter_type IN ('anonymous', 'authenticated')),
+        CONSTRAINT user_reported_events_reporter_user_chk
+            CHECK (
+                (reporter_type = 'anonymous' AND user_id IS NULL)
+                OR (reporter_type = 'authenticated' AND user_id IS NOT NULL)
+            ),
+        CONSTRAINT user_reported_events_moderation_status_chk
+            CHECK (moderation_status IN ('pending', 'approved', 'rejected')),
+        CONSTRAINT user_reported_events_admin_approved_chk
+            CHECK (
+                (moderation_status = 'approved' AND admin_approved = TRUE)
+                OR (moderation_status IN ('pending', 'rejected') AND admin_approved = FALSE)
+            )
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_reported_crime_details (
+        event_id BIGINT PRIMARY KEY REFERENCES user_reported_events(id) ON DELETE CASCADE,
+        crime_type TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_reported_collision_details (
+        event_id BIGINT PRIMARY KEY REFERENCES user_reported_events(id) ON DELETE CASCADE,
+        weather_condition TEXT NOT NULL,
+        light_condition TEXT NOT NULL,
+        number_of_vehicles INTEGER NOT NULL CHECK (number_of_vehicles >= 1)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS collision_events (
         collision_index TEXT PRIMARY KEY,
         collision_year INTEGER NOT NULL,
@@ -139,6 +193,13 @@ DDL_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
     "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_geom_gix ON user_reported_events USING GIST (geom)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_month_idx ON user_reported_events(month)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_segment_idx ON user_reported_events(segment_id)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_user_idx ON user_reported_events(user_id)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_moderation_idx ON user_reported_events(moderation_status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_approved_month_idx ON user_reported_events(admin_approved, month)",
+    "CREATE INDEX IF NOT EXISTS user_reported_events_kind_idx ON user_reported_events(event_kind)",
     "CREATE INDEX IF NOT EXISTS collision_events_geom_gix ON collision_events USING GIST (geom)",
     "CREATE INDEX IF NOT EXISTS collision_events_month_idx ON collision_events(month)",
     "CREATE INDEX IF NOT EXISTS collision_events_collision_date_idx ON collision_events(collision_date)",

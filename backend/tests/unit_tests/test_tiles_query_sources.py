@@ -7,6 +7,13 @@ def test_risk_tile_query_uses_segment_month_type_stats_instead_of_raw_crimes():
     assert "FROM segment_month_type_stats c" in query
     assert "SUM(c.crime_count) AS crimes" in query
     assert "FROM crime_events c" not in query
+    assert "FROM segment_month_collision_stats c" in query
+    assert "FROM collision_events c" not in query
+    assert "collision_severity_points" in query
+    assert "safety_score" in query
+    assert "FROM active_roads" in query
+    assert "raw_safety_score" in query
+    assert "FROM normalized_scores" in query
 
 
 def test_low_zoom_tile_query_filters_minor_roads():

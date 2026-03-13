@@ -18,6 +18,7 @@ from .crime_utils import (
     _resolve_from_to_filter,
     _resolve_mode,
     _resolve_month_filter,
+    _shift_month,
     _where_sql,
 )
 from ..db import get_db

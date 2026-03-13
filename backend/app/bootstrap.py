@@ -81,6 +81,18 @@ DDL_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS segment_month_collision_stats (
+        segment_id BIGINT NOT NULL,
+        month DATE NOT NULL,
+        collision_count INTEGER NOT NULL DEFAULT 0,
+        casualty_count INTEGER NOT NULL DEFAULT 0,
+        fatal_casualty_count INTEGER NOT NULL DEFAULT 0,
+        serious_casualty_count INTEGER NOT NULL DEFAULT 0,
+        slight_casualty_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (segment_id, month)
+    )
+    """,
+    """
     DO $$
     BEGIN
         IF EXISTS (
@@ -133,6 +145,8 @@ DDL_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS collision_events_segment_idx ON collision_events(segment_id)",
     "CREATE INDEX IF NOT EXISTS collision_events_lsoa_idx ON collision_events(lsoa_of_accident_location)",
     "CREATE INDEX IF NOT EXISTS collision_events_severity_label_idx ON collision_events(collision_severity_label)",
+    "CREATE INDEX IF NOT EXISTS segment_month_collision_stats_month_idx ON segment_month_collision_stats(month)",
+    "CREATE INDEX IF NOT EXISTS segment_month_collision_stats_segment_idx ON segment_month_collision_stats(segment_id)",
 ]
 
 

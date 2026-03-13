@@ -292,7 +292,9 @@ def test_watchlist_hotspot_run_requires_preference():
     response = _run_with_auth_db(handlers, "POST", "/watchlists/7/hotspot-stability/run")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Watchlist preference is required to run analytics"
+    data = response.json()
+    assert data["error"] == "INVALID_REQUEST"
+    assert data["message"] == "Watchlist preference is required to run analytics"
 
 
 def test_watchlist_risk_forecast_results_returns_stored_runs():
@@ -388,4 +390,6 @@ def test_watchlist_risk_forecast_rejects_collisions_without_drive():
     response = _run_with_auth_db(handlers, "POST", "/watchlists/7/risk-forecast/run")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "include_collisions is only supported when travel_mode is drive"
+    data = response.json()
+    assert data["error"] == "INVALID_REQUEST"
+    assert data["message"] == "include_collisions is only supported when travel_mode is drive"

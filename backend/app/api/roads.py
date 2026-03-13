@@ -22,6 +22,7 @@ from ..api_utils.roads_utils import (
     _where_sql,
 )
 from ..db import get_db
+from ..errors import ValidationError
 from ..schemas.roads_schemas import (
     RoadsAnalyticsChartsResponse,
     RoadsAnalyticsMetaResponse,
@@ -453,7 +454,11 @@ def get_road_analytics_charts(
     db: Session = Depends(get_db),
 ) -> RoadsAnalyticsChartsResponse:
     if timeseriesGroupBy not in {"overall", "highway", "crime_type", "outcome"}:
-        raise HTTPException(status_code=400, detail="timeseriesGroupBy must be overall, highway, crime_type, or outcome")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="timeseriesGroupBy must be overall, highway, crime_type, or outcome",
+            details={"field": "timeseriesGroupBy"},
+        )
 
     range_filter, bbox, crime_types, last_outcome_categories, highways = _roads_analytics_filters(
         from_month,
@@ -826,7 +831,11 @@ def get_road_analytics_risk(
     db: Session = Depends(get_db),
 ) -> RoadsAnalyticsRiskResponse:
     if sort not in {"risk_score", "incidents_per_km", "incident_count"}:
-        raise HTTPException(status_code=400, detail="sort must be risk_score, incidents_per_km, or incident_count")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="sort must be risk_score, incidents_per_km, or incident_count",
+            details={"field": "sort"},
+        )
 
     range_filter, bbox, crime_types, last_outcome_categories, highways = _roads_analytics_filters(
         from_month,

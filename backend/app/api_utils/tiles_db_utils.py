@@ -1,9 +1,9 @@
 from typing import Optional
 
-from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import InternalError, OperationalError
 
+from ..errors import DependencyError
 from ..schemas.tiles_schemas import TileQueryParams
 from .tiles_utils import (
     ANONYMOUS_USER_REPORT_WEIGHT,
@@ -27,14 +27,13 @@ from .tiles_utils import (
 
 
 def _execute(db, query, params):
-    """Execute SQL and translate database failures into HTTP 503."""
+    """Execute SQL and translate database failures into a DependencyError."""
     try:
         return db.execute(query, params)
     except (InternalError, OperationalError) as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 

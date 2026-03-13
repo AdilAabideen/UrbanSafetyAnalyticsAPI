@@ -9,10 +9,7 @@ from ..api_utils.analytics_db_utils import (
     build_risk_forecast_payload,
     build_risk_score_payload,
 )
-from ..api_utils.analytics_utils import (
-    AnalyticsAPIError,
-    error_response,
-)
+from ..api_utils.analytics_utils import AnalyticsAPIError
 from ..db import get_db
 from ..schemas.analytics_schemas import (
     ForecastRequest,
@@ -29,54 +26,45 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 @router.get("/meta")
 def analytics_meta(db: Session = Depends(get_db)):
-    try:
-        return build_analytics_meta_payload(db)
-    except AnalyticsAPIError as exc:
-        return error_response(exc)
+    return build_analytics_meta_payload(db)
 
 
 @router.post("/risk/score")
 def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db)):
-    try:
-        return build_risk_score_payload(
-            db,
-            from_value=request.from_,
-            to_value=request.to,
-            min_lon=request.minLon,
-            min_lat=request.minLat,
-            max_lon=request.maxLon,
-            max_lat=request.maxLat,
-            crime_type=request.crimeType,
-            include_collisions=request.includeCollisions,
-            mode=request.mode,
-            w_crime=request.weights.w_crime,
-            w_collision=request.weights.w_collision,
-        )
-    except AnalyticsAPIError as exc:
-        return error_response(exc)
+    return build_risk_score_payload(
+        db,
+        from_value=request.from_,
+        to_value=request.to,
+        min_lon=request.minLon,
+        min_lat=request.minLat,
+        max_lon=request.maxLon,
+        max_lat=request.maxLat,
+        crime_type=request.crimeType,
+        include_collisions=request.includeCollisions,
+        mode=request.mode,
+        w_crime=request.weights.w_crime,
+        w_collision=request.weights.w_collision,
+    )
 
 
 @router.post("/risk/forecast")
 def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_db)):
-    try:
-        return build_risk_forecast_payload(
-            db,
-            target=request.target,
-            min_lon=request.minLon,
-            min_lat=request.minLat,
-            max_lon=request.maxLon,
-            max_lat=request.maxLat,
-            crime_type=request.crimeType,
-            baseline_months=request.baselineMonths,
-            method=request.method,
-            return_risk_projection=request.returnRiskProjection,
-            include_collisions=request.includeCollisions,
-            mode=request.mode,
-            w_crime=request.weights.w_crime,
-            w_collision=request.weights.w_collision,
-        )
-    except AnalyticsAPIError as exc:
-        return error_response(exc)
+    return build_risk_forecast_payload(
+        db,
+        target=request.target,
+        min_lon=request.minLon,
+        min_lat=request.minLat,
+        max_lon=request.maxLon,
+        max_lat=request.maxLat,
+        crime_type=request.crimeType,
+        baseline_months=request.baselineMonths,
+        method=request.method,
+        return_risk_projection=request.returnRiskProjection,
+        include_collisions=request.includeCollisions,
+        mode=request.mode,
+        w_crime=request.weights.w_crime,
+        w_collision=request.weights.w_collision,
+    )
 
 
 @router.get("/patterns/hotspot-stability")
@@ -92,21 +80,18 @@ def analytics_hotspot_stability(
     crimeType: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    try:
-        return build_hotspot_stability_payload(
-            db,
-            from_value=from_,
-            to_value=to,
-            k=k,
-            include_lists=includeLists,
-            min_lon=minLon,
-            min_lat=minLat,
-            max_lon=maxLon,
-            max_lat=maxLat,
-            crime_type=crimeType,
-        )
-    except AnalyticsAPIError as exc:
-        return error_response(exc)
+    return build_hotspot_stability_payload(
+        db,
+        from_value=from_,
+        to_value=to,
+        k=k,
+        include_lists=includeLists,
+        min_lon=minLon,
+        min_lat=minLat,
+        max_lon=maxLon,
+        max_lat=maxLat,
+        crime_type=crimeType,
+    )
 
 
 __all__ = [

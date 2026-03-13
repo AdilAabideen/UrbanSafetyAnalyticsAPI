@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi.responses import JSONResponse
+from ..errors import AppError
 
 
 MAX_MONTH_SPAN = 24
@@ -11,23 +11,14 @@ REPEAT_AUTHENTICATED_REPORT_WEIGHT = 0.25
 USER_REPORTED_SIGNAL_CAP = 3.0
 
 
-class AnalyticsAPIError(Exception):
-    """Represents an API-safe analytics failure with HTTP status and structured metadata."""
+class AnalyticsAPIError(AppError):
+    """
+    Backwards-compatible analytics error that now participates in the
+    shared AppError handling pipeline.
+    """
 
     def __init__(self, status_code: int, error: str, message: str, details: Optional[Dict[str, Any]] = None):
-        super().__init__(message)
-        self.status_code = status_code
-        self.error = error
-        self.message = message
-        self.details = details
-
-
-def error_response(error: AnalyticsAPIError) -> JSONResponse:
-    """Convert an analytics domain exception into an HTTP JSON response body."""
-    payload = {"error": error.error, "message": error.message}
-    if error.details is not None:
-        payload["details"] = error.details
-    return JSONResponse(status_code=error.status_code, content=payload)
+        super().__init__(status_code=status_code, error=error, message=message, details=details)
 
 
 def _generated_at() -> str:

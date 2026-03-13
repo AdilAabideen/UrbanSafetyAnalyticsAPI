@@ -4,7 +4,6 @@ from copy import deepcopy
 from threading import Event, Lock
 from time import monotonic
 
-from fastapi import HTTPException
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import InternalError, OperationalError
 
@@ -21,6 +20,7 @@ from .crime_utils import (
     _shift_month,
     _where_sql,
 )
+from ..errors import DependencyError
 from ..schemas.crime_schemas import CrimeMapResponse
 
 
@@ -34,19 +34,11 @@ def _execute(db, query, params=None):
     """Execute SQL `query` with DB error translation."""
     try:
         return db.execute(query, params or {})
-    except InternalError as exc:
-        logger.exception("Database internal error during query execution")
+    except (InternalError, OperationalError) as exc:
+        logger.warning("Database error during crime analytics query execution", exc_info=exc)
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
-        ) from exc
-    except OperationalError as exc:
-        logger.warning("Database operational error during query execution", exc_info=exc)
-        db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 

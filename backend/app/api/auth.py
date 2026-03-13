@@ -5,6 +5,13 @@ from sqlalchemy.orm import Session
 
 from ..api_utils.auth_utils import create_access_token, get_current_user, hash_password, verify_password
 from ..db import get_db
+from ..errors import (
+    AuthenticationError,
+    ConflictError,
+    DependencyError,
+    NotFoundError,
+    ValidationError,
+)
 from ..schemas.auth_schemas import AuthRequest, ProfileUpdateRequest
 
 
@@ -16,9 +23,8 @@ def _execute(db, query, params):
         return db.execute(query, params)
     except OperationalError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 
@@ -34,7 +40,7 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)):
     )
     existing = _execute(db, existing_query, {"email": payload.email}).mappings().first()
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered")
 
     insert_query = text(
         """
@@ -55,7 +61,7 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)):
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Email already registered") from exc
+        raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered") from exc
 
     return {
         "user": {
@@ -84,9 +90,9 @@ def login(payload: AuthRequest, db: Session = Depends(get_db)):
     )
     user = _execute(db, query, {"email": payload.email}).mappings().first()
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+        raise AuthenticationError(
+            error="INVALID_CREDENTIALS",
+            message="Invalid email or password",
         )
 
     access_token = create_access_token(user["id"])
@@ -114,7 +120,10 @@ def update_me(
     db: Session = Depends(get_db),
 ):
     if payload.email is None and payload.password is None:
-        raise HTTPException(status_code=400, detail="Provide email or password to update")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="Provide email or password to update",
+        )
 
     update_fields = []
     query_params = {"user_id": current_user["id"]}
@@ -141,10 +150,10 @@ def update_me(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Email already registered") from exc
+        raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered") from exc
 
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFoundError(error="USER_NOT_FOUND", message="User not found")
 
     return {
         "user": {

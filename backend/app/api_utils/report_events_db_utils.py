@@ -30,18 +30,18 @@ from .report_event_utils import (
     _validate_optional_bbox,
 )
 from ..db import get_db
+from ..errors import DependencyError
 from ..schemas.report_event_schemas import ReportedEventCreateRequest, ReportedEventModerationRequest
 
 
 def _execute(db, query, params=None):
-    """Execute a SQL statement and normalize transient DB failures to 503 errors."""
+    """Execute a SQL statement and normalize transient DB failures to a DependencyError."""
     try:
         return db.execute(query, params or {})
     except (InternalError, OperationalError) as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 

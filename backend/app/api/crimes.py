@@ -28,6 +28,7 @@ from ..api_utils.crime_utils_db import (
     _execute,
 )
 from ..db import get_db
+from ..errors import ValidationError
 from ..schemas.crime_schemas import (
     CrimeAnalyticsSummaryResponse,
     CrimeDetailFeature,
@@ -167,7 +168,11 @@ def get_crimes_map(
     effective_limit = limit or _default_limit(zoom, resolved_mode)
 
     if cursor and resolved_mode != "points":
-        raise HTTPException(status_code=400, detail="cursor is only supported for points mode")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="cursor is only supported for points mode",
+            details={"field": "cursor"},
+        )
 
     cursor_data = _parse_cursor(cursor)
 

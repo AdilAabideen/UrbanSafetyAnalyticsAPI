@@ -23,6 +23,7 @@ from ..api_utils.roads_utils import (
 )
 from ..db import get_db
 from ..errors import ValidationError
+from ..schemas.enums import CrimeOutcome, CrimeType, HighwayClass
 from ..schemas.roads_schemas import (
     RoadsAnalyticsChartsResponse,
     RoadsAnalyticsMetaResponse,
@@ -126,9 +127,9 @@ def get_road_analytics_overview(
     minLat: Optional[float] = Query(None, ge=-90, le=90),
     maxLon: Optional[float] = Query(None, ge=-180, le=180),
     maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    crimeType: Optional[List[str]] = Query(None),
-    lastOutcomeCategory: Optional[List[str]] = Query(None),
-    highway: Optional[List[str]] = Query(None),
+    crimeType: Optional[List[CrimeType]] = Query(None),
+    lastOutcomeCategory: Optional[List[CrimeOutcome]] = Query(None),
+    highway: Optional[List[HighwayClass]] = Query(None),
     db: Session = Depends(get_db),
 ) -> RoadsAnalyticsOverviewResponse:
     range_filter, bbox, crime_types, last_outcome_categories, highways = _roads_analytics_filters(

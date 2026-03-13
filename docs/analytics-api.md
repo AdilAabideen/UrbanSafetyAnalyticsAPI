@@ -70,6 +70,20 @@ Common error codes:
 - `BASELINE_HISTORY_INSUFFICIENT`
 - `DB_UNAVAILABLE`
 
+### Categorical enums
+
+Many analytics inputs now use **enum-backed** categorical fields in the OpenAPI schema. In Swagger UI these appear as dropdowns:
+
+- `crimeType` – backed by the `CrimeType` enum (e.g. `Burglary`, `Vehicle crime`, `Violence and sexual offences`).
+- `lastOutcomeCategory` – backed by the `CrimeOutcome` enum (e.g. `Under investigation`, `Investigation complete; no suspect identified`).
+- `collisionSeverity` – backed by the `CollisionSeverity` enum (`Fatal`, `Serious`, `Slight`).
+- `weatherCondition` – backed by the `WeatherCondition` enum (e.g. `Fine no high winds`, `Raining + high winds`, `Unknown`).
+- `lightCondition` – backed by the `LightCondition` enum (e.g. `Daylight`, `Darkness - lights lit`).
+- `roadSurfaceCondition` – backed by the `RoadSurfaceCondition` enum (`Dry`, `Wet or damp`, etc.).
+- `highway` filters on roads endpoints – backed by the `HighwayClass` enum (e.g. `motorway`, `residential`, `tertiary`).
+
+The enum **values** are derived from the underlying Postgres datasets (`crime_events`, `collision_events`, `road_segments_4326`) using `SELECT DISTINCT` queries, and the API always returns these same labels in responses and filter metadata. Invalid enum values supplied by clients are treated as normal validation errors and surface as the standardized error shape above (usually `400 INVALID_REQUEST` with details from the validation layer).
+
 ## 1) Analytics Meta
 
 **GET `/analytics/meta`**

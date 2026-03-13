@@ -12,6 +12,7 @@ from ..api_utils.analytics_db_utils import (
 from ..api_utils.analytics_utils import AnalyticsAPIError
 from ..db import get_db
 from ..schemas.analytics_schemas import (
+    CrimeType,
     ForecastRequest,
     RiskScoreRequest,
     RouteCompareItem,
@@ -77,7 +78,7 @@ def analytics_hotspot_stability(
     minLat: Optional[float] = Query(None),
     maxLon: Optional[float] = Query(None),
     maxLat: Optional[float] = Query(None),
-    crimeType: Optional[str] = Query(None),
+    crimeType: Optional[CrimeType] = Query(None),
     db: Session = Depends(get_db),
 ):
     return build_hotspot_stability_payload(

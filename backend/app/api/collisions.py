@@ -29,6 +29,12 @@ from ..api_utils.collission_utils import (
 )
 from ..db import get_db
 from ..errors import ValidationError
+from ..schemas.enums import (
+    CollisionSeverity,
+    LightCondition,
+    RoadSurfaceCondition,
+    WeatherCondition,
+)
 from ..schemas.colissions_schemas import (
     CollisionIncidentsResponse,
     CollisionMapResponse,
@@ -177,12 +183,12 @@ def get_collisions_map(
     month: Optional[str] = Query(None),
     startMonth: Optional[str] = Query(None),
     endMonth: Optional[str] = Query(None),
-    collisionSeverity: Optional[List[str]] = Query(None),
+    collisionSeverity: Optional[List[CollisionSeverity]] = Query(None),
     roadType: Optional[List[str]] = Query(None),
     lsoaCode: Optional[List[str]] = Query(None),
-    weatherCondition: Optional[List[str]] = Query(None),
-    lightCondition: Optional[List[str]] = Query(None),
-    roadSurfaceCondition: Optional[List[str]] = Query(None),
+    weatherCondition: Optional[List[WeatherCondition]] = Query(None),
+    lightCondition: Optional[List[LightCondition]] = Query(None),
+    roadSurfaceCondition: Optional[List[RoadSurfaceCondition]] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=MAX_COLLISION_LIMIT),
     mode: str = Query("auto"),
     cursor: Optional[str] = Query(None),
@@ -256,12 +262,12 @@ def get_collision_analytics_summary(
     minLat: Optional[float] = Query(None, ge=-90, le=90),
     maxLon: Optional[float] = Query(None, ge=-180, le=180),
     maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    collisionSeverity: Optional[List[str]] = Query(None),
+    collisionSeverity: Optional[List[CollisionSeverity]] = Query(None),
     roadType: Optional[List[str]] = Query(None),
     lsoaCode: Optional[List[str]] = Query(None),
-    weatherCondition: Optional[List[str]] = Query(None),
-    lightCondition: Optional[List[str]] = Query(None),
-    roadSurfaceCondition: Optional[List[str]] = Query(None),
+    weatherCondition: Optional[List[WeatherCondition]] = Query(None),
+    lightCondition: Optional[List[LightCondition]] = Query(None),
+    roadSurfaceCondition: Optional[List[RoadSurfaceCondition]] = Query(None),
     db: Session = Depends(get_db),
 ) -> CollisionSummaryResponse:
     (
@@ -332,12 +338,12 @@ def get_collision_analytics_timeseries(
     minLat: Optional[float] = Query(None, ge=-90, le=90),
     maxLon: Optional[float] = Query(None, ge=-180, le=180),
     maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    collisionSeverity: Optional[List[str]] = Query(None),
+    collisionSeverity: Optional[List[CollisionSeverity]] = Query(None),
     roadType: Optional[List[str]] = Query(None),
     lsoaCode: Optional[List[str]] = Query(None),
-    weatherCondition: Optional[List[str]] = Query(None),
-    lightCondition: Optional[List[str]] = Query(None),
-    roadSurfaceCondition: Optional[List[str]] = Query(None),
+    weatherCondition: Optional[List[WeatherCondition]] = Query(None),
+    lightCondition: Optional[List[LightCondition]] = Query(None),
+    roadSurfaceCondition: Optional[List[RoadSurfaceCondition]] = Query(None),
     db: Session = Depends(get_db),
 ) -> CollisionTimeseriesResponse:
     (

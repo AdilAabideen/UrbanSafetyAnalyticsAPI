@@ -2,6 +2,13 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .enums import (
+    CollisionSeverity,
+    LightCondition,
+    RoadSurfaceCondition,
+    WeatherCondition,
+)
+
 
 class CollisionBBox(BaseModel):
     minLon: float
@@ -14,12 +21,12 @@ class CollisionMapFilters(BaseModel):
     month: Optional[str] = None
     startMonth: Optional[str] = None
     endMonth: Optional[str] = None
-    collisionSeverity: Optional[List[str]] = None
+    collisionSeverity: Optional[List[CollisionSeverity]] = None
     roadType: Optional[List[str]] = None
     lsoaCode: Optional[List[str]] = None
-    weatherCondition: Optional[List[str]] = None
-    lightCondition: Optional[List[str]] = None
-    roadSurfaceCondition: Optional[List[str]] = None
+    weatherCondition: Optional[List[WeatherCondition]] = None
+    lightCondition: Optional[List[LightCondition]] = None
+    roadSurfaceCondition: Optional[List[RoadSurfaceCondition]] = None
 
 
 class CollisionAnalyticsFilters(BaseModel):
@@ -27,12 +34,12 @@ class CollisionAnalyticsFilters(BaseModel):
 
     from_: str = Field(alias="from")
     to: str
-    collisionSeverity: Optional[List[str]] = None
+    collisionSeverity: Optional[List[CollisionSeverity]] = None
     roadType: Optional[List[str]] = None
     lsoaCode: Optional[List[str]] = None
-    weatherCondition: Optional[List[str]] = None
-    lightCondition: Optional[List[str]] = None
-    roadSurfaceCondition: Optional[List[str]] = None
+    weatherCondition: Optional[List[WeatherCondition]] = None
+    lightCondition: Optional[List[LightCondition]] = None
+    roadSurfaceCondition: Optional[List[RoadSurfaceCondition]] = None
     bbox: Optional[CollisionBBox] = None
 
 

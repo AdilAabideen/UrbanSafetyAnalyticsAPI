@@ -29,6 +29,7 @@ from ..api_utils.crime_utils_db import (
 )
 from ..db import get_db
 from ..errors import ValidationError
+from ..schemas.enums import CrimeOutcome, CrimeType
 from ..schemas.crime_schemas import (
     CrimeAnalyticsSummaryResponse,
     CrimeDetailFeature,
@@ -50,8 +51,8 @@ def get_crime_incidents(
     minLat: Optional[float] = Query(None, ge=-90, le=90),
     maxLon: Optional[float] = Query(None, ge=-180, le=180),
     maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    crimeType: Optional[List[str]] = Query(None),
-    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    crimeType: Optional[List[CrimeType]] = Query(None),
+    lastOutcomeCategory: Optional[List[CrimeOutcome]] = Query(None),
     lsoaName: Optional[List[str]] = Query(None),
     limit: int = Query(250, ge=1, le=1000),
     cursor: Optional[str] = Query(None),
@@ -148,8 +149,8 @@ def get_crimes_map(
     month: Optional[str] = Query(None),
     startMonth: Optional[str] = Query(None),
     endMonth: Optional[str] = Query(None),
-    crimeType: Optional[List[str]] = Query(None),
-    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    crimeType: Optional[List[CrimeType]] = Query(None),
+    lastOutcomeCategory: Optional[List[CrimeOutcome]] = Query(None),
     lsoaName: Optional[List[str]] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=MAX_CRIME_LIMIT),
     mode: str = Query("auto"),

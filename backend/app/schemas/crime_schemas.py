@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .enums import CrimeOutcome, CrimeType
+
 
 class CrimeBBox(BaseModel):
     minLon: float
@@ -14,8 +16,8 @@ class CrimeMapFilters(BaseModel):
     month: Optional[str] = None
     startMonth: Optional[str] = None
     endMonth: Optional[str] = None
-    crimeType: Optional[List[str]] = None
-    lastOutcomeCategory: Optional[List[str]] = None
+    crimeType: Optional[List[CrimeType]] = None
+    lastOutcomeCategory: Optional[List[CrimeOutcome]] = None
     lsoaName: Optional[List[str]] = None
 
 
@@ -24,8 +26,8 @@ class CrimeAnalyticsFilters(BaseModel):
 
     from_: str = Field(alias="from")
     to: str
-    crimeType: Optional[List[str]] = None
-    lastOutcomeCategory: Optional[List[str]] = None
+    crimeType: Optional[List[CrimeType]] = None
+    lastOutcomeCategory: Optional[List[CrimeOutcome]] = None
     lsoaName: Optional[List[str]] = None
     bbox: Optional[CrimeBBox] = None
 

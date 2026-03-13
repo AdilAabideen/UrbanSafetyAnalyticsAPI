@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .enums import CrimeType
+
 
 class ScoreWeights(BaseModel):
     w_crime: float = 1.0
@@ -15,7 +17,7 @@ class RiskScoreRequest(BaseModel):
     minLat: float
     maxLon: float
     maxLat: float
-    crimeType: Optional[str] = None
+    crimeType: Optional[CrimeType] = None
     includeCollisions: bool = False
     mode: str = "walk"
     weights: ScoreWeights = Field(default_factory=ScoreWeights)
@@ -27,7 +29,7 @@ class ForecastRequest(BaseModel):
     minLat: float
     maxLon: float
     maxLat: float
-    crimeType: Optional[str] = None
+    crimeType: Optional[CrimeType] = None
     baselineMonths: int = 6
     method: str = "poisson_mean"
     returnRiskProjection: bool = False
@@ -40,7 +42,7 @@ class RouteRiskRequest(BaseModel):
     from_: str = Field(alias="from")
     to: str
     mode: str = "walk"
-    crimeType: Optional[str] = None
+    crimeType: Optional[CrimeType] = None
     includeCollisions: bool = False
     segment_ids: Optional[List[int]] = None
     route_line: Optional[Dict[str, Any]] = None
@@ -64,6 +66,6 @@ class RouteCompareRequest(BaseModel):
     from_: str = Field(alias="from")
     to: str
     mode: str = "walk"
-    crimeType: Optional[str] = None
+    crimeType: Optional[CrimeType] = None
     includeCollisions: bool = False
     routes: List[RouteCompareItem]

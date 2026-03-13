@@ -85,17 +85,6 @@ class _FakeDetailSession:
             }
         )
 
-
-class _FakeStatsSession:
-    def execute(self, query, params):
-        return _FakeRowsResult(
-            [
-                {"crime_type": "burglary", "count": 2},
-                {"crime_type": "vehicle-crime", "count": 1},
-            ]
-        )
-
-
 client = TestClient(app)
 
 
@@ -109,11 +98,6 @@ def _override_clusters_db():
 
 def _override_detail_db():
     yield _FakeDetailSession()
-
-
-def _override_stats_db():
-    yield _FakeStatsSession()
-
 
 def _map_params(**kwargs):
     params = {
@@ -182,21 +166,6 @@ def test_crime_detail_route_returns_geojson():
     assert data["type"] == "Feature"
     assert data["properties"]["id"] == 1
 
-
-def test_crime_stats_route_returns_grouped_counts():
-    app.dependency_overrides[get_db] = _override_stats_db
-    try:
-        response = client.get("/crimes/stats", params={"month": "2024-01"})
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["filters"]["month"] == "2024-01"
-    assert data["total"] == 3
-    assert data["crime_type_counts"]["burglary"] == 2
-
-
 def test_crimes_map_invalid_cursor_returns_400_without_db_access():
     response = client.get("/crimes/map", params=_map_params(cursor="bad"))
 
@@ -223,10 +192,3 @@ def test_crimes_map_invalid_month_returns_400_without_db_access():
 
     assert response.status_code == 400
     assert response.json()["detail"] == "month must be in YYYY-MM format"
-
-
-def test_crime_stats_partial_bbox_returns_400_without_db_access():
-    response = client.get("/crimes/stats", params={"minLon": -1.5, "minLat": 53.8})
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "minLon, minLat, maxLon, and maxLat must all be provided together"

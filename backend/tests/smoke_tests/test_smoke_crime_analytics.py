@@ -115,19 +115,6 @@ def _override_incidents_db():
     }
     yield InMemoryDB(handlers)
 
-
-def _override_anomaly_db():
-    handlers = {
-        "SELECT COUNT(*)::bigint AS target_count": {
-            "rows": [{"target_count": 1200}]
-        },
-        "AVG(COALESCE(counts.count, 0))": {
-            "rows": [{"baseline_mean": 800.0}]
-        },
-    }
-    yield InMemoryDB(handlers)
-
-
 def test_crimes_analytics_summary_returns_region_summary():
     app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
@@ -212,7 +199,7 @@ def test_crime_analytics_timeseries_returns_series_and_total():
     app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
         response = client.get(
-            "/crime/analytics/timeseries",
+            "/crimes/analytics/timeseries",
             params={"from": "2023-02", "to": "2023-03", "crimeType": "Shoplifting"},
         )
     finally:
@@ -225,60 +212,6 @@ def test_crime_analytics_timeseries_returns_series_and_total():
             {"month": "2023-03", "count": 3},
         ],
         "total": 6,
-    }
-
-
-def test_crimes_analytics_type_breakdown_returns_items_and_other_count():
-    app.dependency_overrides[get_db] = _override_analytics_scan_db
-    try:
-        response = client.get("/crimes/analytics/types", params={"limit": 2})
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "items": [
-            {"crime_type": "Violence and sexual offences", "count": 3},
-            {"crime_type": "Shoplifting", "count": 2},
-        ],
-        "other_count": 1,
-    }
-
-
-def test_crimes_analytics_outcome_breakdown_returns_items_and_other_count():
-    app.dependency_overrides[get_db] = _override_analytics_scan_db
-    try:
-        response = client.get("/crimes/analytics/outcomes", params={"limit": 2})
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "items": [
-            {"outcome": "Investigation complete; no suspect identified", "count": 3},
-            {"outcome": "Under investigation", "count": 2},
-        ],
-        "other_count": 1,
-    }
-
-
-def test_crime_analytics_anomoly_alias_returns_target_vs_baseline():
-    app.dependency_overrides[get_db] = _override_anomaly_db
-    try:
-        response = client.get(
-            "/crime/analytics/anomoly",
-            params={"target": "2023-06", "baselineMonths": 6, "minLon": -1.6, "minLat": 53.78, "maxLon": -1.52, "maxLat": 53.82},
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "target": "2023-06",
-        "target_count": 1200,
-        "baseline_mean": 800.0,
-        "ratio": 1.5,
-        "flag": True,
     }
 
 

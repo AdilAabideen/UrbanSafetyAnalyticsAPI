@@ -134,21 +134,6 @@ def test_crimes_by_id_returns_404_for_missing_row(sample_crime):
     response = client.get("/crimes/999999999999")
     assert response.status_code == 404
 
-
-def test_crime_stats_respect_bbox_and_month(sample_crime):
-    params = {
-        **_sample_bbox(sample_crime),
-        "month": sample_crime["month_key"],
-    }
-    response = client.get("/crimes/stats", params=params)
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["filters"]["month"] == sample_crime["month_key"]
-    assert "bbox" in data["filters"]
-    assert data["total"] == sum(data["crime_type_counts"].values())
-
-
 def test_crimes_map_invalid_cursor_returns_400():
     response = client.get(
         "/crimes/map",
@@ -206,9 +191,4 @@ def test_crimes_map_invalid_mode_returns_400():
             "mode": "bad",
         },
     )
-    assert response.status_code == 400
-
-
-def test_crime_stats_partial_bbox_returns_400():
-    response = client.get("/crimes/stats", params={"minLon": -1.5, "minLat": 53.8})
     assert response.status_code == 400

@@ -3,7 +3,12 @@ import mapboxgl from "mapbox-gl";
 import TopBar from "./TopBar";
 import { config } from "../config/env";
 import { roadsService } from "../services";
-import { WEST_YORKSHIRE_BBOX, WEST_YORKSHIRE_CENTER } from "../utils/crimeUtils";
+import {
+  DEFAULT_MONTH_FROM,
+  DEFAULT_MONTH_TO,
+  WEST_YORKSHIRE_BBOX,
+  WEST_YORKSHIRE_CENTER,
+} from "../utils/crimeUtils";
 
 const ROADS_SOURCE_ID = "watchlist-roads";
 const ROADS_LAYER_ID = "watchlist-roads-layer";
@@ -111,54 +116,54 @@ function WatchlistPage({ docsUrl }) {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-0 mt-[-15px]">
-              <div className="space-y-2 rounded-[24px]  bg-[#000c12]/70 p-4">
+              <div className="space-y-3 rounded-[24px]  bg-[#000c12]/70 p-4">
                 <WatchlistField
-                  label="WATCHLISTS.ID"
+                  label="ID"
                   value={watchlistForm.id}
                   placeholder="1001"
                   onChange={(value) => handleFieldChange("id", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.USER_ID"
+                  label="USER_ID"
                   value={watchlistForm.userId}
                   placeholder="42"
                   onChange={(value) => handleFieldChange("userId", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.NAME"
+                  label="NAME"
                   value={watchlistForm.name}
                   placeholder="City Centre Risk Watch"
                   onChange={(value) => handleFieldChange("name", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.CREATED_AT"
+                  label="CREATED_AT"
                   type="datetime-local"
                   value={watchlistForm.createdAt}
                   onChange={(value) => handleFieldChange("createdAt", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.MIN_LON"
+                  label="MIN_LON"
                   value={watchlistForm.minLon}
                   placeholder="-1.620000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("minLon", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.MIN_LAT"
+                  label="MIN_LAT"
                   value={watchlistForm.minLat}
                   placeholder="53.780000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("minLat", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.MAX_LON"
+                  label="MAX_LON"
                   value={watchlistForm.maxLon}
                   placeholder="-1.500000"
                   inputMode="decimal"
                   onChange={(value) => handleFieldChange("maxLon", value)}
                 />
                 <WatchlistField
-                  label="WATCHLISTS.MAX_LAT"
+                  label="MAX_LAT"
                   value={watchlistForm.maxLat}
                   placeholder="53.840000"
                   inputMode="decimal"
@@ -219,7 +224,10 @@ function WatchlistPolygonMap({
   const onClearPolygonRef = useRef(onClearPolygon);
   const [drawMode, setDrawMode] = useState(false);
   const [mapRuntimeErrorMessage, setMapRuntimeErrorMessage] = useState("");
-  const roadsTileUrl = useMemo(() => roadsService.getVectorTilesUrl(), []);
+  const roadsTileUrl = useMemo(
+    () => roadsService.getVectorTilesUrl({ startMonth: DEFAULT_MONTH_FROM, endMonth: DEFAULT_MONTH_TO }),
+    [],
+  );
   const mapIsSupported = useMemo(() => mapboxgl.supported(), []);
   const resolvedMapErrorMessage = mapIsSupported
     ? mapRuntimeErrorMessage
@@ -514,7 +522,7 @@ function WatchlistPolygonMap({
 function WatchlistField({ label, value, onChange, placeholder, type = "text", inputMode }) {
   return (
     <label className="flex flex-col gap-2">
-      <span className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/38">{label}</span>
+      <span className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/38 text-white">{label}</span>
       <input
         type={type}
         value={value}

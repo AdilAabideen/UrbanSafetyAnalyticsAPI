@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,7 @@ from ..api_utils.collission_utils import (
     _where_sql,
 )
 from ..db import get_db
+from ..errors import ValidationError
 from ..schemas.colissions_schemas import (
     CollisionIncidentsResponse,
     CollisionMapResponse,
@@ -210,7 +211,11 @@ def get_collisions_map(
     cursor_data = _parse_collision_cursor(cursor)
 
     if resolved_mode == "clusters" and cursor_data:
-        raise HTTPException(status_code=400, detail="cursor is only supported for points mode")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="cursor is only supported for points mode",
+            details={"field": "cursor", "mode": resolved_mode},
+        )
 
     if resolved_mode == "points":
         return _collision_points_payload(

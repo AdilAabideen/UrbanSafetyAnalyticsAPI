@@ -30,7 +30,7 @@ from .report_event_utils import (
     _validate_optional_bbox,
 )
 from ..db import get_db
-from ..errors import DependencyError
+from ..errors import DependencyError, NotFoundError, ValidationError
 from ..schemas.report_event_schemas import ReportedEventCreateRequest, ReportedEventModerationRequest
 
 
@@ -270,7 +270,10 @@ def get_report_by_id(db: Session, report_id: int, include_admin_fields=False):
     )
     row = _execute(db, query, {"report_id": report_id}).mappings().first()
     if not row:
-        raise HTTPException(status_code=404, detail="Reported event not found")
+        raise NotFoundError(
+            error="REPORTED_EVENT_NOT_FOUND",
+            message="Reported event not found",
+        )
     return _report_to_dict(row, include_admin_fields=include_admin_fields)
 
 
@@ -356,9 +359,17 @@ def list_admin_reports(
     from_month_date = _parse_month(from_month, "from")
     to_month_date = _parse_month(to_month, "to")
     if from_month_date and to_month_date and from_month_date > to_month_date:
-        raise HTTPException(status_code=400, detail="from must be less than or equal to to")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="from must be less than or equal to to",
+            details={"field": "from/to"},
+        )
     if (from_month_date is None) != (to_month_date is None):
-        raise HTTPException(status_code=400, detail="from and to must be provided together")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="from and to must be provided together",
+            details={"field": "from/to"},
+        )
 
     where_clauses = ["TRUE"]
     query_params = {}
@@ -426,7 +437,10 @@ def moderate_report(db: Session, report_id: int, moderator_id: int, payload: Rep
         },
     ).mappings().first()
     if not row:
-        raise HTTPException(status_code=404, detail="Reported event not found")
+        raise NotFoundError(
+            error="REPORTED_EVENT_NOT_FOUND",
+            message="Reported event not found",
+        )
     db.commit()
     return get_report_by_id(db, report_id, include_admin_fields=True)
 
@@ -449,9 +463,17 @@ def list_user_event_features(
     from_month_date = _parse_month(from_month, "from")
     to_month_date = _parse_month(to_month, "to")
     if from_month_date and to_month_date and from_month_date > to_month_date:
-        raise HTTPException(status_code=400, detail="from must be less than or equal to to")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="from must be less than or equal to to",
+            details={"field": "from/to"},
+        )
     if (from_month_date is None) != (to_month_date is None):
-        raise HTTPException(status_code=400, detail="from and to must be provided together")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="from and to must be provided together",
+            details={"field": "from/to"},
+        )
 
     bbox = _validate_optional_bbox(min_lon, min_lat, max_lon, max_lat)
     where_clauses = ["TRUE"]

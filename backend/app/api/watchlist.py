@@ -18,6 +18,7 @@ from .analytics import (
 )
 from ..api_utils.auth_utils import get_current_user
 from ..db import get_db
+from ..errors import ConflictError, DependencyError, NotFoundError, ValidationError
 
 
 router = APIRouter(tags=["watchlists"])
@@ -61,24 +62,35 @@ def _execute(db, query, params):
     except (InternalError, OperationalError) as exc:
         if hasattr(db, "rollback"):
             db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 
 def _normalize_required_text(value, field_name):
     normalized = (value or "").strip()
     if not normalized:
-        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message=f"{field_name} is required",
+            details={"field": field_name},
+        )
     return normalized
 
 
 def _validate_bbox(min_lon, min_lat, max_lon, max_lat):
     if min_lon >= max_lon:
-        raise HTTPException(status_code=400, detail="min_lon must be less than max_lon")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="min_lon must be less than max_lon",
+            details={"field": "bbox"},
+        )
     if min_lat >= max_lat:
-        raise HTTPException(status_code=400, detail="min_lat must be less than max_lat")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="min_lat must be less than max_lat",
+            details={"field": "bbox"},
+        )
 
 
 def _normalize_crime_types(values):
@@ -107,9 +119,10 @@ def _normalize_watchlist_mode(value, *, error_context: str):
     }
     canonical = aliases.get(normalized)
     if canonical is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported watchlist travel_mode '{value}' for {error_context}. Use walk or drive.",
+        raise ValidationError(
+            error="INVALID_TRAVEL_MODE",
+            message=f"Unsupported watchlist travel_mode '{value}' for {error_context}. Use walk or drive.",
+            details={"field": "travel_mode", "value": value, "context": error_context},
         )
     return canonical
 
@@ -131,9 +144,10 @@ def _serialize_watchlist_mode(value):
 
 def _validate_watchlist_collision_mode(mode, include_collisions):
     if include_collisions and mode != "drive":
-        raise HTTPException(
-            status_code=400,
-            detail="include_collisions is only supported when travel_mode is drive",
+        raise ValidationError(
+            error="INVALID_MODE_FOR_COLLISIONS",
+            message="include_collisions is only supported when travel_mode is drive",
+            details={"field": "travel_mode", "include_collisions": include_collisions},
         )
 
 
@@ -188,7 +202,10 @@ def _get_watchlist_row(db, watchlist_id, user_id):
     )
     row = _execute(db, query, {"watchlist_id": watchlist_id, "user_id": user_id}).mappings().first()
     if not row:
-        raise HTTPException(status_code=404, detail="Watchlist not found")
+        raise NotFoundError(
+            error="WATCHLIST_NOT_FOUND",
+            message="Watchlist not found",
+        )
     return row
 
 
@@ -278,7 +295,10 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
         },
     ).mappings().first()
     if not row:
-        raise HTTPException(status_code=404, detail="Watchlist not found")
+        raise NotFoundError(
+            error="WATCHLIST_NOT_FOUND",
+            message="Watchlist not found",
+        )
     return row
 
 
@@ -306,7 +326,10 @@ def _latest_complete_month(db: Session, include_collisions: bool = False):
     crime_row = _execute(db, text("SELECT MAX(month) AS max_month FROM crime_events"), {}).mappings().first() or {}
     crime_max_month = crime_row.get("max_month")
     if crime_max_month is None:
-        raise HTTPException(status_code=400, detail="Crime data is unavailable")
+        raise ValidationError(
+            error="CRIME_DATA_UNAVAILABLE",
+            message="Crime data is unavailable",
+        )
 
     dataset_latest = crime_max_month
     if include_collisions:
@@ -317,9 +340,9 @@ def _latest_complete_month(db: Session, include_collisions: bool = False):
         ).mappings().first() or {}
         collision_max_month = collision_row.get("max_month")
         if collision_max_month is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Collision data is unavailable while include_collisions is enabled",
+            raise ValidationError(
+                error="COLLISION_DATA_UNAVAILABLE",
+                message="Collision data is unavailable while include_collisions is enabled",
             )
         dataset_latest = min(dataset_latest, collision_max_month)
 
@@ -338,7 +361,10 @@ def _watchlist_bbox(row):
 def _require_watchlist_preference(db, watchlist_id):
     preference = _get_watchlist_preference(db, watchlist_id)
     if preference is None:
-        raise HTTPException(status_code=400, detail="Watchlist preference is required to run analytics")
+        raise ValidationError(
+            error="WATCHLIST_PREFERENCE_REQUIRED",
+            message="Watchlist preference is required to run analytics",
+        )
     return preference
 
 
@@ -480,7 +506,10 @@ def _read_watchlist_results(
 
     items = [_watchlist_run_to_dict(row) for row in rows]
     if run_id is not None and not items:
-        raise HTTPException(status_code=404, detail="Watchlist result not found")
+        raise NotFoundError(
+            error="WATCHLIST_RESULT_NOT_FOUND",
+            message="Watchlist result not found",
+        )
     return {"items": items}
 
 
@@ -715,7 +744,10 @@ def create_watchlist(
     except IntegrityError as exc:
         if hasattr(db, "rollback"):
             db.rollback()
-        raise HTTPException(status_code=400, detail="Unable to create watchlist") from exc
+        raise ConflictError(
+            error="CONFLICT",
+            message="Unable to create watchlist",
+        ) from exc
 
     return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, row["id"]))}
 
@@ -740,9 +772,10 @@ def update_watchlist(
     bbox_values = [payload.min_lon, payload.min_lat, payload.max_lon, payload.max_lat]
     if any(value is not None for value in bbox_values):
         if not all(value is not None for value in bbox_values):
-            raise HTTPException(
-                status_code=400,
-                detail="min_lon, min_lat, max_lon, and max_lat must all be provided together",
+            raise ValidationError(
+                error="INVALID_REQUEST",
+                message="min_lon, min_lat, max_lon, and max_lat must all be provided together",
+                details={"field": "bbox"},
             )
 
         _validate_bbox(payload.min_lon, payload.min_lat, payload.max_lon, payload.max_lat)
@@ -764,7 +797,10 @@ def update_watchlist(
         )
 
     if not update_fields and payload.preference is None:
-        raise HTTPException(status_code=400, detail="Provide watchlist fields or preference to update")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="Provide watchlist fields or preference to update",
+        )
 
     try:
         if update_fields:
@@ -788,7 +824,10 @@ def update_watchlist(
             if not row:
                 if hasattr(db, "rollback"):
                     db.rollback()
-                raise HTTPException(status_code=404, detail="Watchlist not found")
+                raise NotFoundError(
+                    error="WATCHLIST_NOT_FOUND",
+                    message="Watchlist not found",
+                )
         else:
             row = _get_watchlist_row(db, watchlist_id, current_user["id"])
 
@@ -798,7 +837,10 @@ def update_watchlist(
     except IntegrityError as exc:
         if hasattr(db, "rollback"):
             db.rollback()
-        raise HTTPException(status_code=400, detail="Unable to update watchlist") from exc
+        raise ConflictError(
+            error="CONFLICT",
+            message="Unable to update watchlist",
+        ) from exc
 
     return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, watchlist_id))}
 
@@ -827,7 +869,10 @@ def delete_watchlist(
     if not row:
         if hasattr(db, "rollback"):
             db.rollback()
-        raise HTTPException(status_code=404, detail="Watchlist not found")
+        raise NotFoundError(
+            error="WATCHLIST_NOT_FOUND",
+            message="Watchlist not found",
+        )
 
     if hasattr(db, "commit"):
         db.commit()

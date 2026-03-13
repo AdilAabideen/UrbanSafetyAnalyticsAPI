@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.exc import InternalError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..errors import DependencyError
 
 
 router = APIRouter(tags=["lsoa"])
@@ -14,9 +15,8 @@ def _execute(db, query, params):
         return db.execute(query, params)
     except (InternalError, OperationalError) as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 

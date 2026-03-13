@@ -88,3 +88,16 @@ def test_sessionlocal_can_connect():
         assert isinstance(today, date)
     finally:
         db.close()
+
+
+def test_smoke_validation_error_uses_standard_error_shape():
+    """
+    Calling an endpoint without required params should surface a standardized INVALID_REQUEST error.
+    """
+    response = client.get("/crimes/map")
+
+    assert response.status_code == 400
+    data = response.json()
+    assert data["error"] == "INVALID_REQUEST"
+    assert "details" in data
+    assert isinstance(data["details"].get("errors"), list)

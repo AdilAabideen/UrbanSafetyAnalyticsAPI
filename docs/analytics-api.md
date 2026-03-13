@@ -7,21 +7,25 @@ Docs:
 - Swagger UI: `/docs`
 - OpenAPI JSON: `/openapi.json`
 
-This document covers the current `/analytics/*` surface:
+This document covers the current frontend-facing analytics surface:
 - `GET /analytics/meta`
 - `POST /analytics/risk/score`
 - `POST /analytics/risk/forecast`
 - `GET /analytics/patterns/hotspot-stability`
-- `POST /analytics/routes/risk`
-- `POST /analytics/routes/compare`
+
+Important implementation note:
+- each of the 3 analytics endpoints now stores a snapshot row in Postgres
+- every successful response includes:
+  - `snapshot_id`
+  - `stored_at`
 
 ## Shared Conventions
 
 ### Months
-- Month inputs use `YYYY-MM`.
-- Invalid month format returns `400`.
-- `from` must be less than or equal to `to`.
-- Maximum supported span is `24` months.
+- Month inputs use `YYYY-MM`
+- invalid format returns `400 INVALID_MONTH_FORMAT`
+- `from` must be less than or equal to `to`
+- maximum supported span is `24` months
 
 ### BBox
 - BBox fields use:
@@ -29,22 +33,18 @@ This document covers the current `/analytics/*` surface:
   - `minLat`
   - `maxLon`
   - `maxLat`
-- `minLon` must be less than `maxLon`.
-- `minLat` must be less than `maxLat`.
+- `minLon < maxLon`
+- `minLat < maxLat`
+- partial bbox values return `400 INVALID_BBOX`
 
 ### Collision Inclusion
-- Collisions are only applied when:
+- collisions only affect scoring when:
   - `mode = "drive"`
   - `includeCollisions = true`
-- If collisions are not applied:
-  - the response uses `score_basis = "crime"`
-  - collision metrics/components are omitted
-- If collisions are applied:
-  - the response uses `score_basis = "crime+collision"`
-  - collision metrics/components are included
+- otherwise the response is crime-only
 
 ### Error Shape
-All validation and analytics errors return JSON in this form:
+Validation and analytics errors use:
 
 ```json
 {
@@ -62,11 +62,6 @@ Common error codes:
 - `INVALID_MODE`
 - `INVALID_MODE_FOR_COLLISIONS`
 - `BASELINE_HISTORY_INSUFFICIENT`
-- `INVALID_ROUTE_INPUT`
-- `INVALID_SEGMENT_ID`
-- `ROUTE_HAS_DUPLICATES`
-- `ROUTE_DISCONNECTED`
-- `NO_SEGMENTS_MATCH_ROUTE`
 - `DB_UNAVAILABLE`
 
 ## 1) Analytics Meta
@@ -74,12 +69,11 @@ Common error codes:
 **GET `/analytics/meta`**
 
 Purpose:
-- Discover available months
-- Discover available crime types
-- Get high-level dataset counts
+- discover available month coverage
+- discover available crime types
+- get high-level dataset counts
 
 Response:
-
 ```json
 {
   "months": {
@@ -100,17 +94,21 @@ Response:
 }
 ```
 
-## 2) Area Risk Score
+Use for:
+- page bootstrap
+- month pickers
+- crime type dropdowns
+
+## 2) Risk Score
 
 **POST `/analytics/risk/score`**
 
 Purpose:
-- Compute an area-level risk score for a bbox over a month window
-- Crime-only by default
-- Crime + collision severity when enabled in drive mode
+- compute an area-level risk score for a bbox over a time window
+- crime-only by default
+- crime + collision severity when enabled in drive mode
 
 Request body:
-
 ```json
 {
   "from": "2025-01",
@@ -130,7 +128,6 @@ Request body:
 ```
 
 Response:
-
 ```json
 {
   "scope": {
@@ -147,6 +144,8 @@ Response:
     "includeCollisions": true
   },
   "generated_at": "2026-03-13T10:00:00Z",
+  "snapshot_id": 11,
+  "stored_at": "2026-03-13T10:00:00Z",
   "score_basis": "crime+collision",
   "risk_score": 92,
   "score": 92,
@@ -154,10 +153,15 @@ Response:
   "band": "amber",
   "metrics": {
     "total_crimes": 7388,
+    "approved_user_reports": 0,
+    "user_reported_crime_signal": 0.0,
+    "effective_total_crimes": 7388.0,
     "area_km2": 67.142,
     "crimes_per_km2": 110.035,
+    "effective_crimes_per_km2": 110.035,
     "segments_considered": 14940,
     "avg_crimes_per_km": 4.187,
+    "avg_user_reported_crime_signal_per_km": 0.0,
     "red_segment_share": 0.058,
     "weights_applied": {
       "w_crime": 1.0,
@@ -170,32 +174,37 @@ Response:
     "avg_collision_points_per_km": 0.091
   },
   "explain": {
-    "reading": "This bbox sits above the wider network average and falls into the upper 20% of observed risk."
+    "reading": "This bbox sits above the wider network average and falls into the upper 20% of observed risk.",
+    "user_reports": "Approved user-reported crimes are blended into the crime density as a capped low-weight supplement and do not override official counts."
   }
 }
 ```
 
 Notes:
-- `risk_score` and `score` are the same numeric value.
-- `band` is derived from the score percentile:
+- `score` and `risk_score` are the same numeric value
+- `band` is based on percentile:
   - `red`
   - `amber`
   - `green`
-- When collisions are not applied:
+- if collisions are not applied:
   - `score_basis = "crime"`
-  - collision metrics are omitted
+  - collision metrics are omitted from `metrics`
+
+Use for:
+- headline risk card
+- area risk panel
+- map sidebar summary
 
 ## 3) Risk Forecast
 
 **POST `/analytics/risk/forecast`**
 
 Purpose:
-- Forecast the next month using the preceding baseline window
-- Crime-only by default
-- Can include collision context in drive mode
+- forecast the next month using the immediately preceding baseline window
+- crime-only by default
+- optionally include collisions in drive mode
 
 Request body:
-
 ```json
 {
   "target": "2025-07",
@@ -216,7 +225,6 @@ Request body:
 ```
 
 Response:
-
 ```json
 {
   "scope": {
@@ -234,14 +242,19 @@ Response:
     "includeCollisions": true
   },
   "generated_at": "2026-03-13T10:00:00Z",
+  "snapshot_id": 21,
+  "stored_at": "2026-03-13T10:00:00Z",
   "score_basis": "crime+collision",
   "history": [
     {
       "month": "2025-01",
-      "crime_count": 2411,
+      "official_crime_count": 2411,
+      "approved_user_reports": 0,
+      "user_reported_crime_signal": 0.0,
+      "crime_count": 2411.0,
       "collision_count": 31,
       "collision_points": 63.5,
-      "combined_value": 2474.5
+      "combined_value": 2461.8
     }
   ],
   "forecast": {
@@ -253,7 +266,10 @@ Response:
     "components": {
       "crimes": {
         "expected_count": 2555,
-        "baseline_mean": 2555.167
+        "baseline_mean": 2555.167,
+        "baseline_official_mean": 2555.167,
+        "baseline_user_reported_signal_mean": 0.0,
+        "baseline_approved_user_reports_mean": 0.0
       },
       "collisions": {
         "expected_count": 32,
@@ -263,8 +279,8 @@ Response:
         "applied": true
       },
       "combined": {
-        "expected_value": 2621.167,
-        "baseline_mean": 2621.167,
+        "expected_value": 2607.967,
+        "baseline_mean": 2607.967,
         "ratio": 1.0
       }
     },
@@ -274,47 +290,53 @@ Response:
   },
   "explanation": {
     "summary": "The forecast uses the mean monthly count over the immediately preceding baseline window and a simple normal approximation around the Poisson mean.",
-    "collisions": "When includeCollisions is true in drive mode, the response also reports monthly collision counts and severity-weighted collision points."
+    "collisions": "When includeCollisions is true in drive mode, the response also reports monthly collision counts and severity-weighted collision points.",
+    "user_reports": "Approved user-reported crimes are blended into the crime signal as a capped low-weight supplement before the monthly baseline is averaged."
   }
 }
 ```
 
 Notes:
-- In crime-only mode:
+- in crime-only mode:
   - `score_basis = "crime"`
-  - `history` includes only `month` and `crime_count`
-  - `forecast.components` includes only `crimes`
-- In drive + collision mode:
-  - `history` includes collision fields
+  - `history` contains crime fields only
+  - `forecast.components` contains only `crimes`
+- in drive + collision mode:
+  - `history` also contains `collision_count`, `collision_points`, `combined_value`
   - `forecast.components.collisions` and `forecast.components.combined` are included
+
+Use for:
+- forecast card
+- next-month expectation panel
+- forecast chart with baseline history
 
 ## 4) Hotspot Stability
 
 **GET `/analytics/patterns/hotspot-stability`**
 
 Purpose:
-- Track whether the top risky roads in a time window persist from month to month
+- measure whether the top risky roads are persisting or changing month-to-month
 
 Query params:
-- `from` required
-- `to` required
-- `k` optional, default `20`, min `5`, max `200`
-- `includeLists` optional, default `false`
-- optional bbox:
-  - `minLon`
-  - `minLat`
-  - `maxLon`
-  - `maxLat`
-- `crimeType` optional
+- required:
+  - `from`
+  - `to`
+- optional:
+  - `k` default `20`, min `5`, max `200`
+  - `includeLists` default `false`
+  - bbox:
+    - `minLon`
+    - `minLat`
+    - `maxLon`
+    - `maxLat`
+  - `crimeType`
 
 Example:
-
 ```txt
 /analytics/patterns/hotspot-stability?from=2025-01&to=2025-03&minLon=-1.60&minLat=53.78&maxLon=-1.52&maxLat=53.82&k=20&includeLists=true
 ```
 
 Response:
-
 ```json
 {
   "scope": {
@@ -330,11 +352,18 @@ Response:
     "k": 20
   },
   "generated_at": "2026-03-13T10:00:00Z",
+  "snapshot_id": 31,
+  "stored_at": "2026-03-13T10:00:00Z",
   "stability_series": [
     {
       "month": "2025-02",
       "jaccard_vs_prev": 0.6667,
       "overlap_count": 16
+    },
+    {
+      "month": "2025-03",
+      "jaccard_vs_prev": 0.7391,
+      "overlap_count": 17
     }
   ],
   "persistent_hotspots": [
@@ -359,194 +388,99 @@ Response:
 }
 ```
 
-## 5) Route Risk
-
-**POST `/analytics/routes/risk`**
-
-Purpose:
-- Score a single route using either:
-  - `segment_ids`
-  - `route_line`
-
-Recommended frontend input:
-- Prefer `route_line`
-- Use `segment_ids` only when you already have a snapped road path
-
-### Option A: `segment_ids`
-
-Request body:
-
-```json
-{
-  "from": "2025-01",
-  "to": "2025-03",
-  "segment_ids": [118447, 118667, 119060],
-  "checkConnectivity": true,
-  "threshold_m": 20
-}
-```
-
-### Option B: `route_line`
-
-Request body:
-
-```json
-{
-  "from": "2025-01",
-  "to": "2025-03",
-  "mode": "drive",
-  "includeCollisions": true,
-  "buffer_m": 25,
-  "route_line": {
-    "type": "LineString",
-    "coordinates": [
-      [-1.560, 53.800],
-      [-1.550, 53.805],
-      [-1.540, 53.810]
-    ]
-  }
-}
-```
-
-Response:
-
-```json
-{
-  "scope": {
-    "from": "2025-01",
-    "to": "2025-03",
-    "mode": "walk",
-    "crimeType": null,
-    "includeCollisions": false,
-    "input_type": "segment_ids"
-  },
-  "generated_at": "2026-03-13T10:00:00Z",
-  "route_stats": {
-    "segment_count": 3,
-    "total_length_km": 0.742,
-    "total_crimes": 9,
-    "total_collisions": 0,
-    "score_raw": 12.314,
-    "score_pct": 0.82,
-    "band": "amber",
-    "explanation": "This route sits above the wider network average and falls into the upper 20% of observed risk."
-  },
-  "connectivity": {
-    "is_connected": false,
-    "breaks": [
-      {
-        "index": 2,
-        "from_segment_id": 118667,
-        "to_segment_id": 119060,
-        "distance_m": 31.2
-      }
-    ]
-  },
-  "worst_segments": [
-    {
-      "segment_id": 119060,
-      "name": "Some Road",
-      "highway": "primary",
-      "crimes": 4,
-      "collisions": 0,
-      "crimes_per_km": 18.421,
-      "collision_density": 0.0,
-      "contribution": 2.911
-    }
-  ]
-}
-```
-
 Notes:
-- If `segment_ids` are disconnected:
-  - the API still returns a score by default
-  - `connectivity.is_connected` will be `false`
-  - `connectivity.breaks` will explain where the route breaks
-- Use `failOnDisconnect=true` to fail instead
+- `topk_by_month` is only returned when `includeLists = true`
+- `jaccard_vs_prev` is always between `0` and `1`
+- higher `average_jaccard` means hotspot roads are more persistent
 
-## 6) Route Compare
+Use for:
+- stability line chart
+- persistent hotspots table
+- “are risky roads changing or staying the same?” panel
 
-**POST `/analytics/routes/compare`**
+## Suggested Frontend TypeScript Shapes
 
-Purpose:
-- Compare `2` to `5` routes in one request
+```ts
+export type AnalyticsError = {
+  error: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
 
-Request body:
+export type AnalyticsScope = {
+  from?: string;
+  to?: string;
+  target?: string;
+  baselineMonths?: number;
+  bbox?: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
+  mode?: string;
+  crimeType?: string | null;
+  includeCollisions?: boolean;
+  method?: string;
+  k?: number;
+};
 
-```json
-{
-  "from": "2025-01",
-  "to": "2025-03",
-  "mode": "drive",
-  "includeCollisions": true,
-  "routes": [
-    {
-      "name": "Route A",
-      "route_line": {
-        "type": "LineString",
-        "coordinates": [
-          [-1.560, 53.800],
-          [-1.550, 53.805]
-        ]
-      }
-    },
-    {
-      "name": "Route B",
-      "route_line": {
-        "type": "LineString",
-        "coordinates": [
-          [-1.545, 53.798],
-          [-1.535, 53.804]
-        ]
-      }
-    }
-  ]
-}
+export type RiskScoreResponse = {
+  scope: AnalyticsScope;
+  generated_at: string;
+  snapshot_id: number;
+  stored_at: string;
+  score_basis: "crime" | "crime+collision";
+  risk_score: number;
+  score: number;
+  pct: number;
+  band: "green" | "amber" | "red";
+  metrics: Record<string, unknown>;
+  explain: {
+    reading: string;
+    user_reports?: string;
+  };
+};
+
+export type RiskForecastResponse = {
+  scope: AnalyticsScope;
+  generated_at: string;
+  snapshot_id: number;
+  stored_at: string;
+  score_basis: "crime" | "crime+collision";
+  history: Array<Record<string, unknown>>;
+  forecast: Record<string, unknown>;
+  explanation: {
+    summary: string;
+    collisions?: string;
+    user_reports?: string;
+  };
+};
+
+export type HotspotStabilityResponse = {
+  scope: AnalyticsScope;
+  generated_at: string;
+  snapshot_id: number;
+  stored_at: string;
+  stability_series: Array<{
+    month: string;
+    jaccard_vs_prev: number;
+    overlap_count: number;
+  }>;
+  persistent_hotspots: Array<{
+    segment_id: number;
+    appearances: number;
+    appearance_ratio: number;
+  }>;
+  summary: {
+    months_evaluated: number;
+    average_jaccard: number;
+    persistent_hotspot_count: number;
+    notes: string;
+  };
+  topk_by_month?: Array<{
+    month: string;
+    segment_ids: number[];
+  }>;
+};
 ```
-
-Response:
-
-```json
-{
-  "scope": {
-    "from": "2025-01",
-    "to": "2025-03",
-    "mode": "drive",
-    "crimeType": null,
-    "includeCollisions": true
-  },
-  "generated_at": "2026-03-13T10:00:00Z",
-  "results": [
-    {
-      "name": "Route A",
-      "score_raw": 8.211,
-      "score_pct": 0.75,
-      "band": "green",
-      "total_length_km": 0.742,
-      "total_crimes": 9,
-      "total_collisions": 1,
-      "is_connected": true,
-      "break_count": 0,
-      "worst_segments": [],
-      "explanation": "This route sits below the upper-risk bands for the selected period."
-    }
-  ],
-  "ranking": ["Route A", "Route B"],
-  "summary": {
-    "safest_route": "Route A",
-    "riskiest_route": "Route B",
-    "notes": "Routes are ranked from lowest risk score to highest risk score.",
-    "deltas_vs_safest": [
-      {
-        "route_name": "Route B",
-        "absolute_delta": 6.341,
-        "percent_delta": 0.772
-      }
-    ]
-  }
-}
-```
-
-Notes:
-- If all compared routes have zero observed risk, `summary.notes` explains that directly.
-- `band` and `explanation` are returned per route.

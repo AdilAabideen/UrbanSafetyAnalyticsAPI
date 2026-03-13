@@ -38,6 +38,17 @@ This file summarizes the current live backend endpoint surface.
 - `GET /analytics/meta`
   Global metadata endpoint for available months, crime types, and top-level dataset counts.
 
+## Advanced Analytics
+
+- `POST /analytics/risk/score`
+  Area risk score for a bbox and time window. Stores a snapshot row and returns `snapshot_id`.
+
+- `POST /analytics/risk/forecast`
+  Baseline-window forecast for a bbox and target month. Stores a snapshot row and returns `snapshot_id`.
+
+- `GET /analytics/patterns/hotspot-stability`
+  Month-to-month hotspot persistence for a bbox/time window. Stores a snapshot row and returns `snapshot_id`.
+
 ## Crimes
 
 - `GET /crimes/incidents`
@@ -119,6 +130,7 @@ This file summarizes the current live backend endpoint surface.
 - Core: `2`
 - Auth: `4`
 - Global discoverability: `1`
+- Advanced analytics: `3`
 - Crimes: `5`
 - Collisions: `4`
 - Roads analytics: `4`
@@ -126,4 +138,4 @@ This file summarizes the current live backend endpoint surface.
 - LSOA: `1`
 - Watchlists: `4`
 
-Total current endpoints: `27`
+Total current endpoints: `30`

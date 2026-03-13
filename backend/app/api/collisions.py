@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
-from .crime_utils import (
+from ..api_utils.crime_utils import (
     _bbox_meta,
     _cluster_grid_size,
     _default_limit,

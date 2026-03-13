@@ -4,29 +4,38 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
-from .crime_utils import (
+from ..api_utils.crime_utils import (
+    _analytics_request_filters,
+    _analytics_response_filters,
     _analytics_snapshot,
     _analytics_filters,
-    _bbox_meta,
     _bind_analytics_filter_params,
-    _cluster_feature,
-    _cluster_grid_size,
-    _crime_filters_meta,
-    _crime_map_feature,
+    _crime_clusters_payload,
+    _crime_points_payload,
     _default_limit,
     _execute,
-    _map_filters,
     _normalize_filter_values,
     _optional_bbox,
     _parse_cursor,
     _parse_json,
-    _required_bbox,
-    _resolve_from_to_filter,
+    _point_next_cursor,
+    _incident_item,
     _resolve_mode,
     _resolve_month_filter,
+    _required_bbox,
+    _resolve_from_to_filter,
+    _sorted_count_items,
     _where_sql,
 )
 from ..db import get_db
+from ..schemas.crime_schemas import (
+    CrimeAnalyticsSummaryResponse,
+    CrimeDetailFeature,
+    CrimeIncidentItem,
+    CrimeIncidentsResponse,
+    CrimeMapResponse,
+    CrimeTimeseriesResponse,
+)
 
 
 router = APIRouter(tags=["crimes"])
@@ -34,314 +43,10 @@ router = APIRouter(tags=["crimes"])
 MAX_CRIME_LIMIT = 10000
 
 
-def _point_next_cursor(rows, limit):
-    if len(rows) <= limit or not rows[:limit]:
-        return None
-
-    last_row = rows[limit - 1]
-    return f"{last_row['month_label']}|{last_row['id']}"
 
 
-def _incident_item(row):
-    return {
-        "id": row["id"],
-        "crime_id": row["crime_id"],
-        "month": row["month_label"],
-        "crime_type": row["crime_type"],
-        "last_outcome_category": row["last_outcome_category"],
-        "location_text": row["location_text"],
-        "reported_by": row["reported_by"],
-        "falls_within": row["falls_within"],
-        "lsoa_code": row["lsoa_code"],
-        "lsoa_name": row["lsoa_name"],
-        "lon": row["lon"],
-        "lat": row["lat"],
-    }
-
-
-def _sorted_count_items(counts, field_name):
-    return [
-        {field_name: label, "count": count}
-        for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    ]
-
-
-def _analytics_request_filters(
-    from_month,
-    to_month,
-    min_lon,
-    min_lat,
-    max_lon,
-    max_lat,
-    crime_type,
-    last_outcome_category,
-    lsoa_name,
-    required_range,
-):
-    range_filter = _resolve_from_to_filter(from_month, to_month, required=required_range)
-    bbox = _optional_bbox(min_lon, min_lat, max_lon, max_lat)
-    crime_types = _normalize_filter_values(crime_type, "crimeType")
-    last_outcome_categories = _normalize_filter_values(last_outcome_category, "lastOutcomeCategory")
-    lsoa_names = _normalize_filter_values(lsoa_name, "lsoaName")
-    return range_filter, bbox, crime_types, last_outcome_categories, lsoa_names
-
-
-def _analytics_response_filters(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names):
-    return {
-        "from": range_filter["from"],
-        "to": range_filter["to"],
-        "crimeType": crime_types,
-        "lastOutcomeCategory": last_outcome_categories,
-        "lsoaName": lsoa_names,
-        "bbox": None
-        if not bbox
-        else _bbox_meta(
-            bbox["min_lon"],
-            bbox["min_lat"],
-            bbox["max_lon"],
-            bbox["max_lat"],
-        ),
-    }
-
-
-def _crime_points_payload(
-    db,
-    month_filter,
-    bbox,
-    zoom,
-    crime_types,
-    last_outcome_categories,
-    lsoa_names,
-    limit,
-    cursor_data,
-):
-    where_clauses, query_params = _map_filters(
-        month_filter,
-        bbox,
-        crime_types,
-        last_outcome_categories,
-        lsoa_names,
-    )
-    query_params["row_limit"] = limit + 1
-
-    cursor_clause = ""
-    if cursor_data:
-        cursor_clause = """
-        AND (
-            ce.month < :cursor_month
-            OR (ce.month = :cursor_month AND ce.id < :cursor_id)
-        )
-        """
-        query_params.update(cursor_data)
-
-    point_query = text(
-        f"""
-        SELECT
-            ce.id,
-            ce.crime_id,
-            to_char(ce.month, 'YYYY-MM') AS month_label,
-            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-            ce.last_outcome_category,
-            ce.location_text,
-            ce.reported_by,
-            ce.falls_within,
-            ce.lsoa_code,
-            ce.lsoa_name,
-            ST_AsGeoJSON(ce.geom) AS geometry
-        FROM crime_events ce
-        WHERE {" AND ".join(where_clauses)}
-        {cursor_clause}
-        ORDER BY ce.month DESC, ce.id DESC
-        LIMIT :row_limit
-        """
-    )
-
-    if crime_types:
-        point_query = point_query.bindparams(bindparam("crime_types", expanding=True))
-    if last_outcome_categories:
-        point_query = point_query.bindparams(
-            bindparam("last_outcome_categories", expanding=True)
-        )
-    if lsoa_names:
-        point_query = point_query.bindparams(bindparam("lsoa_names", expanding=True))
-
-    rows = _execute(db, point_query, query_params).mappings().all()
-    truncated = len(rows) > limit
-    page_rows = rows[:limit]
-
-    return {
-        "type": "FeatureCollection",
-        "features": [_crime_map_feature(row) for row in page_rows],
-        "meta": {
-            "mode": "points",
-            "zoom": zoom,
-            "returned": len(page_rows),
-            "limit": limit,
-            "truncated": truncated,
-            "nextCursor": _point_next_cursor(rows, limit),
-            "filters": _crime_filters_meta(
-                month_filter["month"],
-                month_filter["startMonth"],
-                month_filter["endMonth"],
-                crime_types,
-                last_outcome_categories,
-                lsoa_names,
-            ),
-            "bbox": _bbox_meta(
-                bbox["min_lon"],
-                bbox["min_lat"],
-                bbox["max_lon"],
-                bbox["max_lat"],
-            ),
-        },
-    }
-
-
-def _crime_clusters_payload(
-    db,
-    month_filter,
-    bbox,
-    zoom,
-    crime_types,
-    last_outcome_categories,
-    lsoa_names,
-    limit,
-):
-    where_clauses, query_params = _map_filters(
-        month_filter,
-        bbox,
-        crime_types,
-        last_outcome_categories,
-        lsoa_names,
-    )
-    cell_width, cell_height = _cluster_grid_size(bbox, zoom)
-    query_params["row_limit"] = limit + 1
-    query_params["zoom"] = zoom
-    query_params["cell_width"] = cell_width
-    query_params["cell_height"] = cell_height
-
-
-    cluster_query = text(
-        f"""
-        WITH filtered AS (
-            SELECT
-                COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-                ce.lon,
-                ce.lat
-            FROM crime_events ce
-            WHERE {" AND ".join(where_clauses)}
-        ),
-        bucketed AS (
-            SELECT
-                floor((lon - :min_lon) / :cell_width)::bigint AS cell_x,
-                floor((lat - :min_lat) / :cell_height)::bigint AS cell_y,
-                crime_type,
-                lon,
-                lat
-            FROM filtered
-        ),
-        cluster_geom AS (
-            SELECT
-                cell_x,
-                cell_y,
-                COUNT(*) AS point_count,
-                json_build_object(
-                    'type', 'Point',
-                    'coordinates', json_build_array(AVG(lon), AVG(lat))
-                ) AS geometry
-            FROM bucketed
-            GROUP BY cell_x, cell_y
-        ),
-        type_counts AS (
-            SELECT
-                cell_x,
-                cell_y,
-                crime_type,
-                COUNT(*) AS crime_count
-            FROM bucketed
-            GROUP BY cell_x, cell_y, crime_type
-        ),
-        ranked_types AS (
-            SELECT
-                cell_x,
-                cell_y,
-                crime_type,
-                crime_count,
-                ROW_NUMBER() OVER (
-                    PARTITION BY cell_x, cell_y
-                    ORDER BY crime_count DESC, crime_type ASC
-                ) AS rn
-            FROM type_counts
-        ),
-        cluster_types AS (
-            SELECT
-                cell_x,
-                cell_y,
-                COALESCE(
-                    jsonb_object_agg(crime_type, crime_count) FILTER (WHERE rn <= 3),
-                    '{{}}'::jsonb
-                ) AS top_crime_types
-            FROM ranked_types
-            GROUP BY cell_x, cell_y
-        )
-        SELECT
-            concat(:zoom, ':', cluster_geom.cell_x, ':', cluster_geom.cell_y) AS cluster_id,
-            cluster_geom.point_count AS count,
-            cluster_geom.geometry,
-            cluster_types.top_crime_types
-        FROM cluster_geom
-        JOIN cluster_types
-          ON cluster_types.cell_x = cluster_geom.cell_x
-         AND cluster_types.cell_y = cluster_geom.cell_y
-        ORDER BY cluster_geom.point_count DESC, cluster_geom.cell_y ASC, cluster_geom.cell_x ASC
-        LIMIT :row_limit
-        """
-    )
-
-    if crime_types:
-        cluster_query = cluster_query.bindparams(bindparam("crime_types", expanding=True))
-    if last_outcome_categories:
-        cluster_query = cluster_query.bindparams(
-            bindparam("last_outcome_categories", expanding=True)
-        )
-    if lsoa_names:
-        cluster_query = cluster_query.bindparams(bindparam("lsoa_names", expanding=True))
-
-
-    rows = _execute(db, cluster_query, query_params).mappings().all()
-
-    truncated = len(rows) > limit
-    page_rows = rows[:limit]
-
-    return {
-        "type": "FeatureCollection",
-        "features": [_cluster_feature(row) for row in page_rows],
-        "meta": {
-            "mode": "clusters",
-            "zoom": zoom,
-            "returned": len(page_rows),
-            "limit": limit,
-            "truncated": truncated,
-            "nextCursor": None,
-            "filters": _crime_filters_meta(
-                month_filter["month"],
-                month_filter["startMonth"],
-                month_filter["endMonth"],
-                crime_types,
-                last_outcome_categories,
-                lsoa_names,
-            ),
-            "bbox": _bbox_meta(
-                bbox["min_lon"],
-                bbox["min_lat"],
-                bbox["max_lon"],
-                bbox["max_lat"],
-            ),
-        },
-    }
-
-
-@router.get("/crimes/incidents")
+# Incident listing for analytics rows
+@router.get("/crimes/incidents", response_model=CrimeIncidentsResponse)
 def get_crime_incidents(
     from_month: str = Query(..., alias="from"),
     to_month: str = Query(..., alias="to"),
@@ -355,7 +60,7 @@ def get_crime_incidents(
     limit: int = Query(250, ge=1, le=1000),
     cursor: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-):
+) -> CrimeIncidentsResponse:
     range_filter, bbox, crime_types, last_outcome_categories, lsoa_names = _analytics_request_filters(
         from_month,
         to_month,
@@ -391,6 +96,7 @@ def get_crime_incidents(
 
     query = text(
         f"""
+        /* crimes_incidents */
         SELECT
             ce.id,
             ce.crime_id,
@@ -435,7 +141,8 @@ def get_crime_incidents(
     }
 
 
-@router.get("/crimes/map")
+# Map view endpoint for interactive tiles
+@router.get("/crimes/map", response_model=CrimeMapResponse)
 def get_crimes_map(
     minLon: float = Query(..., ge=-180, le=180),
     minLat: float = Query(..., ge=-90, le=90),
@@ -452,7 +159,7 @@ def get_crimes_map(
     mode: str = Query("auto"),
     cursor: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-):
+) -> CrimeMapResponse:
     month_filter = _resolve_month_filter(month, startMonth, endMonth)
     bbox = _required_bbox(minLon, minLat, maxLon, maxLat)
     crime_types = _normalize_filter_values(crimeType, "crimeType")
@@ -493,7 +200,8 @@ def get_crimes_map(
         cursor_data=cursor_data,
     )
 
-@router.get("/crimes/analytics/summary")
+# Overview card data for analytics
+@router.get("/crimes/analytics/summary", response_model=CrimeAnalyticsSummaryResponse)
 def get_crime_analytics_summary(
     from_month: str = Query(..., alias="from"),
     to_month: str = Query(..., alias="to"),
@@ -505,7 +213,7 @@ def get_crime_analytics_summary(
     lastOutcomeCategory: Optional[List[str]] = Query(None),
     lsoaName: Optional[List[str]] = Query(None),
     db: Session = Depends(get_db),
-):
+) -> CrimeAnalyticsSummaryResponse:
     range_filter, bbox, crime_types, last_outcome_categories, lsoa_names = _analytics_request_filters(
         from_month,
         to_month,
@@ -546,7 +254,8 @@ def get_crime_analytics_summary(
         "top_outcomes": outcome_rows,
     }
 
-@router.get("/crimes/analytics/timeseries")
+# Monthly trend series used by analytics chart
+@router.get("/crimes/analytics/timeseries", response_model=CrimeTimeseriesResponse)
 def get_crime_analytics_timeseries(
     from_month: str = Query(..., alias="from"),
     to_month: str = Query(..., alias="to"),
@@ -558,7 +267,7 @@ def get_crime_analytics_timeseries(
     lastOutcomeCategory: Optional[List[str]] = Query(None),
     lsoaName: Optional[List[str]] = Query(None),
     db: Session = Depends(get_db),
-):
+) -> CrimeTimeseriesResponse:
     range_filter, bbox, crime_types, last_outcome_categories, lsoa_names = _analytics_request_filters(
         from_month,
         to_month,
@@ -589,13 +298,15 @@ def get_crime_analytics_timeseries(
         "total": sum(row["count"] for row in rows),
     }
 
-@router.get("/crimes/{crime_id}")
+# Single crime detail endpoint
+@router.get("/crimes/{crime_id}", response_model=CrimeDetailFeature)
 def get_crime_by_id(
     crime_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-):
+) -> CrimeDetailFeature:
     query = text(
         """
+        /* crimes_detail */
         SELECT json_build_object(
             'type', 'Feature',
             'geometry', ST_AsGeoJSON(ce.geom)::json,

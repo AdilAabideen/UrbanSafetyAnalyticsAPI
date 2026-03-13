@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
@@ -274,6 +275,192 @@ def _execute(db: Session, query, params: Optional[Dict[str, Any]] = None):
             "DB_UNAVAILABLE",
             "Database unavailable while computing analytics",
         ) from exc
+
+
+def _store_risk_score_snapshot(
+    db: Session,
+    request: RiskScoreRequest,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    query = text(
+        """
+        INSERT INTO analytics_risk_score_snapshots (
+            from_month,
+            to_month,
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+            crime_type,
+            mode,
+            include_collisions,
+            weights,
+            payload_json
+        )
+        VALUES (
+            :from_month,
+            :to_month,
+            :min_lon,
+            :min_lat,
+            :max_lon,
+            :max_lat,
+            :crime_type,
+            :mode,
+            :include_collisions,
+            CAST(:weights AS JSONB),
+            CAST(:payload_json AS JSONB)
+        )
+        RETURNING id, created_at
+        """
+    )
+    row = _execute(
+        db,
+        query,
+        {
+            "from_month": _parse_month(request.from_, "from"),
+            "to_month": _parse_month(request.to, "to"),
+            "min_lon": request.minLon,
+            "min_lat": request.minLat,
+            "max_lon": request.maxLon,
+            "max_lat": request.maxLat,
+            "crime_type": _normalize_string(request.crimeType),
+            "mode": _normalize_string(request.mode) or "walk",
+            "include_collisions": bool(request.includeCollisions),
+            "weights": json.dumps(jsonable_encoder(request.weights.model_dump())),
+            "payload_json": json.dumps(jsonable_encoder(payload)),
+        },
+    ).mappings().first()
+    if hasattr(db, "commit"):
+        db.commit()
+    return {"id": row["id"], "created_at": row["created_at"]}
+
+
+def _store_risk_forecast_snapshot(
+    db: Session,
+    request: ForecastRequest,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    query = text(
+        """
+        INSERT INTO analytics_risk_forecast_snapshots (
+            target_month,
+            baseline_months,
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+            crime_type,
+            mode,
+            method,
+            include_collisions,
+            return_risk_projection,
+            weights,
+            payload_json
+        )
+        VALUES (
+            :target_month,
+            :baseline_months,
+            :min_lon,
+            :min_lat,
+            :max_lon,
+            :max_lat,
+            :crime_type,
+            :mode,
+            :method,
+            :include_collisions,
+            :return_risk_projection,
+            CAST(:weights AS JSONB),
+            CAST(:payload_json AS JSONB)
+        )
+        RETURNING id, created_at
+        """
+    )
+    row = _execute(
+        db,
+        query,
+        {
+            "target_month": _parse_month(request.target, "target"),
+            "baseline_months": int(request.baselineMonths),
+            "min_lon": request.minLon,
+            "min_lat": request.minLat,
+            "max_lon": request.maxLon,
+            "max_lat": request.maxLat,
+            "crime_type": _normalize_string(request.crimeType),
+            "mode": _normalize_string(request.mode) or "walk",
+            "method": _normalize_string(request.method) or "poisson_mean",
+            "include_collisions": bool(request.includeCollisions),
+            "return_risk_projection": bool(request.returnRiskProjection),
+            "weights": json.dumps(jsonable_encoder(request.weights.model_dump())),
+            "payload_json": json.dumps(jsonable_encoder(payload)),
+        },
+    ).mappings().first()
+    if hasattr(db, "commit"):
+        db.commit()
+    return {"id": row["id"], "created_at": row["created_at"]}
+
+
+def _store_hotspot_stability_snapshot(
+    db: Session,
+    *,
+    from_value: str,
+    to_value: str,
+    k: int,
+    include_lists: bool,
+    min_lon: Optional[float],
+    min_lat: Optional[float],
+    max_lon: Optional[float],
+    max_lat: Optional[float],
+    crime_type: Optional[str],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    query = text(
+        """
+        INSERT INTO analytics_hotspot_stability_snapshots (
+            from_month,
+            to_month,
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+            crime_type,
+            k,
+            include_lists,
+            payload_json
+        )
+        VALUES (
+            :from_month,
+            :to_month,
+            :min_lon,
+            :min_lat,
+            :max_lon,
+            :max_lat,
+            :crime_type,
+            :k,
+            :include_lists,
+            CAST(:payload_json AS JSONB)
+        )
+        RETURNING id, created_at
+        """
+    )
+    row = _execute(
+        db,
+        query,
+        {
+            "from_month": _parse_month(from_value, "from"),
+            "to_month": _parse_month(to_value, "to"),
+            "min_lon": min_lon,
+            "min_lat": min_lat,
+            "max_lon": max_lon,
+            "max_lat": max_lat,
+            "crime_type": _normalize_string(crime_type),
+            "k": int(k),
+            "include_lists": bool(include_lists),
+            "payload_json": json.dumps(jsonable_encoder(payload)),
+        },
+    ).mappings().first()
+    if hasattr(db, "commit"):
+        db.commit()
+    return {"id": row["id"], "created_at": row["created_at"]}
 
 
 def _band_from_pct(pct: float) -> str:
@@ -1846,7 +2033,7 @@ def analytics_meta(db: Session = Depends(get_db)):
 @router.post("/risk/score")
 def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db)):
     try:
-        return build_risk_score_payload(
+        payload = build_risk_score_payload(
             db,
             from_value=request.from_,
             to_value=request.to,
@@ -1860,6 +2047,10 @@ def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db
             w_crime=request.weights.w_crime,
             w_collision=request.weights.w_collision,
         )
+        snapshot = _store_risk_score_snapshot(db, request, payload)
+        payload["snapshot_id"] = snapshot["id"]
+        payload["stored_at"] = snapshot["created_at"]
+        return payload
     except AnalyticsAPIError as exc:
         return _error_response(exc)
 
@@ -1867,7 +2058,7 @@ def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db
 @router.post("/risk/forecast")
 def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_db)):
     try:
-        return build_risk_forecast_payload(
+        payload = build_risk_forecast_payload(
             db,
             target=request.target,
             min_lon=request.minLon,
@@ -1883,6 +2074,10 @@ def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_
             w_crime=request.weights.w_crime,
             w_collision=request.weights.w_collision,
         )
+        snapshot = _store_risk_forecast_snapshot(db, request, payload)
+        payload["snapshot_id"] = snapshot["id"]
+        payload["stored_at"] = snapshot["created_at"]
+        return payload
     except AnalyticsAPIError as exc:
         return _error_response(exc)
 
@@ -1901,7 +2096,7 @@ def analytics_hotspot_stability(
     db: Session = Depends(get_db),
 ):
     try:
-        return build_hotspot_stability_payload(
+        payload = build_hotspot_stability_payload(
             db,
             from_value=from_,
             to_value=to,
@@ -1913,164 +2108,21 @@ def analytics_hotspot_stability(
             max_lat=maxLat,
             crime_type=crimeType,
         )
-    except AnalyticsAPIError as exc:
-        return _error_response(exc)
-
-
-@router.post("/routes/risk")
-def analytics_route_risk(request: RouteRiskRequest, db: Session = Depends(get_db)):
-    try:
-        month_window = _validate_month_window(request.from_, request.to)
-        mode = _normalize_string(request.mode) or "walk"
-        if mode not in {"walk", "drive"}:
-            raise AnalyticsAPIError(400, "INVALID_MODE", "mode must be either walk or drive")
-        route_result = _evaluate_route(
+        snapshot = _store_hotspot_stability_snapshot(
             db,
-            month_window,
-            mode,
-            _normalize_string(request.crimeType),
-            request.includeCollisions,
-            segment_ids=request.segment_ids,
-            route_line=request.route_line,
-            check_connectivity=request.checkConnectivity,
-            threshold_m=request.threshold_m,
-            buffer_m=request.buffer_m,
-            fail_on_disconnect=request.failOnDisconnect,
+            from_value=from_,
+            to_value=to,
+            k=k,
+            include_lists=includeLists,
+            min_lon=minLon,
+            min_lat=minLat,
+            max_lon=maxLon,
+            max_lat=maxLat,
+            crime_type=crimeType,
+            payload=payload,
         )
-        route_pct = _density_percentile(
-            db,
-            month_window,
-            _normalize_string(request.crimeType),
-            route_result["route_stats"]["score_raw"],
-            1.0,
-            1.0 if request.includeCollisions and mode == "drive" else 0.0,
-        )
-        band = _band_from_pct(route_pct)
-        explanation = _band_interpretation(route_pct, "route")
-        if not route_result["connectivity"]["is_connected"] and route_result["input_type"] == "segment_ids":
-            explanation = (
-                explanation
-                + " The supplied segment_ids are not fully connected, so route_line is the safer frontend input if you are drawing user routes."
-            )
-        if route_result["route_stats"]["score_raw"] == 0:
-            explanation = "No recorded crimes or collision severity were found on the matched route segments in the selected window."
-
-        route_result["route_stats"]["score_pct"] = route_pct
-        route_result["route_stats"]["band"] = band
-        route_result["route_stats"]["explanation"] = explanation
-        return {
-            "scope": _scope_payload(
-                month_window,
-                None,
-                {
-                    "mode": mode,
-                    "crimeType": _normalize_string(request.crimeType),
-                    "includeCollisions": request.includeCollisions,
-                    "input_type": route_result["input_type"],
-                },
-            ),
-            "generated_at": _generated_at(),
-            "route_stats": route_result["route_stats"],
-            "connectivity": route_result["connectivity"],
-            "worst_segments": route_result["worst_segments"],
-        }
-    except AnalyticsAPIError as exc:
-        return _error_response(exc)
-
-
-@router.post("/routes/compare")
-def analytics_routes_compare(request: RouteCompareRequest, db: Session = Depends(get_db)):
-    try:
-        month_window = _validate_month_window(request.from_, request.to)
-        mode = _normalize_string(request.mode) or "walk"
-        if mode not in {"walk", "drive"}:
-            raise AnalyticsAPIError(400, "INVALID_MODE", "mode must be either walk or drive")
-        if len(request.routes) < 2 or len(request.routes) > 5:
-            raise AnalyticsAPIError(400, "INVALID_ROUTE_INPUT", "routes must contain between 2 and 5 entries")
-
-        results = []
-        for route in request.routes:
-            evaluation = _evaluate_route(
-                db,
-                month_window,
-                mode,
-                _normalize_string(request.crimeType),
-                request.includeCollisions,
-                segment_ids=route.segment_ids,
-                route_line=route.route_line,
-                check_connectivity=route.checkConnectivity,
-                threshold_m=route.threshold_m,
-                buffer_m=route.buffer_m,
-                fail_on_disconnect=route.failOnDisconnect,
-            )
-            route_pct = _density_percentile(
-                db,
-                month_window,
-                _normalize_string(request.crimeType),
-                evaluation["route_stats"]["score_raw"],
-                1.0,
-                1.0 if request.includeCollisions and mode == "drive" else 0.0,
-            )
-            band = _band_from_pct(route_pct)
-            explanation = _band_interpretation(route_pct, "route")
-            if evaluation["route_stats"]["score_raw"] == 0:
-                explanation = "No recorded crimes or collision severity were found on the matched route segments in the selected window."
-            results.append(
-                {
-                    "name": route.name,
-                    "score_raw": evaluation["route_stats"]["score_raw"],
-                    "score_pct": route_pct,
-                    "band": band,
-                    "total_length_km": evaluation["route_stats"]["total_length_km"],
-                    "total_crimes": evaluation["route_stats"]["total_crimes"],
-                    "total_collisions": evaluation["route_stats"]["total_collisions"],
-                    "is_connected": evaluation["connectivity"]["is_connected"],
-                    "break_count": len(evaluation["connectivity"]["breaks"]),
-                    "worst_segments": evaluation["worst_segments"][:5],
-                    "explanation": explanation,
-                }
-            )
-
-        ranking_rows = sorted(results, key=lambda item: (item["score_raw"], item["name"]))
-        safest_route = ranking_rows[0]
-        riskiest_route = ranking_rows[-1]
-        deltas = []
-        for result in ranking_rows:
-            absolute_delta = _round_rate(result["score_raw"] - safest_route["score_raw"])
-            percent_delta = None
-            if safest_route["score_raw"] > 0:
-                percent_delta = _round_rate((result["score_raw"] - safest_route["score_raw"]) / safest_route["score_raw"])
-            deltas.append(
-                {
-                    "route_name": result["name"],
-                    "absolute_delta": absolute_delta,
-                    "percent_delta": percent_delta,
-                }
-            )
-
-        return {
-            "scope": _scope_payload(
-                month_window,
-                None,
-                {
-                    "mode": mode,
-                    "crimeType": _normalize_string(request.crimeType),
-                    "includeCollisions": request.includeCollisions,
-                },
-            ),
-            "generated_at": _generated_at(),
-            "results": results,
-            "ranking": [item["name"] for item in ranking_rows],
-            "summary": {
-                "safest_route": safest_route["name"],
-                "riskiest_route": riskiest_route["name"],
-                "notes": (
-                    "All compared routes have zero observed risk in the selected window."
-                    if all(result["score_raw"] == 0 for result in results)
-                    else "Routes are ranked from lowest risk score to highest risk score."
-                ),
-                "deltas_vs_safest": deltas,
-            },
-        }
+        payload["snapshot_id"] = snapshot["id"]
+        payload["stored_at"] = snapshot["created_at"]
+        return payload
     except AnalyticsAPIError as exc:
         return _error_response(exc)

@@ -47,21 +47,56 @@ DDL_STATEMENTS = [
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS watchlist_reports (
+    DROP TABLE IF EXISTS watchlist_reports CASCADE
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS analytics_risk_score_snapshots (
         id BIGSERIAL PRIMARY KEY,
-        watchlist_id BIGINT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
-        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         from_month DATE NOT NULL,
         to_month DATE NOT NULL,
-        forecast_target_month DATE,
+        min_lon DOUBLE PRECISION NOT NULL,
+        min_lat DOUBLE PRECISION NOT NULL,
+        max_lon DOUBLE PRECISION NOT NULL,
+        max_lat DOUBLE PRECISION NOT NULL,
         crime_type TEXT,
         mode TEXT NOT NULL,
         include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
         weights JSONB NOT NULL DEFAULT '{}'::JSONB,
-        hotspot_k INTEGER NOT NULL DEFAULT 20,
-        include_hotspot_stability BOOLEAN NOT NULL DEFAULT TRUE,
-        include_forecast BOOLEAN NOT NULL DEFAULT TRUE,
-        baseline_months INTEGER NOT NULL DEFAULT 6,
+        payload_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS analytics_risk_forecast_snapshots (
+        id BIGSERIAL PRIMARY KEY,
+        target_month DATE NOT NULL,
+        baseline_months INTEGER NOT NULL,
+        min_lon DOUBLE PRECISION NOT NULL,
+        min_lat DOUBLE PRECISION NOT NULL,
+        max_lon DOUBLE PRECISION NOT NULL,
+        max_lat DOUBLE PRECISION NOT NULL,
+        crime_type TEXT,
+        mode TEXT NOT NULL,
+        method TEXT NOT NULL,
+        include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
+        return_risk_projection BOOLEAN NOT NULL DEFAULT FALSE,
+        weights JSONB NOT NULL DEFAULT '{}'::JSONB,
+        payload_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS analytics_hotspot_stability_snapshots (
+        id BIGSERIAL PRIMARY KEY,
+        from_month DATE NOT NULL,
+        to_month DATE NOT NULL,
+        min_lon DOUBLE PRECISION,
+        min_lat DOUBLE PRECISION,
+        max_lon DOUBLE PRECISION,
+        max_lat DOUBLE PRECISION,
+        crime_type TEXT,
+        k INTEGER NOT NULL,
+        include_lists BOOLEAN NOT NULL DEFAULT FALSE,
         payload_json JSONB NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -248,8 +283,12 @@ DDL_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
     "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",
-    "CREATE INDEX IF NOT EXISTS watchlist_reports_watchlist_created_idx ON watchlist_reports(watchlist_id, created_at DESC)",
-    "CREATE INDEX IF NOT EXISTS watchlist_reports_user_created_idx ON watchlist_reports(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS analytics_risk_score_snapshots_created_idx ON analytics_risk_score_snapshots(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS analytics_risk_score_snapshots_range_idx ON analytics_risk_score_snapshots(from_month, to_month)",
+    "CREATE INDEX IF NOT EXISTS analytics_risk_forecast_snapshots_created_idx ON analytics_risk_forecast_snapshots(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS analytics_risk_forecast_snapshots_target_idx ON analytics_risk_forecast_snapshots(target_month)",
+    "CREATE INDEX IF NOT EXISTS analytics_hotspot_stability_snapshots_created_idx ON analytics_hotspot_stability_snapshots(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS analytics_hotspot_stability_snapshots_range_idx ON analytics_hotspot_stability_snapshots(from_month, to_month)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_geom_gix ON user_reported_events USING GIST (geom)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_month_idx ON user_reported_events(month)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_segment_idx ON user_reported_events(segment_id)",

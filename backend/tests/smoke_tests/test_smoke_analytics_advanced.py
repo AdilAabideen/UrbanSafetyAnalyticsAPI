@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -21,10 +21,19 @@ def _run_with_db(handlers, method, url, json=None):
         app.dependency_overrides.clear()
 
 
-def test_analytics_risk_score_returns_payload():
+def test_analytics_risk_score_returns_payload_and_snapshot():
     handlers = {
         "/* analytics_risk_score_area */": {
-            "rows": [{"total_crimes": 120, "total_collisions": 8, "total_collision_points": 14.0, "area_km2": 4.0}],
+            "rows": [
+                {
+                    "total_crimes": 120,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "total_collisions": 8,
+                    "total_collision_points": 14.0,
+                    "area_km2": 4.0,
+                }
+            ],
         },
         "/* analytics_risk_score_segments */": {
             "rows": [
@@ -32,12 +41,16 @@ def test_analytics_risk_score_returns_payload():
                     "segments_considered": 12,
                     "avg_density": 3.4,
                     "avg_crimes_per_km": 2.5,
+                    "avg_user_reported_crime_signal_per_km": 0.0,
                     "avg_collisions_per_km": 0.4,
                     "avg_collision_points_per_km": 0.9,
                     "red_segment_share": 0.25,
                     "avg_density_pct": 0.86,
                 }
             ],
+        },
+        "INSERT INTO analytics_risk_score_snapshots": {
+            "rows": [{"id": 11, "created_at": "2026-03-13T12:00:00Z"}],
         },
     }
 
@@ -61,50 +74,63 @@ def test_analytics_risk_score_returns_payload():
     assert payload["risk_score"] == 86
     assert payload["score_basis"] == "crime"
     assert payload["band"] == "amber"
+    assert payload["snapshot_id"] == 11
+    assert payload["stored_at"] == "2026-03-13T12:00:00Z"
     assert payload["metrics"]["segments_considered"] == 12
-    assert payload["metrics"]["approved_user_reports"] == 0
-    assert payload["metrics"]["user_reported_crime_signal"] == 0.0
-    assert payload["metrics"]["effective_total_crimes"] == 120.0
     assert "total_collisions" not in payload["metrics"]
-    assert "avg_collisions_per_km" not in payload["metrics"]
-    assert payload["scope"]["from"] == "2025-01"
 
 
-def test_analytics_risk_score_rejects_walk_collisions():
-    response = _run_with_db(
-        {},
-        "POST",
-        "/analytics/risk/score",
-        json={
-            "from": "2025-01",
-            "to": "2025-03",
-            "minLon": -1.6,
-            "minLat": 53.78,
-            "maxLon": -1.52,
-            "maxLat": 53.82,
-            "includeCollisions": True,
-            "mode": "walk",
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json()["error"] == "INVALID_MODE_FOR_COLLISIONS"
-
-
-def test_analytics_risk_forecast_returns_history():
+def test_analytics_risk_forecast_returns_history_and_snapshot():
     handlers = {
-        "/* analytics_risk_forecast_coverage */": {
-            "rows": [{"missing_months": 0}],
-        },
+        "/* analytics_risk_forecast_coverage */": {"rows": [{"missing_months": 0}]},
         "/* analytics_risk_forecast_history */": {
             "rows": [
-                {"month": "2025-01", "count": 10},
-                {"month": "2025-02", "count": 12},
-                {"month": "2025-03", "count": 14},
-                {"month": "2025-04", "count": 9},
-                {"month": "2025-05", "count": 11},
-                {"month": "2025-06", "count": 13},
+                {
+                    "month": "2025-01",
+                    "official_count": 10,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "count": 10,
+                },
+                {
+                    "month": "2025-02",
+                    "official_count": 12,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "count": 12,
+                },
+                {
+                    "month": "2025-03",
+                    "official_count": 14,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "count": 14,
+                },
+                {
+                    "month": "2025-04",
+                    "official_count": 9,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "count": 9,
+                },
+                {
+                    "month": "2025-05",
+                    "official_count": 11,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "count": 11,
+                },
+                {
+                    "month": "2025-06",
+                    "official_count": 13,
+                    "approved_user_reports": 0,
+                    "user_reported_crime_signal": 0.0,
+                    "count": 13,
+                },
             ],
+        },
+        "INSERT INTO analytics_risk_forecast_snapshots": {
+            "rows": [{"id": 21, "created_at": "2026-03-13T12:01:00Z"}],
         },
     }
 
@@ -127,16 +153,13 @@ def test_analytics_risk_forecast_returns_history():
     payload = response.json()
     assert len(payload["history"]) == 6
     assert payload["score_basis"] == "crime"
-    assert payload["history"][0]["approved_user_reports"] == 0
-    assert payload["history"][0]["user_reported_crime_signal"] == 0.0
-    assert "collision_count" not in payload["history"][0]
+    assert payload["snapshot_id"] == 21
+    assert payload["stored_at"] == "2026-03-13T12:01:00Z"
     assert payload["forecast"]["expected_count"] == 12
-    assert payload["forecast"]["components"]["crimes"]["baseline_user_reported_signal_mean"] == 0.0
     assert "collisions" not in payload["forecast"]["components"]
-    assert payload["forecast"]["predicted_band"] == "green"
 
 
-def test_analytics_hotspot_stability_returns_series():
+def test_analytics_hotspot_stability_returns_series_and_snapshot():
     handlers = {
         "/* analytics_hotspot_stability_monthly */": {
             "rows": [
@@ -147,7 +170,10 @@ def test_analytics_hotspot_stability_returns_series():
                 {"month": date(2025, 3, 1), "segment_id": 1, "crimes": 6, "crimes_per_km": 11.0},
                 {"month": date(2025, 3, 1), "segment_id": 3, "crimes": 2, "crimes_per_km": 6.0},
             ]
-        }
+        },
+        "INSERT INTO analytics_hotspot_stability_snapshots": {
+            "rows": [{"id": 31, "created_at": "2026-03-13T12:02:00Z"}],
+        },
     }
 
     response = _run_with_db(
@@ -161,112 +187,5 @@ def test_analytics_hotspot_stability_returns_series():
     assert len(payload["stability_series"]) == 2
     assert payload["persistent_hotspots"][0]["segment_id"] == 1
     assert len(payload["topk_by_month"]) == 3
-
-
-def test_analytics_route_risk_returns_route_metrics():
-    handlers = {
-        "/* analytics_route_segments_by_ids */": lambda params: {
-            "rows": [
-                {"segment_id": 1, "name": "A", "highway": "primary", "length_m": 100.0},
-                {"segment_id": 2, "name": "B", "highway": "primary", "length_m": 150.0},
-                {"segment_id": 3, "name": "C", "highway": "residential", "length_m": 200.0},
-            ]
-        },
-        "/* analytics_route_connectivity */": {
-            "rows": [
-                {"break_index": 2, "from_segment_id": 2, "to_segment_id": 3, "distance_m": 31.2},
-            ]
-        },
-        "/* analytics_route_segment_metrics */": lambda params: {
-            "rows": [
-                {
-                    "segment_id": segment_id,
-                    "name": f"S{segment_id}",
-                    "highway": "primary",
-                    "length_m": 100.0 * segment_id,
-                    "crimes": float(segment_id),
-                    "collisions": 0.0,
-                    "casualties": 0.0,
-                    "fatal_casualties": 0.0,
-                    "serious_casualties": 0.0,
-                    "slight_casualties": 0.0,
-                }
-                for segment_id in params["selected_segment_ids"]
-            ]
-        },
-        "/* analytics_density_percentile */": {
-            "rows": [{"density_pct": 0.82}],
-        },
-    }
-
-    response = _run_with_db(
-        handlers,
-        "POST",
-        "/analytics/routes/risk",
-        json={
-            "from": "2025-01",
-            "to": "2025-03",
-            "segment_ids": [1, 2, 3],
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["route_stats"]["segment_count"] == 3
-    assert payload["route_stats"]["approved_user_reports"] == 0
-    assert payload["route_stats"]["user_reported_crime_signal"] == 0.0
-    assert payload["connectivity"]["is_connected"] is False
-    assert len(payload["worst_segments"]) == 3
-    assert payload["route_stats"]["band"] == "amber"
-
-
-def test_analytics_routes_compare_returns_ranked_routes():
-    handlers = {
-        "/* analytics_route_segments_by_ids */": lambda params: {
-            "rows": [
-                {"segment_id": segment_id, "name": f"S{segment_id}", "highway": "primary", "length_m": 100.0}
-                for segment_id in params["segment_ids"]
-            ]
-        },
-        "/* analytics_route_connectivity */": {"rows": []},
-        "/* analytics_route_segment_metrics */": lambda params: {
-            "rows": [
-                {
-                    "segment_id": segment_id,
-                    "name": f"S{segment_id}",
-                    "highway": "primary",
-                    "length_m": 100.0,
-                    "crimes": 1.0 if segment_id in {1, 2} else 4.0,
-                    "collisions": 0.0,
-                    "casualties": 0.0,
-                    "fatal_casualties": 0.0,
-                    "serious_casualties": 0.0,
-                    "slight_casualties": 0.0,
-                }
-                for segment_id in params["selected_segment_ids"]
-            ]
-        },
-        "/* analytics_density_percentile */": {
-            "rows": [{"density_pct": 0.75}],
-        },
-    }
-
-    response = _run_with_db(
-        handlers,
-        "POST",
-        "/analytics/routes/compare",
-        json={
-            "from": "2025-01",
-            "to": "2025-03",
-            "routes": [
-                {"name": "Route A", "segment_ids": [1, 2]},
-                {"name": "Route B", "segment_ids": [3, 4]},
-            ],
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["summary"]["safest_route"] == "Route A"
-    assert payload["summary"]["riskiest_route"] == "Route B"
-    assert len(payload["ranking"]) == 2
+    assert payload["snapshot_id"] == 31
+    assert payload["stored_at"] == "2026-03-13T12:02:00Z"

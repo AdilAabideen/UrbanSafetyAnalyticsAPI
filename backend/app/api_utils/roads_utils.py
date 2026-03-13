@@ -4,10 +4,16 @@ from fastapi import HTTPException
 from sqlalchemy import bindparam
 from sqlalchemy.exc import InternalError, OperationalError
 
-from .crime_utils import _normalize_filter_values, _optional_bbox, _parse_month, _shift_month
+from .crime_utils import (
+    _normalize_filter_values,
+    _optional_bbox,
+    _parse_month,
+    _shift_month,
+)
 
 
 def _execute(db, query, params):
+    """Execute a roads analytics query and normalize database failures."""
     try:
         return db.execute(query, params)
     except (InternalError, OperationalError) as exc:
@@ -19,6 +25,7 @@ def _execute(db, query, params):
 
 
 def _resolve_from_to_filter(from_month, to_month, required=False):
+    """Validate and normalize a `from`/`to` YYYY-MM month range."""
     if from_month or to_month:
         if not (from_month and to_month):
             raise HTTPException(status_code=400, detail="from and to must be provided together")
@@ -47,12 +54,14 @@ def _resolve_from_to_filter(from_month, to_month, required=False):
 
 
 def _where_sql(where_clauses):
+    """Format a WHERE clause block from a list of conditions."""
     if not where_clauses:
         return ""
     return "WHERE " + " AND ".join(where_clauses)
 
 
 def _roads_scope_filters(bbox, highways):
+    """Build road-segment scope filters (bbox and highway classes)."""
     where_clauses = []
     query_params = {}
 
@@ -73,6 +82,7 @@ def _roads_scope_filters(bbox, highways):
 
 
 def _incident_count_filters(range_filter, crime_types, last_outcome_categories=None, alias="c"):
+    """Build event-level filters for crimes linked to roads."""
     where_clauses = []
     query_params = {}
 
@@ -95,6 +105,7 @@ def _incident_count_filters(range_filter, crime_types, last_outcome_categories=N
 
 
 def _bind_roads_analytics_params(query, highways, crime_types, last_outcome_categories=None):
+    """Attach expanding bind params only when placeholders are present."""
     sql = str(query)
 
     if highways and ":highways" in sql:
@@ -118,6 +129,7 @@ def _roads_analytics_filters(
     highway,
     required_range,
 ):
+    """Normalize shared roads analytics query parameters."""
     range_filter = _resolve_from_to_filter(from_month, to_month, required=required_range)
     bbox = _optional_bbox(min_lon, min_lat, max_lon, max_lat)
     crime_types = _normalize_filter_values(crime_type, "crimeType")
@@ -127,6 +139,7 @@ def _roads_analytics_filters(
 
 
 def _risk_band_expression(score_alias="risk_score"):
+    """Return SQL expression mapping score values into risk bands."""
     return f"""
     CASE
         WHEN {score_alias} >= 90 THEN 'red'
@@ -137,6 +150,7 @@ def _risk_band_expression(score_alias="risk_score"):
 
 
 def _sort_expression(sort):
+    """Return SQL ORDER BY expression for risk endpoint sort modes."""
     if sort == "incident_count":
         return "incident_count DESC, risk_score DESC, incidents_per_km DESC, segment_id ASC"
     if sort == "incidents_per_km":
@@ -145,6 +159,7 @@ def _sort_expression(sort):
 
 
 def _matched_previous_period(range_filter):
+    """Return the previous matched period for period-over-period comparison."""
     month_span = (
         (range_filter["to_date"].year - range_filter["from_date"].year) * 12
         + (range_filter["to_date"].month - range_filter["from_date"].month)
@@ -160,12 +175,14 @@ def _matched_previous_period(range_filter):
 
 
 def _safe_pct_change(current_value: Optional[float], previous_value: Optional[float]):
+    """Compute safe percent change, handling empty/zero previous values."""
     if previous_value in (None, 0):
         return None
     return round(((current_value - previous_value) / previous_value) * 100.0, 2)
 
 
 def _road_events_cte(road_where_sql, event_where_sql):
+    """Build the base CTE used by roads analytics queries."""
     return f"""
         WITH roads_scope AS (
             SELECT
@@ -191,6 +208,7 @@ def _road_events_cte(road_where_sql, event_where_sql):
 
 
 def _road_insight_messages(total_incidents, top_highway, top_crime_type, top_outcome, current_vs_previous_pct):
+    """Generate overview insights for the roads analytics overview endpoint."""
     if total_incidents == 0:
         return ["No road-linked incidents matched the current filter selection."]
 
@@ -216,6 +234,7 @@ def _road_insight_messages(total_incidents, top_highway, top_crime_type, top_out
 
 
 def _highway_message(item, total_incidents, total_length_m):
+    """Generate a short explanation for a highway breakdown row."""
     if item["incident_count"] == 0:
         return f"{item['highway']} roads are present here but have no linked incidents in this selection."
 
@@ -229,6 +248,7 @@ def _highway_message(item, total_incidents, total_length_m):
 
 
 def _risk_item_message(item):
+    """Generate the per-road narrative shown in risk results."""
     parts = [f"{item['incident_count']} incidents"]
     if item.get("dominant_crime_type"):
         parts.append(f"driven mainly by {item['dominant_crime_type']}")

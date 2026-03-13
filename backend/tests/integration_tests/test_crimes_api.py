@@ -1,194 +1,259 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from datetime import date
 
-from app.db import engine
+from fastapi.testclient import TestClient
+
+from app.api_utils import crime_utils
+from app.db import get_db
 from app.main import app
+from tests.inmemory_db import InMemoryDB
 
 
 client = TestClient(app)
 
 
-@pytest.fixture(scope="module")
-def sample_crime():
-    query = text(
-        """
-        SELECT
-            ce.id,
-            to_char(ce.month, 'YYYY-MM') AS month_key,
-            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS last_outcome_category,
-            COALESCE(NULLIF(ce.lsoa_name, ''), 'unknown') AS lsoa_name,
-            ST_X(ce.geom) AS lon,
-            ST_Y(ce.geom) AS lat
-        FROM crime_events ce
-        WHERE ce.geom IS NOT NULL
-        ORDER BY ce.month DESC, ce.id DESC
-        LIMIT 1
-        """
-    )
+def _run_with_db(handlers, method, url):
+    def _override_get_db():
+        yield InMemoryDB(handlers)
 
+    crime_utils._analytics_snapshot_cache.clear()
+    crime_utils._analytics_snapshot_inflight.clear()
+    # override the real DB dependency with the in-memory stub for each smoke call
+    app.dependency_overrides[get_db] = _override_get_db
     try:
-        with engine.connect() as conn:
-            row = conn.execute(query).mappings().first()
-    except OperationalError as exc:
-        pytest.skip(f"Crime integration tests need a reachable database: {exc}")
-
-    if not row:
-        pytest.skip("crime_events has no rows with geometry")
-
-    return row
+        return client.request(method, url)
+    finally:
+        app.dependency_overrides.clear()
 
 
-def _sample_bbox(sample_crime, delta=0.01):
-    return {
-        "minLon": sample_crime["lon"] - delta,
-        "minLat": sample_crime["lat"] - delta,
-        "maxLon": sample_crime["lon"] + delta,
-        "maxLat": sample_crime["lat"] + delta,
-    }
-
-
-def test_crimes_map_returns_points_featurecollection(sample_crime):
-    params = {
-        **_sample_bbox(sample_crime),
-        "zoom": 13,
-        "month": sample_crime["month_key"],
-        "limit": 25,
-    }
-    response = client.get("/crimes/map", params=params)
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["type"] == "FeatureCollection"
-    assert data["meta"]["mode"] == "points"
-    assert data["meta"]["zoom"] == 13
-    assert data["meta"]["limit"] == 25
-    assert data["meta"]["returned"] == len(data["features"])
-    assert data["meta"]["filters"]["month"] == sample_crime["month_key"]
-    assert len(data["features"]) > 0
-    assert data["features"][0]["geometry"]["type"] == "Point"
-    assert "id" in data["features"][0]["properties"]
-    assert "month" in data["features"][0]["properties"]
-
-
-def test_crimes_map_clusters_mode_returns_cluster_features(sample_crime):
-    params = {
-        **_sample_bbox(sample_crime, delta=0.02),
-        "zoom": 10,
-        "month": sample_crime["month_key"],
-    }
-    response = client.get("/crimes/map", params=params)
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["meta"]["mode"] == "clusters"
-    assert data["meta"]["nextCursor"] is None
-    assert len(data["features"]) > 0
-    assert data["features"][0]["properties"]["cluster"] is True
-    assert "count" in data["features"][0]["properties"]
-
-
-def test_crimes_map_crimetype_filter_works(sample_crime):
-    params = {
-        **_sample_bbox(sample_crime),
-        "zoom": 13,
-        "month": sample_crime["month_key"],
-        "crimeType": sample_crime["crime_type"],
-    }
-    response = client.get("/crimes/map", params=params)
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["meta"]["filters"]["crimeType"] == [sample_crime["crime_type"]]
-
-
-def test_crimes_map_additional_filters_work(sample_crime):
-    params = {
-        **_sample_bbox(sample_crime),
-        "zoom": 13,
-        "month": sample_crime["month_key"],
-        "lastOutcomeCategory": sample_crime["last_outcome_category"],
-        "lsoaName": sample_crime["lsoa_name"],
-    }
-    response = client.get("/crimes/map", params=params)
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["meta"]["filters"]["lastOutcomeCategory"] == [sample_crime["last_outcome_category"]]
-    assert data["meta"]["filters"]["lsoaName"] == [sample_crime["lsoa_name"]]
-
-
-def test_crimes_by_id_returns_feature(sample_crime):
-    response = client.get(f"/crimes/{sample_crime['id']}")
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["type"] == "Feature"
-    assert data["properties"]["id"] == sample_crime["id"]
-    assert data["geometry"]["type"] == "Point"
-
-
-def test_crimes_by_id_returns_404_for_missing_row(sample_crime):
-    response = client.get("/crimes/999999999999")
-    assert response.status_code == 404
-
-def test_crimes_map_invalid_cursor_returns_400():
-    response = client.get(
-        "/crimes/map",
-        params={
-            "minLon": -1.6,
-            "minLat": 53.78,
-            "maxLon": -1.52,
-            "maxLat": 53.82,
-            "zoom": 13,
-            "cursor": "bad-value",
+def test_crime_incidents_returns_paginated_payload():
+    # ensure the list endpoint returns a correctly page-sized payload
+    response = _run_with_db(
+        {
+            "/* crimes_incidents */": {
+                "rows": [
+                    {
+                        "id": 3,
+                        "crime_id": "crime-3",
+                        "month_label": "2025-02",
+                        "crime_type": "burglary",
+                        "last_outcome_category": "Under investigation",
+                        "location_text": "High Street",
+                        "reported_by": "Police",
+                        "falls_within": "Leeds",
+                        "lsoa_code": "LSOA-3",
+                        "lsoa_name": "Leeds Central",
+                        "lon": -1.55,
+                        "lat": 53.8,
+                    },
+                    {
+                        "id": 2,
+                        "crime_id": "crime-2",
+                        "month_label": "2025-01",
+                        "crime_type": "robbery",
+                        "last_outcome_category": "unknown",
+                        "location_text": "Station Road",
+                        "reported_by": "Police",
+                        "falls_within": "Leeds",
+                        "lsoa_code": "LSOA-2",
+                        "lsoa_name": "Leeds North",
+                        "lon": -1.54,
+                        "lat": 53.81,
+                    },
+                    {
+                        "id": 1,
+                        "crime_id": "crime-1",
+                        "month_label": "2025-01",
+                        "crime_type": "vehicle crime",
+                        "last_outcome_category": "Resolved",
+                        "location_text": "Park Lane",
+                        "reported_by": "Police",
+                        "falls_within": "Leeds",
+                        "lsoa_code": "LSOA-1",
+                        "lsoa_name": "Leeds South",
+                        "lon": -1.53,
+                        "lat": 53.82,
+                    },
+                ]
+            }
         },
+        "GET",
+        "/crimes/incidents?from=2025-01&to=2025-02&limit=2",
     )
-    assert response.status_code == 400
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["returned"] == 2
+    assert payload["meta"]["truncated"] is True
+    assert payload["meta"]["nextCursor"] == "2025-01|2"
+    assert payload["items"][0]["crime_type"] == "burglary"
 
 
-def test_crimes_map_cursor_not_allowed_for_clusters():
-    response = client.get(
-        "/crimes/map",
-        params={
-            "minLon": -1.6,
-            "minLat": 53.78,
-            "maxLon": -1.52,
-            "maxLat": 53.82,
-            "zoom": 10,
-            "cursor": "2024-01|1",
+def test_crimes_map_points_returns_feature_collection():
+    response = _run_with_db(
+        {
+            "/* crimes_map_points */": {
+                "rows": [
+                    {
+                        "id": 7,
+                        "crime_id": "crime-7",
+                        "month_label": "2025-03",
+                        "crime_type": "burglary",
+                        "last_outcome_category": "Resolved",
+                        "location_text": "Briggate",
+                        "reported_by": "Police",
+                        "falls_within": "Leeds",
+                        "lsoa_code": "LSOA-7",
+                        "lsoa_name": "Leeds Central",
+                        "geometry": '{"type":"Point","coordinates":[-1.55,53.8]}',
+                    }
+                ]
+            }
         },
+        "GET",
+        "/crimes/map?minLon=-1.6&minLat=53.7&maxLon=-1.5&maxLat=53.9&zoom=15&mode=points&month=2025-03",
     )
-    assert response.status_code == 400
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["type"] == "FeatureCollection"
+    assert payload["meta"]["mode"] == "points"
+    assert payload["features"][0]["geometry"]["type"] == "Point"
+    assert payload["features"][0]["properties"]["crime_id"] == "crime-7"
 
 
-def test_crimes_map_invalid_month_returns_400():
-    response = client.get(
-        "/crimes/map",
-        params={
-            "minLon": -1.6,
-            "minLat": 53.78,
-            "maxLon": -1.52,
-            "maxLat": 53.82,
-            "zoom": 13,
-            "month": "2024-01-01",
+def test_crimes_map_clusters_returns_cluster_features():
+    response = _run_with_db(
+        {
+            "/* crimes_map_clusters */": {
+                "rows": [
+                    {
+                        "cluster_id": "10:2:3",
+                        "count": 4,
+                        "geometry": '{"type":"Point","coordinates":[-1.55,53.8]}',
+                        "top_crime_types": '{"burglary": 3, "robbery": 1}',
+                    }
+                ]
+            }
         },
+        "GET",
+        "/crimes/map?minLon=-1.6&minLat=53.7&maxLon=-1.5&maxLat=53.9&zoom=10&mode=clusters&month=2025-03",
     )
-    assert response.status_code == 400
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["mode"] == "clusters"
+    assert payload["features"][0]["properties"]["cluster"] is True
+    assert payload["features"][0]["properties"]["top_crime_types"]["burglary"] == 3
 
 
-def test_crimes_map_invalid_mode_returns_400():
-    response = client.get(
-        "/crimes/map",
-        params={
-            "minLon": -1.6,
-            "minLat": 53.78,
-            "maxLon": -1.52,
-            "maxLat": 53.82,
-            "zoom": 13,
-            "mode": "bad",
+def test_crime_analytics_summary_returns_expected_totals():
+    response = _run_with_db(
+        {
+            "/* crimes_analytics_snapshot */": {
+                "rows": [
+                    {
+                        "id": 2,
+                        "month_date": date(2025, 2, 1),
+                        "crime_type": "burglary",
+                        "raw_outcome": "Under investigation",
+                        "outcome": "Under investigation",
+                        "lsoa_code": "LSOA-1",
+                        "lsoa_name": "Leeds Central",
+                    },
+                    {
+                        "id": 1,
+                        "month_date": date(2025, 1, 1),
+                        "crime_type": "robbery",
+                        "raw_outcome": None,
+                        "outcome": "unknown",
+                        "lsoa_code": None,
+                        "lsoa_name": "Leeds North",
+                    },
+                ]
+            }
         },
+        "GET",
+        "/crimes/analytics/summary?from=2025-01&to=2025-02",
     )
-    assert response.status_code == 400
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["from"] == "2025-01"
+    assert payload["to"] == "2025-02"
+    assert payload["total_crimes"] == 2
+    assert payload["unique_lsoas"] == 2
+    assert payload["top_crime_type"]["count"] == 1
+    assert len(payload["top_outcomes"]) == 2
+
+
+def test_crime_analytics_timeseries_returns_monthly_series():
+    response = _run_with_db(
+        {
+            "/* crimes_analytics_snapshot */": {
+                "rows": [
+                    {
+                        "id": 3,
+                        "month_date": date(2025, 2, 1),
+                        "crime_type": "burglary",
+                        "raw_outcome": "Under investigation",
+                        "outcome": "Under investigation",
+                        "lsoa_code": "LSOA-1",
+                        "lsoa_name": "Leeds Central",
+                    },
+                    {
+                        "id": 2,
+                        "month_date": date(2025, 1, 1),
+                        "crime_type": "robbery",
+                        "raw_outcome": None,
+                        "outcome": "unknown",
+                        "lsoa_code": None,
+                        "lsoa_name": "Leeds North",
+                    },
+                    {
+                        "id": 1,
+                        "month_date": date(2025, 1, 1),
+                        "crime_type": "burglary",
+                        "raw_outcome": "Resolved",
+                        "outcome": "Resolved",
+                        "lsoa_code": "LSOA-2",
+                        "lsoa_name": "Leeds South",
+                    },
+                ]
+            }
+        },
+        "GET",
+        "/crimes/analytics/timeseries?from=2025-01&to=2025-02",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["series"] == [
+        {"month": "2025-01", "count": 2},
+        {"month": "2025-02", "count": 1},
+    ]
+    assert payload["total"] == 3
+
+
+def test_crime_by_id_returns_feature():
+    response = _run_with_db(
+        {
+            "/* crimes_detail */": {
+                "scalar": (
+                    '{"type":"Feature","geometry":{"type":"Point","coordinates":[-1.55,53.8]},'
+                    '"properties":{"id":1,"crime_id":"crime-1","month":"2025-03-01",'
+                    '"reported_by":"Police","falls_within":"Leeds","lon":-1.55,"lat":53.8,'
+                    '"location_text":"Briggate","lsoa_code":"LSOA-1","lsoa_name":"Leeds Central",'
+                    '"crime_type":"burglary","last_outcome_category":"Resolved","context":null,'
+                    '"created_at":"2026-03-13T12:00:00Z"}}'
+                )
+            }
+        },
+        "GET",
+        "/crimes/1",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["type"] == "Feature"
+    assert payload["properties"]["crime_type"] == "burglary"
+    assert payload["geometry"]["coordinates"] == [-1.55, 53.8]

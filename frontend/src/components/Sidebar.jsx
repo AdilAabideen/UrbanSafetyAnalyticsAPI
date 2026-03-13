@@ -58,7 +58,7 @@ const NAV_ITEMS = [
   },
 ];
 
-function Sidebar({ activePage, onSelectPage }) {
+function Sidebar({ activePage, onSelectPage, onLogout }) {
   return (
     <aside className="flex shrink-0 flex-col border-r border-white/5 bg-[#030b0e] p-4 py-2">
       <div className="flex h-[62px] items-center">
@@ -76,11 +76,10 @@ function Sidebar({ activePage, onSelectPage }) {
           return (
             <button
               key={item.id}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium transition-colors ${
-                isActive
-                  ? "bg-cyan-100/10 text-cyan-50"
-                  : "text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
-              }`}
+              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium transition-colors ${isActive
+                ? "bg-cyan-100/10 text-cyan-50"
+                : "text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
+                }`}
               type="button"
               onClick={() => onSelectPage(item.id)}
             >
@@ -100,6 +99,56 @@ function Sidebar({ activePage, onSelectPage }) {
             </button>
           );
         })}
+      </div>
+
+      <div className="mt-auto flex flex-col gap-2 py-4">
+        {onLogout ? (
+          <button
+            type="button"
+            onClick={() => onSelectPage("profile")}
+            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium transition-colors ${
+              activePage === "profile"
+                ? "bg-cyan-100/10 text-cyan-50"
+                : "text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
+            }`}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-4 w-4 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+            Profile
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => window.location.href = "/login"}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium text-cyan-100/60 transition-colors hover:bg-cyan-100/5 hover:text-cyan-50"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-4 w-4 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+            Login / Signup
+          </button>
+        )}
       </div>
     </aside>
   );

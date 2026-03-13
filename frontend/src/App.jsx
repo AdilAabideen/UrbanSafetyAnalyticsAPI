@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import AdminApprovalsPage from "./components/AdminApprovalsPage";
 import CollisionsPage from "./components/CollisionsPage";
 import CrimePage from "./components/CrimePage";
 import MapPage from "./components/MapPage";
+import ReportCollisionPage from "./components/ReportCollisionPage";
+import ReportCrimePage from "./components/ReportCrimePage";
 import RoadsPage from "./components/RoadsPage";
 import Sidebar from "./components/Sidebar";
+import ViewReportedEventsPage from "./components/ViewReportedEventsPage";
 import ViewWatchlistPage from "./components/ViewWatchlistPage";
 import WatchlistPage from "./components/WatchlistPage";
 import { config } from "./config/env";
@@ -49,11 +53,13 @@ function LoginRoute() {
 function DashboardRoute() {
   const [activePage, setActivePage] = useState("map");
   const [selectedWatchlistId, setSelectedWatchlistId] = useState(null);
+  const [selectedReportedEvent, setSelectedReportedEvent] = useState(null);
   const [session, setSession] = useState(() => authService.getStoredSession());
   const [user, setUser] = useState(session.user);
   const [loadingUser, setLoadingUser] = useState(false);
   const docsUrl = useMemo(() => `${config.apiBaseUrl}/docs`, []);
   const isLoggedIn = Boolean(session.accessToken);
+  const isAdmin = Boolean(user?.user?.is_admin || user?.is_admin || user?.isAdmin);
 
   useEffect(() => {
     if (!session.accessToken) return;
@@ -115,10 +121,20 @@ function DashboardRoute() {
     setActivePage("view-watchlist");
   }, []);
 
+  const handleReportedEventCreated = useCallback((report) => {
+    setSelectedReportedEvent(report || null);
+    setActivePage("view-reports");
+  }, []);
+
+  const handleSelectReportedEvent = useCallback((report) => {
+    setSelectedReportedEvent(report || null);
+  }, []);
+
   return (
     <div className="flex h-screen w-full">
       <Sidebar
         activePage={activePage}
+        isAdmin={isAdmin}
         onSelectPage={setActivePage}
         onLogout={isLoggedIn ? handleLogout : undefined}
       />
@@ -133,10 +149,38 @@ function DashboardRoute() {
             onLogout={handleLogout}
             onBackToMap={() => setActivePage("map")}
           />
+        ) : activePage === "admin-approvals" ? (
+          <AdminApprovalsPage
+            docsUrl={docsUrl}
+            accessToken={session.accessToken}
+            isAdmin={isAdmin}
+          />
         ) : activePage === "crime" ? (
           <CrimePage docsUrl={docsUrl} />
         ) : activePage === "collisions" ? (
           <CollisionsPage docsUrl={docsUrl} />
+        ) : activePage === "report-crime" ? (
+          <ReportCrimePage
+            docsUrl={docsUrl}
+            accessToken={session.accessToken}
+            onReportCreated={handleReportedEventCreated}
+          />
+        ) : activePage === "report-collision" ? (
+          <ReportCollisionPage
+            docsUrl={docsUrl}
+            accessToken={session.accessToken}
+            onReportCreated={handleReportedEventCreated}
+          />
+        ) : activePage === "view-reports" ? (
+          <ViewReportedEventsPage
+            docsUrl={docsUrl}
+            accessToken={session.accessToken}
+            selectedReportId={selectedReportedEvent?.id || null}
+            initialReport={selectedReportedEvent}
+            onSelectReport={handleSelectReportedEvent}
+            onCreateCrime={() => setActivePage("report-crime")}
+            onCreateCollision={() => setActivePage("report-collision")}
+          />
         ) : activePage === "roads" ? (
           <RoadsPage docsUrl={docsUrl} />
         ) : activePage === "watchlist" ? (

@@ -51,6 +51,43 @@ const NAV_ITEMS = [
     ),
   },
   {
+    id: "report-crime",
+    label: "Report Crime",
+    icon: (
+      <>
+        <path d="M12 3l8 4v5c0 5.5-4 8.8-8 9.8-4-1-8-4.3-8-9.8V7l8-4z" />
+        <path d="M12 8v8" />
+        <path d="M8 12h8" />
+      </>
+    ),
+  },
+  {
+    id: "report-collision",
+    label: "Report Collision",
+    icon: (
+      <>
+        <circle cx="8" cy="17" r="3" />
+        <circle cx="16" cy="17" r="3" />
+        <path d="M5 17V9l3-3h5l3 4h3v7" />
+        <path d="M12 6v6" />
+      </>
+    ),
+  },
+  {
+    id: "view-reports",
+    label: "View Reports",
+    icon: (
+      <>
+        <path d="M8 6h11" />
+        <path d="M8 12h11" />
+        <path d="M8 18h11" />
+        <path d="M3 6h.01" />
+        <path d="M3 12h.01" />
+        <path d="M3 18h.01" />
+      </>
+    ),
+  },
+  {
     id: "watchlist",
     label: "Create Watchlist",
     icon: (
@@ -72,7 +109,7 @@ const NAV_ITEMS = [
   },
 ];
 
-function Sidebar({ activePage, onSelectPage, onLogout }) {
+function Sidebar({ activePage, isAdmin, onSelectPage, onLogout }) {
   return (
     <aside className="flex shrink-0 flex-col border-r border-white/5 bg-[#030b0e] p-4 py-2">
       <div className="flex h-[62px] items-center">
@@ -117,30 +154,59 @@ function Sidebar({ activePage, onSelectPage, onLogout }) {
 
       <div className="mt-auto flex flex-col gap-2 py-4">
         {onLogout ? (
-          <button
-            type="button"
-            onClick={() => onSelectPage("profile")}
-            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium transition-colors ${
-              activePage === "profile"
-                ? "bg-cyan-100/10 text-cyan-50"
-                : "text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
-            }`}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-4 w-4 shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          <>
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => onSelectPage("admin-approvals")}
+                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium transition-colors ${
+                  activePage === "admin-approvals"
+                    ? "bg-cyan-100/10 text-cyan-50"
+                    : "text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
+                }`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-4 w-4 shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M12 3l7 4v5c0 5-3.5 8.5-7 9-3.5-.5-7-4-7-9V7l7-4z" />
+                  <path d="M9 12l2 2 4-4" />
+                </svg>
+                Admin Approvals
+              </button>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => onSelectPage("profile")}
+              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-hind font-medium transition-colors ${
+                activePage === "profile"
+                  ? "bg-cyan-100/10 text-cyan-50"
+                  : "text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
+              }`}
             >
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-            Profile
-          </button>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+              Profile
+            </button>
+          </>
         ) : (
           <button
             type="button"

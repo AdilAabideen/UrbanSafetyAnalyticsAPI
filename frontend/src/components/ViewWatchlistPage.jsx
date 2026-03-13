@@ -905,15 +905,22 @@ function MetricResultPanel({ mode, result, subtab }) {
         <StatPill label="Type" value={result.reportType || getReportTypeLabel(subtab)} />
       </div>
 
+      {result.request ? (
+        <section className="rounded-[18px] border border-white/5 bg-[#030b0e]/75 p-4">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Request</p>
+          <div className="mt-3">
+            <JsonObjectViewer data={result.request} />
+          </div>
+        </section>
+      ) : null}
+
       {crimeRows.length ? (
         <div className="space-y-3">
           {crimeRows.map(({ crimeType, payload }) => (
             <div key={crimeType} className="rounded-[18px] border border-white/5 bg-[#030b0e]/75 p-4">
               <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{crimeType}</p>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                {Object.entries(flattenResultPayload(payload)).map(([label, value]) => (
-                  <StatPill key={label} label={label} value={value} />
-                ))}
+              <div className="mt-3">
+                <JsonObjectViewer data={payload} />
               </div>
             </div>
           ))}
@@ -921,6 +928,69 @@ function MetricResultPanel({ mode, result, subtab }) {
       ) : (
         <EmptyPanel label="No result payload returned for this metric." />
       )}
+    </div>
+  );
+}
+
+function JsonObjectViewer({ data, level = 0 }) {
+  const entries = Object.entries(data || {});
+
+  if (!entries.length) {
+    return <p className="text-sm text-cyan-100/50">No data available.</p>;
+  }
+
+  return (
+    <div className={`space-y-3 ${level > 0 ? "rounded-[16px] border border-white/5 bg-[#071316]/55 p-3" : ""}`}>
+      {entries.map(([key, value]) => {
+        const label = toReadableLabel(key);
+
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          return (
+            <div key={`${level}-${key}`}>
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
+              <div className="mt-2">
+                <JsonObjectViewer data={value} level={level + 1} />
+              </div>
+            </div>
+          );
+        }
+
+        if (Array.isArray(value)) {
+          return (
+            <div key={`${level}-${key}`}>
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
+              <div className="mt-2 space-y-2">
+                {value.length ? (
+                  value.map((item, index) =>
+                    item && typeof item === "object" ? (
+                      <JsonObjectViewer key={`${key}-${index}`} data={item} level={level + 1} />
+                    ) : (
+                      <div
+                        key={`${key}-${index}`}
+                        className="rounded-[14px] border border-white/5 bg-[#071316]/55 px-3 py-2 text-sm text-cyan-50"
+                      >
+                        {formatViewerValue(item)}
+                      </div>
+                    ),
+                  )
+                ) : (
+                  <p className="text-sm text-cyan-100/50">No values.</p>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div
+            key={`${level}-${key}`}
+            className="grid gap-2 rounded-[14px] border border-white/5 bg-[#071316]/55 px-3 py-3 md:grid-cols-[180px,minmax(0,1fr)]"
+          >
+            <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
+            <p className="text-sm font-medium text-cyan-50 break-words">{formatViewerValue(value)}</p>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1111,33 +1181,6 @@ function getResultsByCrimeType(resultWrapper) {
   return Object.entries(resultWrapper?.result?.results_by_crime_type || {});
 }
 
-function flattenResultPayload(payload) {
-  if (!payload || typeof payload !== "object") {
-    return { value: "No result" };
-  }
-
-  const rows = {};
-
-  Object.entries(payload).forEach(([key, value]) => {
-    if (value === null || value === undefined) {
-      rows[key] = "—";
-      return;
-    }
-
-    if (typeof value === "object") {
-      Object.entries(value).forEach(([childKey, childValue]) => {
-        rows[`${key}_${childKey}`] =
-          typeof childValue === "object" ? JSON.stringify(childValue) : String(childValue);
-      });
-      return;
-    }
-
-    rows[key] = String(value);
-  });
-
-  return rows;
-}
-
 function getRunFormTitle(activeSubtab) {
   if (activeSubtab === "run-forecast") {
     return "Run Forecast";
@@ -1178,6 +1221,18 @@ function toReadableLabel(value) {
   return String(value || "")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function formatViewerValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "True" : "False";
+  }
+
+  return String(value);
 }
 
 function CoordinateCard({ label, value }) {

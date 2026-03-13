@@ -1,15 +1,15 @@
-from datetime import date, datetime, time
-from typing import Literal, Optional
+from datetime import date, datetime
+from typing import Optional
 
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import InternalError, OperationalError
 from sqlalchemy.orm import Session
 
-from ..auth_utils import bearer_scheme, decode_access_token, get_current_user
+from .auth_utils import bearer_scheme, decode_access_token, get_current_user
 from ..db import get_db
+from ..schemas.report_event_schemas import ReportedEventCreateRequest, ReportedEventModerationRequest
 
 
 ALLOWED_EVENT_KINDS = {"crime", "collision"}
@@ -18,33 +18,8 @@ ALLOWED_MODERATION_STATUSES = {"pending", "approved", "rejected"}
 MAX_SNAP_DISTANCE_M = 100.0
 
 
-class ReportedCrimePayload(BaseModel):
-    crime_type: str = Field(..., min_length=1)
-
-
-class ReportedCollisionPayload(BaseModel):
-    weather_condition: str = Field(..., min_length=1)
-    light_condition: str = Field(..., min_length=1)
-    number_of_vehicles: int = Field(..., ge=1)
-
-
-class ReportedEventCreateRequest(BaseModel):
-    event_kind: Literal["crime", "collision"]
-    event_date: date
-    event_time: Optional[time] = None
-    longitude: float
-    latitude: float
-    description: Optional[str] = None
-    crime: Optional[ReportedCrimePayload] = None
-    collision: Optional[ReportedCollisionPayload] = None
-
-
-class ReportedEventModerationRequest(BaseModel):
-    moderation_status: Literal["approved", "rejected"]
-    moderation_notes: Optional[str] = None
-
-
 def _execute(db, query, params=None):
+    """Execute a SQL statement and normalize transient DB failures to 503 errors."""
     try:
         return db.execute(query, params or {})
     except (InternalError, OperationalError) as exc:
@@ -59,6 +34,7 @@ def get_optional_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ):
+    """Resolve the authenticated user when a bearer token is provided, else return None."""
     if credentials is None:
         return None
     if credentials.scheme.lower() != "bearer":
@@ -100,6 +76,7 @@ def get_optional_current_user(
 
 
 def require_admin(current_user=Depends(get_current_user)):
+    """Ensure the resolved user has admin privileges."""
     if not current_user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
@@ -108,6 +85,7 @@ def require_admin(current_user=Depends(get_current_user)):
 def status_query(
     value: Optional[str] = Query(default=None),
 ) -> Optional[str]:
+    """Validate and normalize the moderation status query value."""
     if value is None:
         return None
     if value not in ALLOWED_MODERATION_STATUSES:
@@ -118,6 +96,7 @@ def status_query(
 def event_kind_query(
     value: Optional[str] = Query(default=None),
 ) -> Optional[str]:
+    """Validate and normalize the event kind query value."""
     if value is None:
         return None
     if value not in ALLOWED_EVENT_KINDS:
@@ -128,6 +107,7 @@ def event_kind_query(
 def reporter_type_query(
     value: Optional[str] = Query(default=None),
 ) -> Optional[str]:
+    """Validate and normalize the reporter type query value."""
     if value is None:
         return None
     if value not in ALLOWED_REPORTER_TYPES:
@@ -136,6 +116,7 @@ def reporter_type_query(
 
 
 def _normalize_required_text(value: Optional[str], field_name: str) -> str:
+    """Trim required text and raise when empty after normalization."""
     normalized = (value or "").strip()
     if not normalized:
         raise HTTPException(status_code=400, detail=f"{field_name} is required")
@@ -143,6 +124,7 @@ def _normalize_required_text(value: Optional[str], field_name: str) -> str:
 
 
 def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    """Trim optional text and collapse blank values to None."""
     if value is None:
         return None
     normalized = value.strip()
@@ -150,6 +132,7 @@ def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
 
 
 def _validate_coordinates(longitude: float, latitude: float):
+    """Validate WGS84 longitude and latitude boundaries."""
     if longitude < -180 or longitude > 180:
         raise HTTPException(status_code=400, detail="longitude must be between -180 and 180")
     if latitude < -90 or latitude > 90:
@@ -157,6 +140,7 @@ def _validate_coordinates(longitude: float, latitude: float):
 
 
 def _parse_month(month_value: Optional[str], field_name: str) -> Optional[date]:
+    """Parse YYYY-MM month filters into first-of-month date objects."""
     if month_value is None:
         return None
     try:
@@ -166,6 +150,7 @@ def _parse_month(month_value: Optional[str], field_name: str) -> Optional[date]:
 
 
 def _parse_cursor(cursor: Optional[str]):
+    """Decode a list cursor in created_at|id format."""
     if cursor is None:
         return None
     try:
@@ -179,6 +164,7 @@ def _parse_cursor(cursor: Optional[str]):
 
 
 def _next_cursor(rows, limit):
+    """Generate the next pagination cursor from an over-fetched row set."""
     if len(rows) <= limit or not rows[:limit]:
         return None
     last_row = rows[limit - 1]
@@ -187,6 +173,7 @@ def _next_cursor(rows, limit):
 
 
 def _serialize_date(value) -> Optional[str]:
+    """Serialize date-like values to YYYY-MM-DD."""
     if value is None:
         return None
     if hasattr(value, "strftime"):
@@ -195,6 +182,7 @@ def _serialize_date(value) -> Optional[str]:
 
 
 def _serialize_month(value) -> Optional[str]:
+    """Serialize month-like values to YYYY-MM."""
     if value is None:
         return None
     if hasattr(value, "strftime"):
@@ -203,6 +191,7 @@ def _serialize_month(value) -> Optional[str]:
 
 
 def _serialize_time(value) -> Optional[str]:
+    """Serialize time-like values to HH:MM."""
     if value is None:
         return None
     if hasattr(value, "strftime"):
@@ -212,6 +201,7 @@ def _serialize_time(value) -> Optional[str]:
 
 
 def _serialize_timestamp(value) -> Optional[str]:
+    """Serialize datetime-like values to ISO-8601 strings."""
     if value is None:
         return None
     if hasattr(value, "isoformat"):
@@ -220,6 +210,7 @@ def _serialize_timestamp(value) -> Optional[str]:
 
 
 def _validate_create_payload(payload: ReportedEventCreateRequest):
+    """Validate cross-field requirements for creating a reported event."""
     _validate_coordinates(payload.longitude, payload.latitude)
 
     if payload.event_kind == "crime":
@@ -245,10 +236,12 @@ def _validate_create_payload(payload: ReportedEventCreateRequest):
 
 
 def _event_month(event_date: date) -> date:
+    """Return the canonical month bucket for an event date."""
     return event_date.replace(day=1)
 
 
 def _snap_to_segment(db: Session, longitude: float, latitude: float):
+    """Return the closest segment id when within the configured snap threshold."""
     query = text(
         """
         SELECT
@@ -272,6 +265,7 @@ def _snap_to_segment(db: Session, longitude: float, latitude: float):
 
 
 def _report_select_sql():
+    """Return the shared SELECT statement used by report listing queries."""
     return """
         SELECT
             e.id,
@@ -305,6 +299,7 @@ def _report_select_sql():
 
 
 def _report_to_dict(row, include_admin_fields=False):
+    """Serialize a joined report row into the API payload shape."""
     details = {"crime_type": row["crime_type"]} if row["event_kind"] == "crime" else {
         "weather_condition": row["weather_condition"],
         "light_condition": row["light_condition"],
@@ -341,6 +336,7 @@ def _report_to_dict(row, include_admin_fields=False):
 
 
 def create_report_record(db: Session, payload: ReportedEventCreateRequest, current_user):
+    """Insert a reported event and return the persisted record payload."""
     _validate_create_payload(payload)
 
     reporter_type = "authenticated" if current_user else "anonymous"
@@ -451,6 +447,7 @@ def create_report_record(db: Session, payload: ReportedEventCreateRequest, curre
 
 
 def get_report_by_id(db: Session, report_id: int, include_admin_fields=False):
+    """Fetch a single reported event by id or raise 404 when not found."""
     query = text(
         _report_select_sql()
         + """
@@ -465,6 +462,7 @@ def get_report_by_id(db: Session, report_id: int, include_admin_fields=False):
 
 
 def _list_reports(db: Session, where_clauses, params, limit: int, include_admin_fields=False):
+    """Run a paginated report listing query and return rows plus cursor."""
     query_params = dict(params)
     query_params["row_limit"] = limit + 1
 
@@ -502,6 +500,7 @@ def list_own_reports(
     limit: int,
     cursor: Optional[str],
 ):
+    """List reports created by the current authenticated user."""
     cursor_data = _parse_cursor(cursor)
     where_clauses = ["e.user_id = :user_id"]
     query_params = {"user_id": user_id}
@@ -539,6 +538,7 @@ def list_admin_reports(
     limit: int,
     cursor: Optional[str],
 ):
+    """List reports for admins with moderation and reporter filters."""
     cursor_data = _parse_cursor(cursor)
     from_month_date = _parse_month(from_month, "from")
     to_month_date = _parse_month(to_month, "to")
@@ -584,6 +584,7 @@ def list_admin_reports(
 
 
 def moderate_report(db: Session, report_id: int, moderator_id: int, payload: ReportedEventModerationRequest):
+    """Apply moderation updates to a reported event and return the updated record."""
     moderation_notes = _normalize_optional_text(payload.moderation_notes)
     admin_approved = payload.moderation_status == "approved"
     query = text(
@@ -616,12 +617,14 @@ def moderate_report(db: Session, report_id: int, moderator_id: int, payload: Rep
     db.commit()
     return get_report_by_id(db, report_id, include_admin_fields=True)
 
+
 def _validate_optional_bbox(
     min_lon: Optional[float],
     min_lat: Optional[float],
     max_lon: Optional[float],
     max_lat: Optional[float],
 ):
+    """Validate optional bbox filters and return SQL parameter names used by queries."""
     values = (min_lon, min_lat, max_lon, max_lat)
     if all(value is None for value in values):
         return None
@@ -644,6 +647,7 @@ def _validate_optional_bbox(
 
 
 def _report_to_feature(row):
+    """Convert a report row into a GeoJSON feature."""
     properties = _report_to_dict(row, include_admin_fields=False)
     longitude = properties.pop("longitude")
     latitude = properties.pop("latitude")
@@ -654,4 +658,91 @@ def _report_to_feature(row):
             "coordinates": [longitude, latitude],
         },
         "properties": properties,
+    }
+
+
+def list_user_event_features(
+    db: Session,
+    status_value: Optional[str],
+    event_kind: Optional[str],
+    reporter_type: Optional[str],
+    from_month: Optional[str],
+    to_month: Optional[str],
+    admin_approved: Optional[bool],
+    min_lon: Optional[float],
+    min_lat: Optional[float],
+    max_lon: Optional[float],
+    max_lat: Optional[float],
+    limit: int,
+):
+    """Return filtered user-reported events as a GeoJSON feature collection."""
+    from_month_date = _parse_month(from_month, "from")
+    to_month_date = _parse_month(to_month, "to")
+    if from_month_date and to_month_date and from_month_date > to_month_date:
+        raise HTTPException(status_code=400, detail="from must be less than or equal to to")
+    if (from_month_date is None) != (to_month_date is None):
+        raise HTTPException(status_code=400, detail="from and to must be provided together")
+
+    bbox = _validate_optional_bbox(min_lon, min_lat, max_lon, max_lat)
+    where_clauses = ["TRUE"]
+    params = {"row_limit": limit}
+
+    if status_value is not None:
+        where_clauses.append("e.moderation_status = :status")
+        params["status"] = status_value
+    if event_kind is not None:
+        where_clauses.append("e.event_kind = :event_kind")
+        params["event_kind"] = event_kind
+    if reporter_type is not None:
+        where_clauses.append("e.reporter_type = :reporter_type")
+        params["reporter_type"] = reporter_type
+    if admin_approved is not None:
+        where_clauses.append("e.admin_approved = :admin_approved")
+        params["admin_approved"] = admin_approved
+    if from_month_date is not None:
+        where_clauses.append("e.month BETWEEN :from_month_date AND :to_month_date")
+        params["from_month_date"] = from_month_date
+        params["to_month_date"] = to_month_date
+    if bbox is not None:
+        where_clauses.extend(
+            [
+                "e.longitude BETWEEN :min_lon AND :max_lon",
+                "e.latitude BETWEEN :min_lat AND :max_lat",
+            ]
+        )
+        params.update(bbox)
+
+    query = text(
+        _report_select_sql()
+        + f"""
+        /* user_events_geojson */
+        WHERE {" AND ".join(where_clauses)}
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT :row_limit
+        """
+    )
+    rows = _execute(db, query, params).mappings().all()
+    return {
+        "type": "FeatureCollection",
+        "features": [_report_to_feature(row) for row in rows],
+        "meta": {
+            "returned": len(rows),
+            "limit": limit,
+            "filters": {
+                "status": status_value,
+                "event_kind": event_kind,
+                "reporter_type": reporter_type,
+                "adminApproved": admin_approved,
+                "from": from_month,
+                "to": to_month,
+                "bbox": None
+                if bbox is None
+                else {
+                    "minLon": bbox["min_lon"],
+                    "minLat": bbox["min_lat"],
+                    "maxLon": bbox["max_lon"],
+                    "maxLat": bbox["max_lat"],
+                },
+            },
+        },
     }

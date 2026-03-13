@@ -3,7 +3,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 
 import app.api.watchlist as watchlist_api
-from app.auth_utils import get_current_user
+from app.api_utils.auth_utils import get_current_user
 from app.db import get_db
 from app.main import app
 from tests.inmemory_db import InMemoryDB

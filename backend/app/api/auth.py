@@ -1,26 +1,14 @@
-from typing import Optional
-
-from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from ..auth_utils import create_access_token, get_current_user, hash_password, verify_password
+from ..api_utils.auth_utils import create_access_token, get_current_user, hash_password, verify_password
 from ..db import get_db
+from ..schemas.auth_schemas import AuthRequest, ProfileUpdateRequest
 
 
 router = APIRouter(tags=["auth"])
-
-
-class AuthRequest(BaseModel):
-    email: str
-    password: str = Field(..., min_length=8)
-
-
-class ProfileUpdateRequest(BaseModel):
-    email: Optional[str] = None
-    password: Optional[str] = Field(default=None, min_length=8)
 
 
 def _execute(db, query, params):

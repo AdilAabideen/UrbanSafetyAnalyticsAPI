@@ -23,6 +23,7 @@ Important implementation note:
   - `GET /watchlists/{watchlist_id}/risk-score/results`
   - `GET /watchlists/{watchlist_id}/risk-forecast/results`
   - `GET /watchlists/{watchlist_id}/hotspot-stability/results`
+- watchlist CRUD + watchlist analytics wrapper contracts are documented in `docs/watchlist-analytics-api.md`
 
 ## Shared Conventions
 

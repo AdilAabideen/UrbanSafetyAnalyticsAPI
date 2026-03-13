@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from .auth_utils import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD, hash_password
+from .api_utils.auth_utils import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD, hash_password
 from .db import engine
 
 

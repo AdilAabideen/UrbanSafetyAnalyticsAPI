@@ -1,21 +1,16 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..api_utils.crime_utils import (
     _analytics_request_filters,
     _analytics_response_filters,
-    _analytics_snapshot,
     _analytics_filters,
     _bind_analytics_filter_params,
-    _crime_clusters_payload,
-    _crime_points_payload,
     _default_limit,
-    _execute,
     _normalize_filter_values,
-    _optional_bbox,
     _parse_cursor,
     _parse_json,
     _point_next_cursor,
@@ -23,15 +18,19 @@ from ..api_utils.crime_utils import (
     _resolve_mode,
     _resolve_month_filter,
     _required_bbox,
-    _resolve_from_to_filter,
     _sorted_count_items,
     _where_sql,
+)
+from ..api_utils.crime_utils_db import (
+    _analytics_snapshot,
+    _crime_clusters_payload,
+    _crime_points_payload,
+    _execute,
 )
 from ..db import get_db
 from ..schemas.crime_schemas import (
     CrimeAnalyticsSummaryResponse,
     CrimeDetailFeature,
-    CrimeIncidentItem,
     CrimeIncidentsResponse,
     CrimeMapResponse,
     CrimeTimeseriesResponse,
@@ -41,10 +40,6 @@ from ..schemas.crime_schemas import (
 router = APIRouter(tags=["crimes"])
 
 MAX_CRIME_LIMIT = 10000
-
-
-
-
 # Incident listing for analytics rows
 @router.get("/crimes/incidents", response_model=CrimeIncidentsResponse)
 def get_crime_incidents(

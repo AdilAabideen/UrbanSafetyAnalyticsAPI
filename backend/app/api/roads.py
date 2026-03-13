@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..api_utils.roads_db_utils import _execute
 from ..api_utils.roads_utils import (
     _bind_roads_analytics_params,
-    _execute,
     _highway_message,
     _incident_count_filters,
     _matched_previous_period,

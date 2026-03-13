@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from fastapi import HTTPException
 
-from app.api_utils import roads_utils
+import app.api_utils.roads_utils as roads_utils
 
 
 def test_resolve_from_to_filter_parses_range():

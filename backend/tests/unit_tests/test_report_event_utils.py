@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import InternalError
 
-from app.api_utils import report_event_utils
+import app.api_utils.report_events_db_utils as report_event_utils
 from app.schemas.report_event_schemas import (
     ReportedCollisionPayload,
     ReportedCrimePayload,

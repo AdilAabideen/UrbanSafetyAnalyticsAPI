@@ -48,7 +48,7 @@ def decode_access_token(token: str) -> dict:
         ) from exc
 
 
-def get_current_user(
+def col(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ):
@@ -89,3 +89,11 @@ def get_current_user(
         )
 
     return dict(user)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Backwards-compatible auth dependency name used by API routers."""
+    return col(credentials=credentials, db=db)

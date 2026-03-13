@@ -3,12 +3,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ..api_utils.analytics_utils import (
-    AnalyticsAPIError,
+from ..api_utils.analytics_db_utils import (
     build_analytics_meta_payload,
     build_hotspot_stability_payload,
     build_risk_forecast_payload,
     build_risk_score_payload,
+)
+from ..api_utils.analytics_utils import (
+    AnalyticsAPIError,
     error_response,
 )
 from ..db import get_db

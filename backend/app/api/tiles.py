@@ -3,12 +3,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Path, Query, Response
 from sqlalchemy.orm import Session
 
-from ..api_utils.tiles_utils import (
-    MVT_MEDIA_TYPE,
-    PBF_MEDIA_TYPE,
-    TILE_CACHE_CONTROL,
-    _build_tile_bytes,
-)
+from ..api_utils.tiles_db_utils import _build_tile_bytes
+from ..api_utils.tiles_utils import MVT_MEDIA_TYPE, PBF_MEDIA_TYPE, TILE_CACHE_CONTROL
 from ..db import get_db
 
 

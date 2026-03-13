@@ -2,7 +2,6 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import bindparam
-from sqlalchemy.exc import InternalError, OperationalError
 
 from .crime_utils import (
     _normalize_filter_values,
@@ -10,18 +9,6 @@ from .crime_utils import (
     _parse_month,
     _shift_month,
 )
-
-
-def _execute(db, query, params):
-    """Execute a roads analytics query and normalize database failures."""
-    try:
-        return db.execute(query, params)
-    except (InternalError, OperationalError) as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
-        ) from exc
 
 
 def _resolve_from_to_filter(from_month, to_month, required=False):

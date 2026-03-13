@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi.testclient import TestClient
 
-from app.api_utils import crime_utils
+from app.api_utils import crime_utils_db
 from app.db import get_db
 from app.main import app
 from tests.inmemory_db import InMemoryDB
@@ -15,8 +15,8 @@ def _run_smoke(handlers, method, url):
     def _override_db():
         yield InMemoryDB(handlers)
 
-    crime_utils._analytics_snapshot_cache.clear()
-    crime_utils._analytics_snapshot_inflight.clear()
+    crime_utils_db._analytics_snapshot_cache.clear()
+    crime_utils_db._analytics_snapshot_inflight.clear()
     app.dependency_overrides[get_db] = _override_db
     try:
         return client.request(method, url)

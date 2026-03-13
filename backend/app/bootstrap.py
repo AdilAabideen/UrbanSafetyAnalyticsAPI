@@ -5,6 +5,7 @@ from .db import engine
 
 
 DDL_STATEMENTS = [
+    "CREATE EXTENSION IF NOT EXISTS postgis",
     """
     CREATE TABLE IF NOT EXISTS users (
         id BIGSERIAL PRIMARY KEY,
@@ -35,6 +36,47 @@ DDL_STATEMENTS = [
         window_months INTEGER NOT NULL,
         crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
         travel_mode TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS collision_events (
+        collision_index TEXT PRIMARY KEY,
+        collision_year INTEGER NOT NULL,
+        collision_date DATE NOT NULL,
+        collision_time TIME,
+        month DATE NOT NULL,
+        latitude DOUBLE PRECISION,
+        longitude DOUBLE PRECISION,
+        geom geometry(Point,4326),
+        local_authority_ons_district TEXT NOT NULL,
+        lsoa_of_accident_location TEXT,
+        collision_severity_code INTEGER,
+        collision_severity_label TEXT,
+        number_of_vehicles INTEGER,
+        number_of_casualties INTEGER,
+        speed_limit_code INTEGER,
+        speed_limit_label TEXT,
+        road_type_code INTEGER,
+        road_type_label TEXT,
+        light_conditions_code INTEGER,
+        light_conditions_label TEXT,
+        weather_conditions_code INTEGER,
+        weather_conditions_label TEXT,
+        road_surface_conditions_code INTEGER,
+        road_surface_conditions_label TEXT,
+        vehicle_count INTEGER NOT NULL DEFAULT 0,
+        vehicle_type_counts JSONB NOT NULL DEFAULT '{}'::JSONB,
+        avg_driver_age NUMERIC(5,2),
+        driver_sex_counts JSONB NOT NULL DEFAULT '{}'::JSONB,
+        casualty_count INTEGER NOT NULL DEFAULT 0,
+        casualty_severity_counts JSONB NOT NULL DEFAULT '{}'::JSONB,
+        casualty_type_counts JSONB NOT NULL DEFAULT '{}'::JSONB,
+        fatal_casualty_count INTEGER NOT NULL DEFAULT 0,
+        serious_casualty_count INTEGER NOT NULL DEFAULT 0,
+        slight_casualty_count INTEGER NOT NULL DEFAULT 0,
+        segment_id BIGINT,
+        snap_distance_m DOUBLE PRECISION,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
@@ -85,6 +127,12 @@ DDL_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
     "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",
+    "CREATE INDEX IF NOT EXISTS collision_events_geom_gix ON collision_events USING GIST (geom)",
+    "CREATE INDEX IF NOT EXISTS collision_events_month_idx ON collision_events(month)",
+    "CREATE INDEX IF NOT EXISTS collision_events_collision_date_idx ON collision_events(collision_date)",
+    "CREATE INDEX IF NOT EXISTS collision_events_segment_idx ON collision_events(segment_id)",
+    "CREATE INDEX IF NOT EXISTS collision_events_lsoa_idx ON collision_events(lsoa_of_accident_location)",
+    "CREATE INDEX IF NOT EXISTS collision_events_severity_label_idx ON collision_events(collision_severity_label)",
 ]
 
 

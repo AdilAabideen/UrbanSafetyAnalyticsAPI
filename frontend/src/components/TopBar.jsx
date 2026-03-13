@@ -23,4 +23,3 @@ function TopBar({ docsUrl }) {
 }
 
 export default TopBar;
-

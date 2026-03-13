@@ -5,6 +5,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from .crime_utils import (
+    _analytics_snapshot,
     _analytics_filters,
     _bbox_meta,
     _bind_analytics_filter_params,
@@ -58,6 +59,13 @@ def _incident_item(row):
         "lon": row["lon"],
         "lat": row["lat"],
     }
+
+
+def _sorted_count_items(counts, field_name):
+    return [
+        {field_name: label, "count": count}
+        for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 def _analytics_request_filters(
@@ -569,91 +577,32 @@ def get_crime_analytics_summary(
         lsoaName,
         True,
     )
-    where_clauses, query_params = _analytics_filters(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names)
-    where_sql = _where_sql(where_clauses)
-
-    summary_query = text(
-        f"""
-        SELECT
-            COUNT(*)::bigint AS total_crimes,
-            COUNT(DISTINCT COALESCE(NULLIF(ce.lsoa_code, ''), NULLIF(ce.lsoa_name, '')))::bigint AS unique_lsoas,
-            COUNT(DISTINCT COALESCE(NULLIF(ce.crime_type, ''), 'unknown'))::bigint AS unique_crime_types,
-            COUNT(*) FILTER (
-                WHERE ce.last_outcome_category IS NOT NULL AND NULLIF(ce.last_outcome_category, '') IS NOT NULL
-            )::bigint AS crimes_with_outcomes
-        FROM crime_events ce
-        {where_sql}
-        """
-    )
-    top_types_query = text(
-        f"""
-        SELECT
-            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-            COUNT(*)::bigint AS count
-        FROM crime_events ce
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')
-        ORDER BY count DESC, crime_type ASC
-        LIMIT 10
-        """
-    )
-    top_outcomes_query = text(
-        f"""
-        SELECT
-            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS outcome,
-            COUNT(*)::bigint AS count
-        FROM crime_events ce
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown')
-        ORDER BY count DESC, outcome ASC
-        LIMIT 10
-        """
-    )
-
-    summary_query = _bind_analytics_filter_params(
-        summary_query,
+    snapshot = _analytics_snapshot(
+        range_filter,
+        bbox,
         crime_types,
         last_outcome_categories,
         lsoa_names,
+        db,
     )
-    top_types_query = _bind_analytics_filter_params(
-        top_types_query,
-        crime_types,
-        last_outcome_categories,
-        lsoa_names,
-    )
-    top_outcomes_query = _bind_analytics_filter_params(
-        top_outcomes_query,
-        crime_types,
-        last_outcome_categories,
-        lsoa_names,
-    )
-
-    summary_row = _execute(db, summary_query, query_params).mappings().first() or {}
-    type_rows = _execute(db, top_types_query, query_params).mappings().all()
-    outcome_rows = _execute(db, top_outcomes_query, query_params).mappings().all()
+    type_rows = _sorted_count_items(snapshot["crime_type_counts"], "crime_type")[:10]
+    outcome_rows = _sorted_count_items(snapshot["outcome_counts"], "outcome")[:10]
 
     return {
         "from": range_filter["from"],
         "to": range_filter["to"],
-        "total_crimes": summary_row.get("total_crimes", 0),
-        "unique_lsoas": summary_row.get("unique_lsoas", 0),
-        "unique_crime_types": summary_row.get("unique_crime_types", 0),
+        "total_crimes": snapshot["total_crimes"],
+        "unique_lsoas": snapshot["unique_lsoas"],
+        "unique_crime_types": snapshot["unique_crime_types"],
         "top_crime_type": None
         if not type_rows
         else {
             "crime_type": type_rows[0]["crime_type"],
             "count": type_rows[0]["count"],
         },
-        "crimes_with_outcomes": summary_row.get("crimes_with_outcomes", 0),
-        "top_crime_types": [
-            {"crime_type": row["crime_type"], "count": row["count"]}
-            for row in type_rows
-        ],
-        "top_outcomes": [
-            {"outcome": row["outcome"], "count": row["count"]}
-            for row in outcome_rows
-        ],
+        "crimes_with_outcomes": snapshot["crimes_with_outcomes"],
+        "top_crime_types": type_rows,
+        "top_outcomes": outcome_rows,
     }
 
 
@@ -683,40 +632,18 @@ def get_crime_analytics_timeseries(
         lsoaName,
         True,
     )
-    month_filters = {
-        "clause": None,
-        "params": {},
-        "from": range_filter["from"],
-        "to": range_filter["to"],
-    }
-    where_clauses, query_params = _analytics_filters(
-        month_filters,
+    snapshot = _analytics_snapshot(
+        range_filter,
         bbox,
         crime_types,
         last_outcome_categories,
         lsoa_names,
+        db,
     )
-    where_clauses.append("ce.month = :series_month_date")
-    where_sql = _where_sql(where_clauses)
-
-    query = text(
-        f"""
-        SELECT COUNT(*)::bigint AS count
-        FROM crime_events ce
-        {where_sql}
-        """
-    )
-    query = _bind_analytics_filter_params(query, crime_types, last_outcome_categories, lsoa_names)
-
-    rows = []
-    month_date = range_filter["params"]["from_month_date"]
-    end_month_date = range_filter["params"]["to_month_date"]
-    while month_date <= end_month_date:
-        month_params = dict(query_params)
-        month_params["series_month_date"] = month_date
-        row = _execute(db, query, month_params).mappings().first() or {}
-        rows.append({"month": month_date.strftime("%Y-%m"), "count": row.get("count", 0)})
-        month_date = _shift_month(month_date, 1)
+    rows = [
+        {"month": month, "count": count}
+        for month, count in snapshot["monthly_counts"].items()
+    ]
 
     return {
         "series": rows,
@@ -753,35 +680,17 @@ def get_crime_type_analytics(
         lsoaName,
         False,
     )
-    where_clauses, query_params = _analytics_filters(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names)
-    where_sql = _where_sql(where_clauses)
-
-    total_query = text(
-        f"""
-        SELECT COUNT(*)::bigint AS total_count
-        FROM crime_events ce
-        {where_sql}
-        """
+    snapshot = _analytics_snapshot(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+        db,
     )
-    items_query = text(
-        f"""
-        SELECT
-            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-            COUNT(*)::bigint AS count
-        FROM crime_events ce
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')
-        ORDER BY count DESC, crime_type ASC
-        LIMIT :limit
-        """
-    )
-    total_query = _bind_analytics_filter_params(total_query, crime_types, last_outcome_categories, lsoa_names)
-    items_query = _bind_analytics_filter_params(items_query, crime_types, last_outcome_categories, lsoa_names)
-
-    total_row = _execute(db, total_query, query_params).mappings().first() or {}
-    item_rows = _execute(db, items_query, {**query_params, "limit": limit}).mappings().all()
-    items = [{"crime_type": row["crime_type"], "count": row["count"]} for row in item_rows]
-    other_count = max(total_row.get("total_count", 0) - sum(row["count"] for row in item_rows), 0)
+    rows = _sorted_count_items(snapshot["crime_type_counts"], "crime_type")
+    items = rows[:limit]
+    other_count = sum(row["count"] for row in rows[limit:])
 
     return {
         "items": items,
@@ -818,35 +727,17 @@ def get_crime_outcome_analytics(
         lsoaName,
         False,
     )
-    where_clauses, query_params = _analytics_filters(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names)
-    where_sql = _where_sql(where_clauses)
-
-    total_query = text(
-        f"""
-        SELECT COUNT(*)::bigint AS total_count
-        FROM crime_events ce
-        {where_sql}
-        """
+    snapshot = _analytics_snapshot(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+        db,
     )
-    items_query = text(
-        f"""
-        SELECT
-            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS outcome,
-            COUNT(*)::bigint AS count
-        FROM crime_events ce
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown')
-        ORDER BY count DESC, outcome ASC
-        LIMIT :limit
-        """
-    )
-    total_query = _bind_analytics_filter_params(total_query, crime_types, last_outcome_categories, lsoa_names)
-    items_query = _bind_analytics_filter_params(items_query, crime_types, last_outcome_categories, lsoa_names)
-
-    total_row = _execute(db, total_query, query_params).mappings().first() or {}
-    item_rows = _execute(db, items_query, {**query_params, "limit": limit}).mappings().all()
-    items = [{"outcome": row["outcome"], "count": row["count"]} for row in item_rows]
-    other_count = max(total_row.get("total_count", 0) - sum(row["count"] for row in item_rows), 0)
+    rows = _sorted_count_items(snapshot["outcome_counts"], "outcome")
+    items = rows[:limit]
+    other_count = sum(row["count"] for row in rows[limit:])
 
     return {
         "items": items,

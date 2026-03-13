@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi.testclient import TestClient
 
 from app.db import get_db
@@ -8,29 +10,70 @@ from tests.inmemory_db import InMemoryDB
 client = TestClient(app)
 
 
-def _override_summary_db():
+def _analytics_scan_rows():
+    return [
+        {
+            "id": 106,
+            "month_date": date(2023, 3, 1),
+            "crime_type": "Violence and sexual offences",
+            "raw_outcome": "Investigation complete; no suspect identified",
+            "outcome": "Investigation complete; no suspect identified",
+            "lsoa_code": "E0101",
+            "lsoa_name": "Leeds 010A",
+        },
+        {
+            "id": 105,
+            "month_date": date(2023, 3, 1),
+            "crime_type": "Violence and sexual offences",
+            "raw_outcome": "Investigation complete; no suspect identified",
+            "outcome": "Investigation complete; no suspect identified",
+            "lsoa_code": "E0101",
+            "lsoa_name": "Leeds 010A",
+        },
+        {
+            "id": 104,
+            "month_date": date(2023, 3, 1),
+            "crime_type": "Shoplifting",
+            "raw_outcome": "Under investigation",
+            "outcome": "Under investigation",
+            "lsoa_code": "E0102",
+            "lsoa_name": "Leeds 010B",
+        },
+        {
+            "id": 103,
+            "month_date": date(2023, 2, 1),
+            "crime_type": "Violence and sexual offences",
+            "raw_outcome": "Investigation complete; no suspect identified",
+            "outcome": "Investigation complete; no suspect identified",
+            "lsoa_code": "E0102",
+            "lsoa_name": "Leeds 010B",
+        },
+        {
+            "id": 102,
+            "month_date": date(2023, 2, 1),
+            "crime_type": "Shoplifting",
+            "raw_outcome": "Under investigation",
+            "outcome": "Under investigation",
+            "lsoa_code": "E0103",
+            "lsoa_name": "Leeds 010C",
+        },
+        {
+            "id": 101,
+            "month_date": date(2023, 2, 1),
+            "crime_type": "Public order",
+            "raw_outcome": "Court result unavailable",
+            "outcome": "Court result unavailable",
+            "lsoa_code": None,
+            "lsoa_name": None,
+        },
+    ]
+
+
+def _override_analytics_scan_db():
     handlers = {
-        "COUNT(DISTINCT COALESCE(NULLIF(ce.lsoa_code, ''), NULLIF(ce.lsoa_name, '')))": {
-            "rows": [
-                {
-                    "total_crimes": 12345,
-                    "unique_lsoas": 84,
-                    "unique_crime_types": 12,
-                    "crimes_with_outcomes": 8700,
-                }
-            ]
-        },
-        "GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')": {
-            "rows": [
-                {"crime_type": "Violence and sexual offences", "count": 4200},
-                {"crime_type": "Shoplifting", "count": 2100},
-            ]
-        },
-        "GROUP BY COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown')": {
-            "rows": [
-                {"outcome": "Investigation complete; no suspect identified", "count": 3100},
-            ]
-        },
+        "NULLIF(ce.last_outcome_category, '') AS raw_outcome": {
+            "rows": _analytics_scan_rows()
+        }
     }
     yield InMemoryDB(handlers)
 
@@ -73,56 +116,6 @@ def _override_incidents_db():
     yield InMemoryDB(handlers)
 
 
-def _override_timeseries_db():
-    counts_by_month = {
-        "2023-02": 4100,
-        "2023-03": 4300,
-    }
-
-    handlers = {
-        "SELECT COUNT(*)::bigint AS count": lambda params: {
-            "rows": [
-                {
-                    "count": counts_by_month[params["series_month_date"].strftime("%Y-%m")],
-                }
-            ]
-        },
-    }
-    yield InMemoryDB(handlers)
-
-
-def _override_types_db():
-    rows = [
-        {"crime_type": "Violence and sexual offences", "count": 4200},
-        {"crime_type": "Shoplifting", "count": 2100},
-        {"crime_type": "Public order", "count": 900},
-    ]
-
-    handlers = {
-        "SELECT COUNT(*)::bigint AS total_count": {"rows": [{"total_count": 7200}]},
-        "GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')": lambda params: {
-            "rows": rows[: params["limit"]]
-        },
-    }
-    yield InMemoryDB(handlers)
-
-
-def _override_outcomes_db():
-    rows = [
-        {"outcome": "Investigation complete; no suspect identified", "count": 3100},
-        {"outcome": "Under investigation", "count": 1200},
-        {"outcome": "Court result unavailable", "count": 900},
-    ]
-
-    handlers = {
-        "SELECT COUNT(*)::bigint AS total_count": {"rows": [{"total_count": 5200}]},
-        "GROUP BY COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown')": lambda params: {
-            "rows": rows[: params["limit"]]
-        },
-    }
-    yield InMemoryDB(handlers)
-
-
 def _override_anomaly_db():
     handlers = {
         "SELECT COUNT(*)::bigint AS target_count": {
@@ -136,7 +129,7 @@ def _override_anomaly_db():
 
 
 def test_crimes_analytics_summary_returns_region_summary():
-    app.dependency_overrides[get_db] = _override_summary_db
+    app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
         response = client.get(
             "/crimes/analytics/summary",
@@ -149,20 +142,23 @@ def test_crimes_analytics_summary_returns_region_summary():
     assert response.json() == {
         "from": "2023-02",
         "to": "2023-06",
-        "total_crimes": 12345,
-        "unique_lsoas": 84,
-        "unique_crime_types": 12,
+        "total_crimes": 6,
+        "unique_lsoas": 3,
+        "unique_crime_types": 3,
         "top_crime_type": {
             "crime_type": "Violence and sexual offences",
-            "count": 4200,
+            "count": 3,
         },
-        "crimes_with_outcomes": 8700,
+        "crimes_with_outcomes": 6,
         "top_crime_types": [
-            {"crime_type": "Violence and sexual offences", "count": 4200},
-            {"crime_type": "Shoplifting", "count": 2100},
+            {"crime_type": "Violence and sexual offences", "count": 3},
+            {"crime_type": "Shoplifting", "count": 2},
+            {"crime_type": "Public order", "count": 1},
         ],
         "top_outcomes": [
-            {"outcome": "Investigation complete; no suspect identified", "count": 3100},
+            {"outcome": "Investigation complete; no suspect identified", "count": 3},
+            {"outcome": "Under investigation", "count": 2},
+            {"outcome": "Court result unavailable", "count": 1},
         ],
     }
 
@@ -213,7 +209,7 @@ def test_crimes_incidents_returns_paginated_items():
 
 
 def test_crime_analytics_timeseries_returns_series_and_total():
-    app.dependency_overrides[get_db] = _override_timeseries_db
+    app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
         response = client.get(
             "/crime/analytics/timeseries",
@@ -225,15 +221,15 @@ def test_crime_analytics_timeseries_returns_series_and_total():
     assert response.status_code == 200
     assert response.json() == {
         "series": [
-            {"month": "2023-02", "count": 4100},
-            {"month": "2023-03", "count": 4300},
+            {"month": "2023-02", "count": 3},
+            {"month": "2023-03", "count": 3},
         ],
-        "total": 8400,
+        "total": 6,
     }
 
 
 def test_crimes_analytics_type_breakdown_returns_items_and_other_count():
-    app.dependency_overrides[get_db] = _override_types_db
+    app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
         response = client.get("/crimes/analytics/types", params={"limit": 2})
     finally:
@@ -242,15 +238,15 @@ def test_crimes_analytics_type_breakdown_returns_items_and_other_count():
     assert response.status_code == 200
     assert response.json() == {
         "items": [
-            {"crime_type": "Violence and sexual offences", "count": 4200},
-            {"crime_type": "Shoplifting", "count": 2100},
+            {"crime_type": "Violence and sexual offences", "count": 3},
+            {"crime_type": "Shoplifting", "count": 2},
         ],
-        "other_count": 900,
+        "other_count": 1,
     }
 
 
 def test_crimes_analytics_outcome_breakdown_returns_items_and_other_count():
-    app.dependency_overrides[get_db] = _override_outcomes_db
+    app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
         response = client.get("/crimes/analytics/outcomes", params={"limit": 2})
     finally:
@@ -259,10 +255,10 @@ def test_crimes_analytics_outcome_breakdown_returns_items_and_other_count():
     assert response.status_code == 200
     assert response.json() == {
         "items": [
-            {"outcome": "Investigation complete; no suspect identified", "count": 3100},
-            {"outcome": "Under investigation", "count": 1200},
+            {"outcome": "Investigation complete; no suspect identified", "count": 3},
+            {"outcome": "Under investigation", "count": 2},
         ],
-        "other_count": 900,
+        "other_count": 1,
     }
 
 

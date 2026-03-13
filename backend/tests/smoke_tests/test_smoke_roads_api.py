@@ -111,3 +111,17 @@ def test_roads_by_id_route_returns_404_for_missing_row():
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Road segment not found"
+
+
+def test_roads_geojson_by_id_route_returns_feature():
+    app.dependency_overrides[get_db] = _override_roads_db
+    try:
+        response = client.get("/roads/7/geojson")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "Feature"
+    assert data["geometry"]["type"] == "LineString"
+    assert data["properties"]["id"] == 7

@@ -1,12 +1,23 @@
 import json
+import logging
+from collections import Counter
+from copy import deepcopy
 from datetime import datetime
+from threading import Event, Lock
+from time import monotonic
 
 from fastapi import HTTPException
-from sqlalchemy import bindparam
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import InternalError, OperationalError
 
 
 VALID_MAP_MODES = {"auto", "points", "clusters"}
+ANALYTICS_SNAPSHOT_TTL_SECONDS = 60
+
+logger = logging.getLogger(__name__)
+_analytics_snapshot_cache = {}
+_analytics_snapshot_inflight = {}
+_analytics_snapshot_lock = Lock()
 
 
 def _parse_json(value):
@@ -175,7 +186,15 @@ def _cluster_grid_size(bbox, zoom):
 def _execute(db, query, params=None):
     try:
         return db.execute(query, params or {})
-    except (InternalError, OperationalError) as exc:
+    except InternalError as exc:
+        logger.exception("Database internal error during query execution")
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        ) from exc
+    except OperationalError as exc:
+        logger.warning("Database operational error during query execution", exc_info=exc)
         db.rollback()
         raise HTTPException(
             status_code=503,
@@ -355,3 +374,170 @@ def _shift_month(month_date, offset):
     year = month_index // 12
     month = month_index % 12 + 1
     return month_date.replace(year=year, month=month, day=1)
+
+
+def _analytics_snapshot_cache_key(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names):
+    bbox_key = None
+    if bbox:
+        bbox_key = (
+            bbox["min_lon"],
+            bbox["min_lat"],
+            bbox["max_lon"],
+            bbox["max_lat"],
+        )
+
+    return (
+        range_filter["from"],
+        range_filter["to"],
+        bbox_key,
+        tuple(crime_types or ()),
+        tuple(last_outcome_categories or ()),
+        tuple(lsoa_names or ()),
+    )
+
+
+def _analytics_snapshot(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names, db, page_size=5000):
+    cache_key = _analytics_snapshot_cache_key(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    now = monotonic()
+
+    inflight_event = None
+    owns_refresh = False
+    while True:
+        with _analytics_snapshot_lock:
+            cached = _analytics_snapshot_cache.get(cache_key)
+            if cached and now - cached["created_at"] <= ANALYTICS_SNAPSHOT_TTL_SECONDS:
+                return deepcopy(cached["snapshot"])
+
+            inflight_event = _analytics_snapshot_inflight.get(cache_key)
+            if inflight_event is None:
+                inflight_event = Event()
+                _analytics_snapshot_inflight[cache_key] = inflight_event
+                owns_refresh = True
+                break
+
+        inflight_event.wait()
+        now = monotonic()
+
+    where_clauses, query_params = _analytics_filters(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+
+    monthly_counts = {}
+    if range_filter["params"].get("from_month_date") and range_filter["params"].get("to_month_date"):
+        month_date = range_filter["params"]["from_month_date"]
+        end_month_date = range_filter["params"]["to_month_date"]
+        while month_date <= end_month_date:
+            monthly_counts[month_date.strftime("%Y-%m")] = 0
+            month_date = _shift_month(month_date, 1)
+
+    crime_type_counts = Counter()
+    outcome_counts = Counter()
+    unique_lsoas = set()
+    unique_crime_types = set()
+    total_crimes = 0
+    crimes_with_outcomes = 0
+    cursor_data = None
+
+    try:
+        while True:
+            cursor_clause = ""
+            params = dict(query_params)
+            params["row_limit"] = page_size + 1
+
+            if cursor_data:
+                cursor_clause = """
+                AND (
+                    ce.month < :cursor_month
+                    OR (ce.month = :cursor_month AND ce.id < :cursor_id)
+                )
+                """
+                params.update(cursor_data)
+
+            query = text(
+                f"""
+                SELECT
+                    ce.id,
+                    ce.month AS month_date,
+                    COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
+                    NULLIF(ce.last_outcome_category, '') AS raw_outcome,
+                    COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS outcome,
+                    NULLIF(ce.lsoa_code, '') AS lsoa_code,
+                    NULLIF(ce.lsoa_name, '') AS lsoa_name
+                FROM crime_events ce
+                {_where_sql(where_clauses)}
+                {cursor_clause}
+                ORDER BY ce.month DESC, ce.id DESC
+                LIMIT :row_limit
+                """
+            )
+            query = _bind_analytics_filter_params(
+                query,
+                crime_types,
+                last_outcome_categories,
+                lsoa_names,
+            )
+
+            rows = _execute(db, query, params).mappings().all()
+            if not rows:
+                break
+
+            page_rows = rows[:page_size]
+            for row in page_rows:
+                month_label = row["month_date"].strftime("%Y-%m")
+                monthly_counts[month_label] = monthly_counts.get(month_label, 0) + 1
+
+                total_crimes += 1
+                crime_type_counts[row["crime_type"]] += 1
+                outcome_counts[row["outcome"]] += 1
+                unique_crime_types.add(row["crime_type"])
+
+                lsoa_key = row["lsoa_code"] or row["lsoa_name"]
+                if lsoa_key is not None:
+                    unique_lsoas.add(lsoa_key)
+
+                if row["raw_outcome"] is not None:
+                    crimes_with_outcomes += 1
+
+            if len(rows) <= page_size:
+                break
+
+            last_row = page_rows[-1]
+            cursor_data = {
+                "cursor_month": last_row["month_date"],
+                "cursor_id": last_row["id"],
+            }
+
+        snapshot = {
+            "total_crimes": total_crimes,
+            "unique_lsoas": len(unique_lsoas),
+            "unique_crime_types": len(unique_crime_types),
+            "crimes_with_outcomes": crimes_with_outcomes,
+            "crime_type_counts": dict(crime_type_counts),
+            "outcome_counts": dict(outcome_counts),
+            "monthly_counts": monthly_counts,
+        }
+
+        with _analytics_snapshot_lock:
+            _analytics_snapshot_cache[cache_key] = {
+                "created_at": monotonic(),
+                "snapshot": deepcopy(snapshot),
+            }
+
+        return snapshot
+    finally:
+        if owns_refresh:
+            with _analytics_snapshot_lock:
+                cached_event = _analytics_snapshot_inflight.get(cache_key)
+                if cached_event is inflight_event:
+                    del _analytics_snapshot_inflight[cache_key]
+            inflight_event.set()

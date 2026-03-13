@@ -181,6 +181,20 @@ def _sort_expression(sort):
     return "incidents_per_km DESC, incident_count DESC, segment_id ASC"
 
 
+def _road_geojson_feature(row):
+    return {
+        "type": "Feature",
+        "geometry": _parse_json(row["geometry"]),
+        "properties": {
+            "id": row["id"],
+            "osm_id": row["osm_id"],
+            "name": row["name"],
+            "highway": row["highway"],
+            "length_m": row["length_m"],
+        },
+    }
+
+
 @router.get("/roads")
 def get_roads(
     minLon: float = Query(..., ge=-180, le=180),
@@ -859,3 +873,27 @@ def get_road_by_id(road_id: int, db: Session = Depends(get_db)):
     payload = dict(road)
     payload["geometry"] = _parse_json(payload["geometry"])
     return payload
+
+
+@router.get("/roads/{road_id}/geojson")
+def get_road_geojson_by_id(road_id: int, db: Session = Depends(get_db)):
+    query = text(
+        """
+        SELECT
+            rs.id,
+            rs.osm_id,
+            rs.name,
+            rs.highway,
+            rs.length_m,
+            ST_AsGeoJSON(rs.geom) AS geometry
+        FROM road_segments_4326 rs
+        WHERE rs.id = :road_id
+        LIMIT 1
+        """
+    )
+    road = _execute(db, query, {"road_id": road_id}).mappings().first()
+
+    if not road:
+        raise HTTPException(status_code=404, detail="Road segment not found")
+
+    return _road_geojson_feature(road)

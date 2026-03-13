@@ -1,18 +1,28 @@
 services:
   db:
-    image: postgis/postgis:16-3.4
+    build:
+      context: .
+      dockerfile: docker/db/Dockerfile
+    image: urban-risk-postgis:16-3.4-local
     command:
       - postgres
       - -c
       - max_parallel_workers=0
       - -c
       - max_parallel_workers_per_gather=0
+      - -c
+      - statement_timeout=15000
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: urban_risk
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d urban_risk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - pgdata:/var/lib/postgresql/data
 

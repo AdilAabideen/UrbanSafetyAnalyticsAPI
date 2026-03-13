@@ -1,12 +1,18 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from time import sleep
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import InternalError, OperationalError
 
+from app.api import crime_utils
 from app.api.crime_utils import _analytics_filters
+from app.api.crime_utils import _analytics_snapshot
 from app.api.crime_utils import _execute as crime_execute
 from app.api.roads import _execute as roads_execute
 from app.api.tiles import _execute as tiles_execute
-from app.db import _configure_postgres_session
+from app.db import _configure_postgres_session, _engine_kwargs
 
 
 class ExplodingDB:
@@ -72,7 +78,23 @@ def test_configure_postgres_session_disables_parallel_workers():
     assert connection.cursor_instance.statements == [
         "SET SESSION max_parallel_workers = 0",
         "SET SESSION max_parallel_workers_per_gather = 0",
+        "SET SESSION statement_timeout = 15000",
     ]
+
+
+def test_engine_kwargs_default_pool_settings(monkeypatch):
+    monkeypatch.delenv("DB_POOL_SIZE", raising=False)
+    monkeypatch.delenv("DB_MAX_OVERFLOW", raising=False)
+    monkeypatch.delenv("DB_POOL_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("DB_POOL_RECYCLE_SECONDS", raising=False)
+
+    assert _engine_kwargs() == {
+        "pool_pre_ping": True,
+        "pool_size": 5,
+        "max_overflow": 5,
+        "pool_timeout": 30,
+        "pool_recycle": 1800,
+    }
 
 
 def test_analytics_filters_use_lon_lat_bbox_without_geom_predicates():
@@ -93,3 +115,66 @@ def test_analytics_filters_use_lon_lat_bbox_without_geom_predicates():
         "max_lon": -1.1,
         "max_lat": 54.05,
     }
+
+
+def test_analytics_snapshot_collapses_duplicate_inflight_requests(monkeypatch):
+    class FakeResult:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+    crime_utils._analytics_snapshot_cache.clear()
+    crime_utils._analytics_snapshot_inflight.clear()
+
+    call_count = 0
+    started = False
+    release = False
+
+    def fake_execute(_db, _query, _params=None):
+        nonlocal call_count, started
+        call_count += 1
+        started = True
+        while not release:
+            sleep(0.01)
+        return FakeResult(
+            [
+                {
+                    "id": 1,
+                    "month_date": date(2024, 8, 1),
+                    "crime_type": "burglary",
+                    "raw_outcome": "under investigation",
+                    "outcome": "under investigation",
+                    "lsoa_code": "LSOA-1",
+                    "lsoa_name": "Area 1",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(crime_utils, "_execute", fake_execute)
+
+    args = (
+        {"clause": None, "params": {}, "from": None, "to": None},
+        {"min_lon": -2.25, "min_lat": 53.55, "max_lon": -1.1, "max_lat": 54.05},
+        None,
+        None,
+        None,
+        object(),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(_analytics_snapshot, *args, page_size=10)
+        while not started:
+            sleep(0.01)
+        second = executor.submit(_analytics_snapshot, *args, page_size=10)
+        sleep(0.05)
+        release = True
+        first_result = first.result()
+        second_result = second.result()
+
+    assert call_count == 1
+    assert first_result == second_result

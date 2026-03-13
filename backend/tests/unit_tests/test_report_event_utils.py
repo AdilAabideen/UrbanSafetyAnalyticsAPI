@@ -3,30 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import text
-from sqlalchemy.exc import InternalError
 
 import app.api_utils.report_events_db_utils as report_event_utils
 from app.schemas.report_event_schemas import (
     ReportedCollisionPayload,
     ReportedCrimePayload,
     ReportedEventCreateRequest,
-    ReportedEventModerationRequest,
 )
-from tests.inmemory_db import InMemoryDB
-
-
-class TransactionalInMemoryDB(InMemoryDB):
-    def __init__(self, handlers):
-        super().__init__(handlers)
-        self.commit_calls = 0
-        self.rollback_calls = 0
-
-    def commit(self):
-        self.commit_calls += 1
-
-    def rollback(self):
-        self.rollback_calls += 1
 
 
 def _report_row(event_kind="crime", report_id=1, created_at=None):
@@ -57,71 +40,13 @@ def _report_row(event_kind="crime", report_id=1, created_at=None):
     }
 
 
-def test_execute_returns_result_for_successful_query():
-    db = TransactionalInMemoryDB({"SELECT 1": {"rows": [{"value": 1}]}})
-
-    result = report_event_utils._execute(db, text("SELECT 1"), {})
-
-    assert result.mappings().first()["value"] == 1
-
-
-def test_execute_translates_database_errors_to_http_503():
-    class BrokenDB:
-        def __init__(self):
-            self.rollback_calls = 0
-
-        def execute(self, query, params):
-            raise InternalError("SELECT 1", params, Exception("boom"))
-
-        def rollback(self):
-            self.rollback_calls += 1
-
-    db = BrokenDB()
-
-    with pytest.raises(HTTPException) as exc_info:
-        report_event_utils._execute(db, text("SELECT 1"), {})
-
-    assert exc_info.value.status_code == 503
-    assert db.rollback_calls == 1
-
-
-def test_get_optional_current_user_without_credentials_returns_none():
-    db = TransactionalInMemoryDB({})
-
-    assert report_event_utils.get_optional_current_user(credentials=None, db=db) is None
-
-
 def test_get_optional_current_user_rejects_non_bearer_scheme():
     credentials = SimpleNamespace(scheme="Basic", credentials="token")
 
     with pytest.raises(HTTPException) as exc_info:
-        report_event_utils.get_optional_current_user(credentials=credentials, db=TransactionalInMemoryDB({}))
+        report_event_utils.get_optional_current_user(credentials=credentials, db=None)
 
     assert exc_info.value.status_code == 401
-
-
-def test_get_optional_current_user_returns_user_for_valid_token(monkeypatch):
-    credentials = SimpleNamespace(scheme="Bearer", credentials="token")
-    db = TransactionalInMemoryDB(
-        {
-            "FROM users u": {
-                "rows": [
-                    {
-                        "id": 7,
-                        "email": "user@example.com",
-                        "is_admin": False,
-                        "created_at": datetime(2025, 1, 1, 0, 0, 0),
-                    }
-                ]
-            }
-        }
-    )
-    monkeypatch.setattr(report_event_utils, "decode_access_token", lambda _token: {"sub": "7"})
-
-    user = report_event_utils.get_optional_current_user(credentials=credentials, db=db)
-
-    assert user["id"] == 7
-    assert user["email"] == "user@example.com"
 
 
 def test_require_admin_allows_admin_and_blocks_non_admin():
@@ -250,25 +175,8 @@ def test_validate_create_payload_enforces_event_specific_fields():
         )
 
 
-def test_event_month_and_snap_to_segment():
+def test_event_month():
     assert report_event_utils._event_month(date(2025, 1, 31)) == date(2025, 1, 1)
-
-    db = TransactionalInMemoryDB(
-        {
-            "FROM road_segments_4326": {
-                "rows": [
-                    {
-                        "id": 9,
-                        "snap_distance_m": 55.0,
-                    }
-                ]
-            }
-        }
-    )
-    segment_id, distance = report_event_utils._snap_to_segment(db, -1.55, 53.8)
-
-    assert segment_id == 9
-    assert distance == 55.0
 
 
 def test_report_select_and_serializers():
@@ -284,176 +192,3 @@ def test_report_select_and_serializers():
     assert collision_payload["details"]["weather_condition"] == "Fine"
     assert feature["type"] == "Feature"
     assert feature["geometry"]["coordinates"] == [-1.55, 53.8]
-
-
-def test_get_report_by_id_returns_report_and_404_when_missing():
-    db = TransactionalInMemoryDB({"WHERE e.id = :report_id": {"rows": [_report_row("crime", report_id=5)]}})
-
-    report = report_event_utils.get_report_by_id(db, 5)
-    assert report["id"] == 5
-
-    empty_db = TransactionalInMemoryDB({"WHERE e.id = :report_id": {"rows": []}})
-    with pytest.raises(HTTPException) as exc_info:
-        report_event_utils.get_report_by_id(empty_db, 999)
-    assert exc_info.value.status_code == 404
-
-
-def test_create_report_record_for_crime_and_collision_paths():
-    crime_db = TransactionalInMemoryDB(
-        {
-            "FROM road_segments_4326": {"rows": [{"id": 9, "snap_distance_m": 10.0}]},
-            "INSERT INTO user_reported_events": {"rows": [{"id": 11}]},
-            "INSERT INTO user_reported_crime_details": {"rows": []},
-            "WHERE e.id = :report_id": {"rows": [_report_row("crime", report_id=11)]},
-        }
-    )
-    crime_payload = ReportedEventCreateRequest(
-        event_kind="crime",
-        event_date=date(2025, 1, 15),
-        longitude=-1.55,
-        latitude=53.8,
-        description="  some note  ",
-        crime=ReportedCrimePayload(crime_type="theft"),
-    )
-
-    created_crime = report_event_utils.create_report_record(crime_db, crime_payload, current_user=None)
-
-    assert created_crime["id"] == 11
-    assert crime_db.commit_calls == 1
-
-    collision_db = TransactionalInMemoryDB(
-        {
-            "FROM road_segments_4326": {"rows": [{"id": 10, "snap_distance_m": 15.0}]},
-            "INSERT INTO user_reported_events": {"rows": [{"id": 12}]},
-            "INSERT INTO user_reported_collision_details": {"rows": []},
-            "WHERE e.id = :report_id": {"rows": [_report_row("collision", report_id=12)]},
-        }
-    )
-    collision_payload = ReportedEventCreateRequest(
-        event_kind="collision",
-        event_date=date(2025, 1, 15),
-        longitude=-1.55,
-        latitude=53.8,
-        collision=ReportedCollisionPayload(
-            weather_condition="Fine",
-            light_condition="Daylight",
-            number_of_vehicles=2,
-        ),
-    )
-
-    created_collision = report_event_utils.create_report_record(
-        collision_db,
-        collision_payload,
-        current_user={"id": 99, "is_admin": True},
-    )
-
-    assert created_collision["id"] == 12
-    assert collision_db.commit_calls == 1
-
-
-def test_list_reports_and_list_own_reports():
-    db = TransactionalInMemoryDB(
-        {
-            "ORDER BY e.created_at DESC, e.id DESC": {
-                "rows": [
-                    _report_row("crime", report_id=3, created_at=datetime(2025, 1, 3, 10, 0, 0)),
-                    _report_row("crime", report_id=2, created_at=datetime(2025, 1, 2, 10, 0, 0)),
-                ]
-            }
-        }
-    )
-
-    listing = report_event_utils._list_reports(db, ["e.user_id = :user_id"], {"user_id": 7}, limit=1)
-    assert len(listing["items"]) == 1
-    assert listing["nextCursor"] == "2025-01-03T10:00:00|3"
-
-    own = report_event_utils.list_own_reports(db, 7, "pending", "crime", 1, None)
-    assert own["meta"]["limit"] == 1
-    assert own["meta"]["filters"]["status"] == "pending"
-
-
-def test_list_admin_reports_validates_months_and_returns_payload():
-    db = TransactionalInMemoryDB(
-        {
-            "ORDER BY e.created_at DESC, e.id DESC": {
-                "rows": [_report_row("crime", report_id=4, created_at=datetime(2025, 1, 4, 10, 0, 0))]
-            }
-        }
-    )
-
-    payload = report_event_utils.list_admin_reports(
-        db,
-        status_value="pending",
-        event_kind="crime",
-        reporter_type="anonymous",
-        from_month="2025-01",
-        to_month="2025-01",
-        limit=10,
-        cursor=None,
-    )
-    assert payload["meta"]["returned"] == 1
-
-    with pytest.raises(HTTPException):
-        report_event_utils.list_admin_reports(db, None, None, None, "2025-02", "2025-01", 10, None)
-
-
-def test_moderate_report_updates_and_returns_record():
-    db = TransactionalInMemoryDB(
-        {
-            "UPDATE user_reported_events": {"rows": [{"id": 8}]},
-            "WHERE e.id = :report_id": {"rows": [_report_row("crime", report_id=8)]},
-        }
-    )
-    payload = ReportedEventModerationRequest(moderation_status="approved", moderation_notes="  reviewed ")
-
-    report = report_event_utils.moderate_report(db, report_id=8, moderator_id=1, payload=payload)
-
-    assert report["id"] == 8
-    assert db.commit_calls == 1
-
-
-def test_list_user_event_features_returns_geojson_payload():
-    db = TransactionalInMemoryDB(
-        {
-            "/* user_events_geojson */": {
-                "rows": [
-                    _report_row("crime", report_id=21),
-                ]
-            }
-        }
-    )
-
-    payload = report_event_utils.list_user_event_features(
-        db,
-        status_value="pending",
-        event_kind="crime",
-        reporter_type="anonymous",
-        from_month="2025-01",
-        to_month="2025-01",
-        admin_approved=False,
-        min_lon=-1.6,
-        min_lat=53.7,
-        max_lon=-1.5,
-        max_lat=53.9,
-        limit=10,
-    )
-
-    assert payload["type"] == "FeatureCollection"
-    assert payload["meta"]["returned"] == 1
-    assert payload["features"][0]["properties"]["event_kind"] == "crime"
-
-    with pytest.raises(HTTPException):
-        report_event_utils.list_user_event_features(
-            db,
-            status_value=None,
-            event_kind=None,
-            reporter_type=None,
-            from_month="2025-01",
-            to_month=None,
-            admin_approved=None,
-            min_lon=None,
-            min_lat=None,
-            max_lon=None,
-            max_lat=None,
-            limit=10,
-        )

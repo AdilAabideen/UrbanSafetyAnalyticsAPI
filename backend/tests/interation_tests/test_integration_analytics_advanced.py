@@ -202,7 +202,11 @@ def test_analytics_hotspot_stability_returns_series_without_persisting():
 
 
 def test_watchlist_risk_forecast_run_persists_against_watchlist(monkeypatch):
-    monkeypatch.setattr(watchlist_api, "_latest_complete_month", lambda: date(2025, 6, 1))
+    monkeypatch.setattr(
+        watchlist_api,
+        "_latest_complete_month",
+        lambda _db, _include_collisions=False: date(2025, 6, 1),
+    )
 
     handlers = {
         "FROM watchlists w": {

@@ -1,26 +1,28 @@
-from typing import Optional
-
-from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from ..auth_utils import create_access_token, get_current_user, hash_password, verify_password
+from ..api_utils.auth_utils import create_access_token, get_current_user, hash_password, verify_password
 from ..db import get_db
+from ..errors import (
+    AuthenticationError,
+    ConflictError,
+    DependencyError,
+    NotFoundError,
+    ValidationError,
+)
+from ..schemas.auth_schemas import (
+    AuthRequest,
+    LoginResponse,
+    MeResponse,
+    ProfileUpdateRequest,
+    RegisterResponse,
+    UpdateMeResponse,
+)
 
 
 router = APIRouter(tags=["auth"])
-
-
-class AuthRequest(BaseModel):
-    email: str
-    password: str = Field(..., min_length=8)
-
-
-class ProfileUpdateRequest(BaseModel):
-    email: Optional[str] = None
-    password: Optional[str] = Field(default=None, min_length=8)
 
 
 def _execute(db, query, params):
@@ -28,14 +30,13 @@ def _execute(db, query, params):
         return db.execute(query, params)
     except OperationalError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
         ) from exc
 
 
-@router.post("/auth/register")
-def register(payload: AuthRequest, db: Session = Depends(get_db)):
+@router.post("/auth/register", response_model=RegisterResponse)
+def register(payload: AuthRequest, db: Session = Depends(get_db)) -> RegisterResponse:
     existing_query = text(
         """
         SELECT u.id
@@ -46,7 +47,7 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)):
     )
     existing = _execute(db, existing_query, {"email": payload.email}).mappings().first()
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered")
 
     insert_query = text(
         """
@@ -67,7 +68,7 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)):
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Email already registered") from exc
+        raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered") from exc
 
     return {
         "user": {
@@ -79,8 +80,8 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/auth/login")
-def login(payload: AuthRequest, db: Session = Depends(get_db)):
+@router.post("/auth/login", response_model=LoginResponse)
+def login(payload: AuthRequest, db: Session = Depends(get_db)) -> LoginResponse:
     query = text(
         """
         SELECT
@@ -96,9 +97,9 @@ def login(payload: AuthRequest, db: Session = Depends(get_db)):
     )
     user = _execute(db, query, {"email": payload.email}).mappings().first()
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+        raise AuthenticationError(
+            error="INVALID_CREDENTIALS",
+            message="Invalid email or password",
         )
 
     access_token = create_access_token(user["id"])
@@ -114,19 +115,22 @@ def login(payload: AuthRequest, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/me")
-def me(current_user=Depends(get_current_user)):
+@router.get("/me", response_model=MeResponse)
+def me(current_user=Depends(get_current_user)) -> MeResponse:
     return {"user": current_user}
 
 
-@router.patch("/me")
+@router.patch("/me", response_model=UpdateMeResponse)
 def update_me(
     payload: ProfileUpdateRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+ ) -> UpdateMeResponse:
     if payload.email is None and payload.password is None:
-        raise HTTPException(status_code=400, detail="Provide email or password to update")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="Provide email or password to update",
+        )
 
     update_fields = []
     query_params = {"user_id": current_user["id"]}
@@ -153,10 +157,10 @@ def update_me(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Email already registered") from exc
+        raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered") from exc
 
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFoundError(error="USER_NOT_FOUND", message="User not found")
 
     return {
         "user": {

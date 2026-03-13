@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .roads_utils import (
+from ..api_utils.roads_db_utils import _execute
+from ..api_utils.roads_utils import (
     _bind_roads_analytics_params,
-    _execute,
     _highway_message,
     _incident_count_filters,
     _matched_previous_period,
@@ -22,15 +22,25 @@ from .roads_utils import (
     _where_sql,
 )
 from ..db import get_db
+from ..errors import ValidationError
+from ..schemas.enums import CrimeOutcome, CrimeType, HighwayClass
+from ..schemas.roads_schemas import (
+    RoadsAnalyticsChartsResponse,
+    RoadsAnalyticsMetaResponse,
+    RoadsAnalyticsOverviewResponse,
+    RoadsAnalyticsRiskResponse,
+)
 
 
 router = APIRouter(tags=["roads"])
 
 
-@router.get("/roads/analytics/meta")
-def get_road_analytics_meta(db: Session = Depends(get_db)):
+# Metadata used to populate roads analytics filters
+@router.get("/roads/analytics/meta", response_model=RoadsAnalyticsMetaResponse)
+def get_road_analytics_meta(db: Session = Depends(get_db)) -> RoadsAnalyticsMetaResponse:
     months_query = text(
         """
+        /* roads_meta_months */
         SELECT
             to_char(MIN(ce.month), 'YYYY-MM') AS min_month,
             to_char(MAX(ce.month), 'YYYY-MM') AS max_month
@@ -40,6 +50,7 @@ def get_road_analytics_meta(db: Session = Depends(get_db)):
     )
     highways_query = text(
         """
+        /* roads_meta_highways */
         SELECT DISTINCT COALESCE(NULLIF(rs.highway, ''), 'unknown') AS highway
         FROM road_segments rs
         ORDER BY highway ASC
@@ -47,6 +58,7 @@ def get_road_analytics_meta(db: Session = Depends(get_db)):
     )
     crime_types_query = text(
         """
+        /* roads_meta_crime_types */
         SELECT DISTINCT COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type
         FROM crime_events ce
         WHERE ce.segment_id IS NOT NULL
@@ -55,6 +67,7 @@ def get_road_analytics_meta(db: Session = Depends(get_db)):
     )
     outcomes_query = text(
         """
+        /* roads_meta_outcomes */
         SELECT DISTINCT COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS outcome
         FROM crime_events ce
         WHERE ce.segment_id IS NOT NULL
@@ -63,6 +76,7 @@ def get_road_analytics_meta(db: Session = Depends(get_db)):
     )
     counts_query = text(
         """
+        /* roads_meta_counts */
         SELECT
             COUNT(*)::bigint AS road_segments_total,
             COUNT(*) FILTER (WHERE rs.name IS NOT NULL AND NULLIF(rs.name, '') IS NOT NULL)::bigint AS named_roads_total,
@@ -105,7 +119,7 @@ def get_road_analytics_meta(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/roads/analytics/overview")
+@router.get("/roads/analytics/overview", response_model=RoadsAnalyticsOverviewResponse)
 def get_road_analytics_overview(
     from_month: str = Query(..., alias="from"),
     to_month: str = Query(..., alias="to"),
@@ -113,11 +127,11 @@ def get_road_analytics_overview(
     minLat: Optional[float] = Query(None, ge=-90, le=90),
     maxLon: Optional[float] = Query(None, ge=-180, le=180),
     maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    crimeType: Optional[List[str]] = Query(None),
-    lastOutcomeCategory: Optional[List[str]] = Query(None),
-    highway: Optional[List[str]] = Query(None),
+    crimeType: Optional[List[CrimeType]] = Query(None),
+    lastOutcomeCategory: Optional[List[CrimeOutcome]] = Query(None),
+    highway: Optional[List[HighwayClass]] = Query(None),
     db: Session = Depends(get_db),
-):
+) -> RoadsAnalyticsOverviewResponse:
     range_filter, bbox, crime_types, last_outcome_categories, highways = _roads_analytics_filters(
         from_month,
         to_month,
@@ -146,6 +160,7 @@ def get_road_analytics_overview(
     summary_query = text(
         base_cte
         + """
+        /* roads_overview_summary */
         ,
         incident_counts AS (
             SELECT
@@ -176,6 +191,7 @@ def get_road_analytics_overview(
     top_highway_query = text(
         base_cte
         + """
+        /* roads_overview_top_highway */
         ,
         incident_counts AS (
             SELECT
@@ -200,6 +216,7 @@ def get_road_analytics_overview(
     top_crime_type_query = text(
         base_cte
         + """
+        /* roads_overview_top_crime_type */
         SELECT
             crime_type,
             COUNT(*)::bigint AS count
@@ -212,6 +229,7 @@ def get_road_analytics_overview(
     top_outcome_query = text(
         base_cte
         + """
+        /* roads_overview_top_outcome */
         SELECT
             outcome,
             COUNT(*)::bigint AS count
@@ -224,6 +242,7 @@ def get_road_analytics_overview(
     top_road_query = text(
         base_cte
         + f"""
+        /* roads_overview_top_road */
         ,
         incident_counts AS (
             SELECT
@@ -274,6 +293,7 @@ def get_road_analytics_overview(
     band_breakdown_query = text(
         base_cte
         + f"""
+        /* roads_overview_band_breakdown */
         ,
         incident_counts AS (
             SELECT
@@ -334,6 +354,7 @@ def get_road_analytics_overview(
     )
     previous_query = text(
         f"""
+        /* roads_overview_previous */
         WITH roads_scope AS (
             SELECT rs.id
             FROM road_segments rs
@@ -417,7 +438,7 @@ def get_road_analytics_overview(
     }
 
 
-@router.get("/roads/analytics/charts")
+@router.get("/roads/analytics/charts", response_model=RoadsAnalyticsChartsResponse)
 def get_road_analytics_charts(
     from_month: str = Query(..., alias="from"),
     to_month: str = Query(..., alias="to"),
@@ -432,9 +453,13 @@ def get_road_analytics_charts(
     groupLimit: int = Query(5, ge=1, le=10),
     limit: int = Query(10, ge=1, le=25),
     db: Session = Depends(get_db),
-):
+) -> RoadsAnalyticsChartsResponse:
     if timeseriesGroupBy not in {"overall", "highway", "crime_type", "outcome"}:
-        raise HTTPException(status_code=400, detail="timeseriesGroupBy must be overall, highway, crime_type, or outcome")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="timeseriesGroupBy must be overall, highway, crime_type, or outcome",
+            details={"field": "timeseriesGroupBy"},
+        )
 
     range_filter, bbox, crime_types, last_outcome_categories, highways = _roads_analytics_filters(
         from_month,
@@ -472,6 +497,7 @@ def get_road_analytics_charts(
         timeseries_query = text(
             base_cte
             + """
+            /* roads_charts_timeseries_overall */
             ,
             months AS (
                 SELECT generate_series(
@@ -507,6 +533,7 @@ def get_road_analytics_charts(
         timeseries_query = text(
             base_cte
             + f"""
+            /* roads_charts_timeseries_grouped */
             ,
             months AS (
                 SELECT generate_series(
@@ -564,6 +591,7 @@ def get_road_analytics_charts(
     highway_query = text(
         base_cte
         + """
+        /* roads_charts_highway */
         ,
         incident_counts AS (
             SELECT
@@ -587,6 +615,7 @@ def get_road_analytics_charts(
     crime_type_query = text(
         base_cte
         + """
+        /* roads_charts_crime_type */
         SELECT
             crime_type,
             COUNT(*)::bigint AS count
@@ -598,6 +627,7 @@ def get_road_analytics_charts(
     outcome_query = text(
         base_cte
         + """
+        /* roads_charts_outcome */
         SELECT
             outcome,
             COUNT(*)::bigint AS count
@@ -606,10 +636,11 @@ def get_road_analytics_charts(
         ORDER BY count DESC, outcome ASC
         """
     )
-    total_query = text(base_cte + "SELECT COUNT(*)::bigint AS total_incidents FROM events_scope")
+    total_query = text(base_cte + "/* roads_charts_total */ SELECT COUNT(*)::bigint AS total_incidents FROM events_scope")
     band_breakdown_query = text(
         base_cte
         + f"""
+        /* roads_charts_band_breakdown */
         ,
         incident_counts AS (
             SELECT
@@ -722,6 +753,7 @@ def get_road_analytics_charts(
     )
     previous_query = text(
         f"""
+        /* roads_charts_previous */
         WITH roads_scope AS (
             SELECT rs.id
             FROM road_segments rs
@@ -784,7 +816,7 @@ def get_road_analytics_charts(
     }
 
 
-@router.get("/roads/analytics/risk")
+@router.get("/roads/analytics/risk", response_model=RoadsAnalyticsRiskResponse)
 def get_road_analytics_risk(
     from_month: str = Query(..., alias="from"),
     to_month: str = Query(..., alias="to"),
@@ -798,9 +830,13 @@ def get_road_analytics_risk(
     limit: int = Query(50, ge=1, le=200),
     sort: str = Query("risk_score"),
     db: Session = Depends(get_db),
-):
+) -> RoadsAnalyticsRiskResponse:
     if sort not in {"risk_score", "incidents_per_km", "incident_count"}:
-        raise HTTPException(status_code=400, detail="sort must be risk_score, incidents_per_km, or incident_count")
+        raise ValidationError(
+            error="INVALID_REQUEST",
+            message="sort must be risk_score, incidents_per_km, or incident_count",
+            details={"field": "sort"},
+        )
 
     range_filter, bbox, crime_types, last_outcome_categories, highways = _roads_analytics_filters(
         from_month,
@@ -839,6 +875,7 @@ def get_road_analytics_risk(
     query = text(
         base_cte
         + f"""
+        /* roads_risk_main */
         ,
         incident_counts AS (
             SELECT

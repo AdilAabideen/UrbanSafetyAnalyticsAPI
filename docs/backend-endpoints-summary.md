@@ -35,8 +35,19 @@ This file summarizes the current live backend endpoint surface.
 
 ## Global Discoverability
 
-- `GET /meta`
+- `GET /analytics/meta`
   Global metadata endpoint for available months, crime types, and top-level dataset counts.
+
+## Advanced Analytics
+
+- `POST /analytics/risk/score`
+  Area risk score for a bbox and time window. Compute only; does not persist.
+
+- `POST /analytics/risk/forecast`
+  Baseline-window forecast for a bbox and target month. Compute only; does not persist.
+
+- `GET /analytics/patterns/hotspot-stability`
+  Month-to-month hotspot persistence for a bbox/time window. Compute only; does not persist.
 
 ## Crimes
 
@@ -114,16 +125,41 @@ This file summarizes the current live backend endpoint surface.
   Delete a watchlist.
   Protected: yes.
 
+- `POST /watchlists/{watchlist_id}/risk-score/run`
+  Run risk score for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
+- `GET /watchlists/{watchlist_id}/risk-score/results`
+  List stored risk score runs for a watchlist, or fetch one by `run_id`.
+  Protected: yes.
+
+- `POST /watchlists/{watchlist_id}/risk-forecast/run`
+  Run forecast for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
+- `GET /watchlists/{watchlist_id}/risk-forecast/results`
+  List stored forecast runs for a watchlist, or fetch one by `run_id`.
+  Protected: yes.
+
+- `POST /watchlists/{watchlist_id}/hotspot-stability/run`
+  Run hotspot stability for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
+- `GET /watchlists/{watchlist_id}/hotspot-stability/results`
+  List stored hotspot stability runs for a watchlist, or fetch one by `run_id`.
+  Protected: yes.
+
 ## Current Route Count
 
 - Core: `2`
 - Auth: `4`
 - Global discoverability: `1`
+- Advanced analytics: `3`
 - Crimes: `5`
 - Collisions: `4`
 - Roads analytics: `4`
 - Road tiles: `2`
 - LSOA: `1`
-- Watchlists: `4`
+- Watchlists: `10`
 
-Total current endpoints: `27`
+Total current endpoints: `36`

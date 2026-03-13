@@ -22,6 +22,10 @@ COLLISION_WEIGHT = 0.45
 SLIGHT_CASUALTY_WEIGHT = 0.5
 SERIOUS_CASUALTY_WEIGHT = 2.0
 FATAL_CASUALTY_WEIGHT = 5.0
+USER_REPORTED_CRIME_WEIGHT = 0.10
+ANONYMOUS_USER_REPORT_WEIGHT = 0.5
+REPEAT_AUTHENTICATED_REPORT_WEIGHT = 0.25
+USER_REPORTED_SIGNAL_CAP = 3.0
 
 
 def _tile_profile(z):
@@ -135,6 +139,22 @@ def _build_geom_expression(simplify_tolerance):
     return f"ST_Simplify(rs.geom, {simplify_tolerance})"
 
 
+def _user_report_signal_sql() -> str:
+    return """
+        (
+            :user_report_weight * LEAST(
+                :user_report_signal_cap,
+                distinct_authenticated_users
+                + (:anonymous_report_weight * anonymous_reports)
+                + (
+                    :repeat_authenticated_report_weight
+                    * GREATEST(authenticated_reports - distinct_authenticated_users, 0.0)
+                )
+            )
+        )
+    """
+
+
 def _roads_only_tile_query(z):
     profile = _tile_profile(z)
     highway_filter_clause = _build_highway_filter_clause(profile["highways"])
@@ -167,6 +187,8 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
     highway_filter_clause = _build_highway_filter_clause(profile["highways"])
     geom_expression = _build_geom_expression(profile["simplify_tolerance"])
     crime_type_clause = ""
+    user_report_month_filter_clause = month_filter_clause.replace("c.", "ure.")
+    user_report_signal_sql = _user_report_signal_sql()
     if include_crime_type_filter:
         crime_type_clause = "AND c.crime_type = :crime_type"
 
@@ -185,6 +207,32 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
               {crime_type_clause}
             GROUP BY c.segment_id
         ),
+        user_report_base AS (
+            SELECT
+                ure.segment_id,
+                ure.month,
+                urc.crime_type,
+                COUNT(*) FILTER (WHERE ure.reporter_type = 'anonymous')::double precision AS anonymous_reports,
+                COUNT(*) FILTER (WHERE ure.reporter_type = 'authenticated')::double precision AS authenticated_reports,
+                COUNT(DISTINCT ure.user_id) FILTER (
+                    WHERE ure.reporter_type = 'authenticated'
+                )::double precision AS distinct_authenticated_users
+            FROM user_reported_events ure
+            JOIN user_reported_crime_details urc ON urc.event_id = ure.id
+            WHERE {user_report_month_filter_clause}
+              AND ure.admin_approved = TRUE
+              AND ure.segment_id IS NOT NULL
+              {crime_type_clause.replace("c.", "urc.")}
+            GROUP BY ure.segment_id, ure.month, urc.crime_type
+        ),
+        user_report_counts AS (
+            SELECT
+                segment_id,
+                COALESCE(SUM({user_report_signal_sql}), 0.0) AS user_reported_crime_signal,
+                COALESCE(SUM(authenticated_reports + anonymous_reports), 0)::bigint AS approved_user_reports
+            FROM user_report_base
+            GROUP BY segment_id
+        ),
         collision_counts AS (
             SELECT
                 c.segment_id,
@@ -201,7 +249,10 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
         road_metrics AS (
             SELECT
                 rs.id AS segment_id,
-                COALESCE(cc.crimes, 0) AS crimes,
+                COALESCE(cc.crimes, 0) AS official_crimes,
+                COALESCE(user_report_counts.user_reported_crime_signal, 0) AS user_reported_crime_signal,
+                COALESCE(user_report_counts.approved_user_reports, 0) AS approved_user_reports,
+                COALESCE(cc.crimes, 0) + COALESCE(user_report_counts.user_reported_crime_signal, 0) AS crimes,
                 COALESCE(col.collisions, 0) AS collisions,
                 COALESCE(col.casualties, 0) AS casualties,
                 COALESCE(col.fatal_casualties, 0) AS fatal_casualties,
@@ -209,7 +260,9 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
                 COALESCE(col.slight_casualties, 0) AS slight_casualties,
                 GREATEST(COALESCE(rs.length_m, 0), :risk_length_floor_m) / 1000.0 AS normalized_km,
                 COALESCE(
-                    COALESCE(cc.crimes, 0) /
+                    (
+                        COALESCE(cc.crimes, 0) + COALESCE(user_report_counts.user_reported_crime_signal, 0)
+                    ) /
                     NULLIF(GREATEST(COALESCE(rs.length_m, 0), :risk_length_floor_m) / 1000.0, 0),
                     0
                 ) AS crimes_per_km,
@@ -231,6 +284,7 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
                 ) AS collision_density
             FROM road_segments rs
             LEFT JOIN crime_counts cc ON cc.segment_id = rs.id
+            LEFT JOIN user_report_counts ON user_report_counts.segment_id = rs.id
             LEFT JOIN collision_counts col ON col.segment_id = rs.id
         ),
         active_roads AS (
@@ -306,6 +360,9 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
                 rs.highway,
                 rs.name,
                 COALESCE(road_metrics.crimes, 0) AS crimes,
+                COALESCE(road_metrics.official_crimes, 0) AS official_crimes,
+                COALESCE(road_metrics.user_reported_crime_signal, 0) AS user_reported_crime_signal,
+                COALESCE(road_metrics.approved_user_reports, 0) AS approved_user_reports,
                 COALESCE(road_metrics.crimes_per_km, 0) AS crimes_per_km,
                 COALESCE(road_metrics.collisions, 0) AS collisions,
                 COALESCE(road_metrics.casualties, 0) AS casualties,
@@ -351,6 +408,10 @@ def _build_tile_bytes(z, x, y, month, startMonth, endMonth, crimeType, includeRi
         "slight_casualty_weight": SLIGHT_CASUALTY_WEIGHT,
         "serious_casualty_weight": SERIOUS_CASUALTY_WEIGHT,
         "fatal_casualty_weight": FATAL_CASUALTY_WEIGHT,
+        "user_report_weight": USER_REPORTED_CRIME_WEIGHT,
+        "anonymous_report_weight": ANONYMOUS_USER_REPORT_WEIGHT,
+        "repeat_authenticated_report_weight": REPEAT_AUTHENTICATED_REPORT_WEIGHT,
+        "user_report_signal_cap": USER_REPORTED_SIGNAL_CAP,
     }
 
     if includeRisk:

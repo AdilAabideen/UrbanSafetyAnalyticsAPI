@@ -60,6 +60,13 @@ class _WatchlistMemoryDB:
                 "window_months": params["window_months"],
                 "crime_types": list(params["crime_types"]),
                 "travel_mode": params["travel_mode"],
+                "include_collisions": params["include_collisions"],
+                "baseline_months": params["baseline_months"],
+                "hotspot_k": params["hotspot_k"],
+                "include_hotspot_stability": params["include_hotspot_stability"],
+                "include_forecast": params["include_forecast"],
+                "weight_crime": params["weight_crime"],
+                "weight_collision": params["weight_collision"],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             self.preferences[preference["id"]] = preference
@@ -162,6 +169,13 @@ def test_watchlist_crud_and_preference_crud_flow():
                     "window_months": 6,
                     "crime_types": ["burglary", "vehicle crime"],
                     "travel_mode": "driving",
+                    "include_collisions": True,
+                    "baseline_months": 9,
+                    "hotspot_k": 15,
+                    "include_hotspot_stability": True,
+                    "include_forecast": False,
+                    "weight_crime": 1.2,
+                    "weight_collision": 0.8,
                 },
             },
         )
@@ -174,6 +188,12 @@ def test_watchlist_crud_and_preference_crud_flow():
         assert preference["watchlist_id"] == watchlist["id"]
         assert preference["crime_types"] == ["burglary", "vehicle crime"]
         assert preference["travel_mode"] == "driving"
+        assert preference["include_collisions"] is True
+        assert preference["baseline_months"] == 9
+        assert preference["hotspot_k"] == 15
+        assert preference["include_forecast"] is False
+        assert preference["weight_crime"] == 1.2
+        assert preference["weight_collision"] == 0.8
 
         list_watchlists = client.get("/watchlists")
         assert list_watchlists.status_code == 200
@@ -196,6 +216,13 @@ def test_watchlist_crud_and_preference_crud_flow():
                     "window_months": 12,
                     "crime_types": ["vehicle crime"],
                     "travel_mode": "walking",
+                    "include_collisions": False,
+                    "baseline_months": 6,
+                    "hotspot_k": 20,
+                    "include_hotspot_stability": False,
+                    "include_forecast": True,
+                    "weight_crime": 1.0,
+                    "weight_collision": 0.0,
                 },
             },
         )
@@ -207,6 +234,8 @@ def test_watchlist_crud_and_preference_crud_flow():
         assert updated_preference["window_months"] == 12
         assert updated_preference["crime_types"] == ["vehicle crime"]
         assert updated_preference["travel_mode"] == "walking"
+        assert updated_preference["include_hotspot_stability"] is False
+        assert updated_preference["include_forecast"] is True
 
         delete_watchlist = client.delete(f"/watchlists/{watchlist['id']}")
         assert delete_watchlist.status_code == 200

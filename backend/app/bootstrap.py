@@ -36,6 +36,33 @@ DDL_STATEMENTS = [
         window_months INTEGER NOT NULL,
         crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
         travel_mode TEXT NOT NULL,
+        include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
+        baseline_months INTEGER NOT NULL DEFAULT 6,
+        hotspot_k INTEGER NOT NULL DEFAULT 20,
+        include_hotspot_stability BOOLEAN NOT NULL DEFAULT TRUE,
+        include_forecast BOOLEAN NOT NULL DEFAULT TRUE,
+        weight_crime DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        weight_collision DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS watchlist_reports (
+        id BIGSERIAL PRIMARY KEY,
+        watchlist_id BIGINT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        from_month DATE NOT NULL,
+        to_month DATE NOT NULL,
+        forecast_target_month DATE,
+        crime_type TEXT,
+        mode TEXT NOT NULL,
+        include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
+        weights JSONB NOT NULL DEFAULT '{}'::JSONB,
+        hotspot_k INTEGER NOT NULL DEFAULT 20,
+        include_hotspot_stability BOOLEAN NOT NULL DEFAULT TRUE,
+        include_forecast BOOLEAN NOT NULL DEFAULT TRUE,
+        baseline_months INTEGER NOT NULL DEFAULT 6,
+        payload_json JSONB NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
@@ -171,6 +198,34 @@ DDL_STATEMENTS = [
     ADD COLUMN IF NOT EXISTS crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]
     """,
     """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS include_collisions BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS baseline_months INTEGER NOT NULL DEFAULT 6
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS hotspot_k INTEGER NOT NULL DEFAULT 20
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS include_hotspot_stability BOOLEAN NOT NULL DEFAULT TRUE
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS include_forecast BOOLEAN NOT NULL DEFAULT TRUE
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS weight_crime DOUBLE PRECISION NOT NULL DEFAULT 1.0
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS weight_collision DOUBLE PRECISION NOT NULL DEFAULT 0.0
+    """,
+    """
     DO $$
     BEGIN
         IF EXISTS (
@@ -193,6 +248,8 @@ DDL_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
     "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",
+    "CREATE INDEX IF NOT EXISTS watchlist_reports_watchlist_created_idx ON watchlist_reports(watchlist_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS watchlist_reports_user_created_idx ON watchlist_reports(user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_geom_gix ON user_reported_events USING GIST (geom)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_month_idx ON user_reported_events(month)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_segment_idx ON user_reported_events(segment_id)",

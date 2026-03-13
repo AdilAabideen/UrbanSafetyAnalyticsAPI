@@ -62,6 +62,9 @@ def test_analytics_risk_score_returns_payload():
     assert payload["score_basis"] == "crime"
     assert payload["band"] == "amber"
     assert payload["metrics"]["segments_considered"] == 12
+    assert payload["metrics"]["approved_user_reports"] == 0
+    assert payload["metrics"]["user_reported_crime_signal"] == 0.0
+    assert payload["metrics"]["effective_total_crimes"] == 120.0
     assert "total_collisions" not in payload["metrics"]
     assert "avg_collisions_per_km" not in payload["metrics"]
     assert payload["scope"]["from"] == "2025-01"
@@ -124,8 +127,11 @@ def test_analytics_risk_forecast_returns_history():
     payload = response.json()
     assert len(payload["history"]) == 6
     assert payload["score_basis"] == "crime"
+    assert payload["history"][0]["approved_user_reports"] == 0
+    assert payload["history"][0]["user_reported_crime_signal"] == 0.0
     assert "collision_count" not in payload["history"][0]
     assert payload["forecast"]["expected_count"] == 12
+    assert payload["forecast"]["components"]["crimes"]["baseline_user_reported_signal_mean"] == 0.0
     assert "collisions" not in payload["forecast"]["components"]
     assert payload["forecast"]["predicted_band"] == "green"
 
@@ -207,6 +213,8 @@ def test_analytics_route_risk_returns_route_metrics():
     assert response.status_code == 200
     payload = response.json()
     assert payload["route_stats"]["segment_count"] == 3
+    assert payload["route_stats"]["approved_user_reports"] == 0
+    assert payload["route_stats"]["user_reported_crime_signal"] == 0.0
     assert payload["connectivity"]["is_connected"] is False
     assert len(payload["worst_segments"]) == 3
     assert payload["route_stats"]["band"] == "amber"

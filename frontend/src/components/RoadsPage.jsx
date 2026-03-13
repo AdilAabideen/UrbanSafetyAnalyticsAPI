@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import mapboxgl from "mapbox-gl";
+import { useEffect, useMemo, useState } from "react";
 import FilterComponent from "./FilterComponent";
 import TopBar from "./TopBar";
 import {
@@ -10,51 +9,52 @@ import {
   toMonthValue,
 } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
-import { generalService, roadsService } from "../services";
-import {
-  WEST_YORKSHIRE_BBOX,
-  findLsoaCategory,
-  normalizeLsoaCategories,
-  toSearchOptions,
-} from "../utils/crimeUtils";
+import { roadsService } from "../services";
+import { WEST_YORKSHIRE_BBOX } from "../utils/crimeUtils";
 
 const DEFAULT_ROAD_FILTERS = {
   monthFrom: toMonthValue(new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1)),
   monthTo: toMonthValue(new Date()),
   crimeType: "",
   outcomeCategory: "",
-  lsoaName: "",
+  highway: "",
+  bbox: { ...WEST_YORKSHIRE_BBOX },
 };
 
 const FILTER_REQUEST_DEBOUNCE_MS = 450;
-const ROAD_RISK_LIMIT = 25;
-const ROAD_HIGHWAYS_LIMIT = 10;
+const ROAD_RISK_FETCH_LIMIT = 100;
+const ROAD_RISK_PAGE_SIZE = 25;
+const ROAD_CHART_LIMIT = 8;
 const ROAD_WORKSPACE_TABS = [
   { id: "risk", label: "Risk Feed" },
   { id: "timeseries", label: "Time Series" },
   { id: "highways", label: "Highways" },
-  { id: "anomaly", label: "Anomaly" },
+  { id: "crime-types", label: "Crime Types" },
+  { id: "outcomes", label: "Outcomes" },
+];
+const RISK_SORT_OPTIONS = [
+  { value: "risk_score", label: "Risk Score" },
+  { value: "incident_count", label: "Incident Count" },
+  { value: "incidents_per_km", label: "Incidents / km" },
 ];
 
 function RoadsPage({ docsUrl }) {
   const [activeTab, setActiveTab] = useState("risk");
+  const [riskSort, setRiskSort] = useState("risk_score");
+  const [riskPage, setRiskPage] = useState(1);
   const [roadFilters, setRoadFilters] = useState(DEFAULT_ROAD_FILTERS);
   const [appliedRoadFilters, setAppliedRoadFilters] = useState(DEFAULT_ROAD_FILTERS);
   const [analyticsMeta, setAnalyticsMeta] = useState(null);
-  const [summaryData, setSummaryData] = useState(null);
-  const [timeseriesData, setTimeseriesData] = useState({ series: [], total: 0 });
-  const [highwayData, setHighwayData] = useState({ items: [], otherCount: 0 });
+  const [overviewData, setOverviewData] = useState(null);
+  const [chartsData, setChartsData] = useState(createEmptyRoadChartsData());
   const [riskRows, setRiskRows] = useState([]);
-  const [anomalyData, setAnomalyData] = useState(null);
-  const [lsoaCategories, setLsoaCategories] = useState([]);
+  const [riskMeta, setRiskMeta] = useState(null);
   const [selectedRoad, setSelectedRoad] = useState(null);
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [loadingRiskFeed, setLoadingRiskFeed] = useState(true);
   const [loadingAnalytics, setLoadingAnalytics] = useState(true);
-  const [loadingRoadGeometry, setLoadingRoadGeometry] = useState(false);
   const [riskErrorMessage, setRiskErrorMessage] = useState("");
   const [analyticsErrorMessage, setAnalyticsErrorMessage] = useState("");
-  const [roadDetailErrorMessage, setRoadDetailErrorMessage] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -63,36 +63,15 @@ function RoadsPage({ docsUrl }) {
       setLoadingMeta(true);
 
       try {
-        const [metaResult, lsoaResult] = await Promise.allSettled([
-          roadsService.getRoadAnalyticsMeta({ signal: controller.signal }),
-          generalService.getLsoaCategories({ signal: controller.signal }),
-        ]);
+        const payload = await roadsService.getRoadAnalyticsMeta({ signal: controller.signal });
 
         if (controller.signal.aborted) {
           return;
         }
 
-        if (metaResult.status === "fulfilled") {
-          const payload = metaResult.value;
-
-          setAnalyticsMeta(payload);
-          setRoadFilters((current) => {
-            const defaultFilters = createDefaultFiltersFromMeta(payload?.months);
-            setAppliedRoadFilters(defaultFilters);
-
-            return {
-              ...current,
-              monthFrom: defaultFilters.monthFrom,
-              monthTo: defaultFilters.monthTo,
-            };
-          });
-        }
-
-        if (lsoaResult.status === "fulfilled") {
-          setLsoaCategories(normalizeLsoaCategories(lsoaResult.value));
-        } else {
-          setLsoaCategories([]);
-        }
+        setAnalyticsMeta(payload);
+        setRoadFilters(createDefaultFiltersFromMeta(payload?.months));
+        setAppliedRoadFilters(createDefaultFiltersFromMeta(payload?.months));
       } catch (error) {
         if (error?.name === "AbortError") {
           return;
@@ -118,7 +97,7 @@ function RoadsPage({ docsUrl }) {
 
     const timerId = window.setTimeout(() => {
       setAppliedRoadFilters((current) =>
-        areRoadFiltersEqual(current, roadFilters) ? current : roadFilters,
+        areRoadFiltersEqual(current, roadFilters) ? current : cloneRoadFilters(roadFilters),
       );
     }, FILTER_REQUEST_DEBOUNCE_MS);
 
@@ -126,6 +105,21 @@ function RoadsPage({ docsUrl }) {
       window.clearTimeout(timerId);
     };
   }, [loadingMeta, roadFilters]);
+
+  useEffect(() => {
+    setRiskPage(1);
+  }, [
+    appliedRoadFilters.bbox?.maxLat,
+    appliedRoadFilters.bbox?.maxLon,
+    appliedRoadFilters.bbox?.minLat,
+    appliedRoadFilters.bbox?.minLon,
+    appliedRoadFilters.crimeType,
+    appliedRoadFilters.highway,
+    appliedRoadFilters.monthFrom,
+    appliedRoadFilters.monthTo,
+    appliedRoadFilters.outcomeCategory,
+    riskSort,
+  ]);
 
   const monthOptions = useMemo(() => {
     const rangedOptions = createMonthOptionsFromRange(
@@ -137,25 +131,29 @@ function RoadsPage({ docsUrl }) {
   }, [analyticsMeta?.months?.max, analyticsMeta?.months?.min]);
 
   const crimeTypeOptions = useMemo(() => {
-    const items =
-      analyticsMeta?.crime_types || analyticsMeta?.crimeTypes || analyticsMeta?.filters?.crime_types;
+    const items = analyticsMeta?.crime_types;
 
     if (!Array.isArray(items) || !items.length) {
       return CRIME_TYPE_OPTIONS;
     }
 
     return items.map((item) => ({ value: item, label: item }));
-  }, [analyticsMeta?.crimeTypes, analyticsMeta?.crime_types, analyticsMeta?.filters?.crime_types]);
+  }, [analyticsMeta?.crime_types]);
 
-  const lsoaOptions = useMemo(
-    () => toSearchOptions(lsoaCategories.map((item) => item.lsoaName), roadFilters.lsoaName),
-    [lsoaCategories, roadFilters.lsoaName],
-  );
+  const outcomeOptions = useMemo(() => {
+    const items = analyticsMeta?.outcomes;
 
-  const selectedLsoaCategory = useMemo(
-    () => findLsoaCategory(lsoaCategories, appliedRoadFilters.lsoaName),
-    [appliedRoadFilters.lsoaName, lsoaCategories],
-  );
+    if (!Array.isArray(items) || !items.length) {
+      return OUTCOME_CATEGORY_OPTIONS;
+    }
+
+    return items.map((item) => ({ value: item, label: item }));
+  }, [analyticsMeta?.outcomes]);
+
+  const highwayOptions = useMemo(() => {
+    const items = Array.isArray(analyticsMeta?.highways) ? analyticsMeta.highways : [];
+    return items.map((item) => ({ value: item, label: item }));
+  }, [analyticsMeta?.highways]);
 
   const effectiveDateRange = useMemo(
     () => ({
@@ -175,21 +173,32 @@ function RoadsPage({ docsUrl }) {
     () => ({
       from: effectiveDateRange.from,
       to: effectiveDateRange.to,
-      bbox: selectedLsoaCategory?.bbox || WEST_YORKSHIRE_BBOX,
+      bbox: appliedRoadFilters.bbox || WEST_YORKSHIRE_BBOX,
       crimeTypes: appliedRoadFilters.crimeType ? [appliedRoadFilters.crimeType] : undefined,
       lastOutcomeCategories: appliedRoadFilters.outcomeCategory
         ? [appliedRoadFilters.outcomeCategory]
         : undefined,
-      lsoaNames: appliedRoadFilters.lsoaName ? [appliedRoadFilters.lsoaName] : undefined,
+      highways: appliedRoadFilters.highway ? [appliedRoadFilters.highway] : undefined,
     }),
     [
+      appliedRoadFilters.bbox,
       appliedRoadFilters.crimeType,
-      appliedRoadFilters.lsoaName,
+      appliedRoadFilters.highway,
       appliedRoadFilters.outcomeCategory,
       effectiveDateRange.from,
       effectiveDateRange.to,
-      selectedLsoaCategory?.bbox,
     ],
+  );
+
+  const panelFilters = useMemo(
+    () => ({
+      monthFrom: roadFilters.monthFrom,
+      monthTo: roadFilters.monthTo,
+      crimeType: roadFilters.crimeType,
+      outcomeCategory: roadFilters.outcomeCategory,
+      lsoaName: roadFilters.highway,
+    }),
+    [roadFilters.crimeType, roadFilters.highway, roadFilters.monthFrom, roadFilters.monthTo, roadFilters.outcomeCategory],
   );
 
   useEffect(() => {
@@ -206,38 +215,32 @@ function RoadsPage({ docsUrl }) {
       setAnalyticsErrorMessage("");
 
       try {
-        const [summaryResult, timeseriesResult, highwaysResult, riskResult, anomalyResult] =
-          await Promise.allSettled([
-            roadsService.getRoadAnalyticsSummary(sharedRoadQuery, {
+        const [overviewResult, chartsResult, riskResult] = await Promise.allSettled([
+          roadsService.getRoadAnalyticsOverview(sharedRoadQuery, {
+            signal: controller.signal,
+          }),
+          roadsService.getRoadAnalyticsCharts(
+            {
+              ...sharedRoadQuery,
+              timeseriesGroupBy: "overall",
+              groupLimit: 5,
+              limit: ROAD_CHART_LIMIT,
+            },
+            {
               signal: controller.signal,
-            }),
-            roadsService.getRoadAnalyticsTimeseries(sharedRoadQuery, {
+            },
+          ),
+          roadsService.getRoadAnalyticsRisk(
+            {
+              ...sharedRoadQuery,
+              sort: riskSort,
+              limit: ROAD_RISK_FETCH_LIMIT,
+            },
+            {
               signal: controller.signal,
-            }),
-            roadsService.getRoadAnalyticsHighways(
-              { ...sharedRoadQuery, limit: ROAD_HIGHWAYS_LIMIT },
-              { signal: controller.signal },
-            ),
-            roadsService.getRoadAnalyticsRisk(
-              {
-                ...sharedRoadQuery,
-                sort: "incidents_per_km",
-                limit: ROAD_RISK_LIMIT,
-              },
-              { signal: controller.signal },
-            ),
-            roadsService.getRoadAnalyticsAnomaly(
-              {
-                target: effectiveDateRange.to,
-                baselineMonths: 6,
-                bbox: sharedRoadQuery.bbox,
-                crimeTypes: sharedRoadQuery.crimeTypes,
-                lastOutcomeCategories: sharedRoadQuery.lastOutcomeCategories,
-                lsoaNames: sharedRoadQuery.lsoaNames,
-              },
-              { signal: controller.signal },
-            ),
-          ]);
+            },
+          ),
+        ]);
 
         if (controller.signal.aborted) {
           return;
@@ -247,42 +250,31 @@ function RoadsPage({ docsUrl }) {
         let nextHighwayItems = [];
         const analyticsErrors = [];
 
-        if (summaryResult.status === "fulfilled") {
-          setSummaryData(summaryResult.value);
+        if (overviewResult.status === "fulfilled") {
+          setOverviewData(normalizeRoadOverview(overviewResult.value));
         } else {
-          setSummaryData(null);
-          analyticsErrors.push(summaryResult.reason?.message || "Road summary unavailable");
+          setOverviewData(null);
+          analyticsErrors.push(overviewResult.reason?.message || "Road overview unavailable");
         }
 
-        if (timeseriesResult.status === "fulfilled") {
-          setTimeseriesData(normalizeRoadTimeseries(timeseriesResult.value));
+        if (chartsResult.status === "fulfilled") {
+          const normalizedCharts = normalizeRoadCharts(chartsResult.value);
+          nextHighwayItems = normalizedCharts.byHighway;
+          setChartsData(normalizedCharts);
         } else {
-          setTimeseriesData({ series: [], total: 0 });
-          analyticsErrors.push(timeseriesResult.reason?.message || "Road time series unavailable");
-        }
-
-        if (highwaysResult.status === "fulfilled") {
-          const normalizedHighwayData = normalizeRoadHighwayData(highwaysResult.value);
-          nextHighwayItems = normalizedHighwayData.items;
-          setHighwayData(normalizedHighwayData);
-        } else {
-          setHighwayData({ items: [], otherCount: 0 });
-          analyticsErrors.push(highwaysResult.reason?.message || "Highway ranking unavailable");
+          setChartsData(createEmptyRoadChartsData());
+          analyticsErrors.push(chartsResult.reason?.message || "Road charts unavailable");
         }
 
         if (riskResult.status === "fulfilled") {
-          nextRiskRows = normalizeRoadRiskItems(riskResult.value);
-          setRiskRows(nextRiskRows);
+          const normalizedRiskData = normalizeRoadRiskResponse(riskResult.value);
+          nextRiskRows = normalizedRiskData.items;
+          setRiskRows(normalizedRiskData.items);
+          setRiskMeta(normalizedRiskData.meta);
         } else {
           setRiskRows([]);
+          setRiskMeta(null);
           setRiskErrorMessage(riskResult.reason?.message || "Road risk feed unavailable");
-        }
-
-        if (anomalyResult.status === "fulfilled") {
-          setAnomalyData(normalizeRoadAnomaly(anomalyResult.value));
-        } else {
-          setAnomalyData(null);
-          analyticsErrors.push(anomalyResult.reason?.message || "Road anomaly unavailable");
         }
 
         setSelectedRoad((current) => {
@@ -311,113 +303,19 @@ function RoadsPage({ docsUrl }) {
     return () => {
       controller.abort();
     };
-  }, [appliedRoadFilters.lsoaName, effectiveDateRange.to, loadingMeta, sharedRoadQuery]);
-
-  useEffect(() => {
-    const selectedRoadId = selectedRoad?.roadId;
-    const hasGeometry = Boolean(selectedRoad?.geometry);
-
-    if (!selectedRoad) {
-      setLoadingRoadGeometry(false);
-      setRoadDetailErrorMessage("");
-      return undefined;
-    }
-
-    if (!selectedRoadId) {
-      setLoadingRoadGeometry(false);
-      setRoadDetailErrorMessage(
-        selectedRoad?.sourceType === "highways"
-          ? "This selection is an aggregate highway group, so there is no single road GeoJSON to render."
-          : "No road segment id is available for this selection.",
-      );
-      return undefined;
-    }
-
-    if (hasGeometry) {
-      setLoadingRoadGeometry(false);
-      setRoadDetailErrorMessage("");
-      return undefined;
-    }
-
-    const controller = new AbortController();
-
-    const loadRoadGeometry = async () => {
-      setLoadingRoadGeometry(true);
-      setRoadDetailErrorMessage("");
-
-      try {
-        const roadFeature = await roadsService.getRoadByIdGeoJson(selectedRoadId, {
-          signal: controller.signal,
-        });
-
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        const normalizedDetail = toRoadRecord(roadFeature);
-
-        setSelectedRoad((current) => {
-          if (!current || current.roadId !== selectedRoadId) {
-            return current;
-          }
-
-          return mergeRoadDetail(current, normalizedDetail);
-        });
-      } catch (error) {
-        if (error?.name === "AbortError") {
-          return;
-        }
-
-        setRoadDetailErrorMessage(error?.message || "Failed to fetch road GeoJSON");
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoadingRoadGeometry(false);
-        }
-      }
-    };
-
-    void loadRoadGeometry();
-
-    return () => {
-      controller.abort();
-    };
-  }, [selectedRoad]);
+  }, [loadingMeta, riskSort, sharedRoadQuery]);
 
   const summaryCards = useMemo(() => {
-    const totalIncidents =
-      getSummaryNumber(summaryData, "total_incidents", "incident_count", "incidents", "total_crimes") ||
-      timeseriesData.total;
-    const totalSegments =
-      getSummaryNumber(
-        summaryData,
-        "road_segments_total",
-        "total_road_segments",
-        "total_segments",
-        "segment_count",
-      ) ||
-      getSummaryNumber(analyticsMeta?.counts, "road_segments_total") ||
-      riskRows.length;
-    const totalLengthKm =
-      getSummaryNumber(summaryData, "total_length_km", "length_km", "network_length_km") ||
-      sumRoadLengthsKm(riskRows);
-    const highRiskCount = riskRows.filter(isHighRiskRoad).length;
-    const topHighway =
-      summaryData?.top_highway?.highway ||
-      summaryData?.top_highway?.name ||
-      summaryData?.top_highway?.label ||
-      highwayData.items[0]?.highway ||
-      "No data";
-    const topHighwayCount =
-      Number(summaryData?.top_highway?.count) || Number(highwayData.items[0]?.count) || 0;
-    const anomalyRatio = Number(anomalyData?.ratio);
+    const totalIncidents = overviewData?.totalIncidents || chartsData.timeseries.total || 0;
+    const roadsWithIncidents =
+      overviewData?.roadsWithIncidents || analyticsMeta?.counts?.roads_with_incidents || 0;
+    const roadCoveragePct = overviewData?.roadCoveragePct || 0;
+    const averageIncidentsPerKm = overviewData?.averageIncidentsPerKm || 0;
+    const topRoad = overviewData?.topRoad;
+    const topCrimeType = overviewData?.topCrimeType;
+    const topOutcome = overviewData?.topOutcome;
 
     return [
-      {
-        label: "Visible Segments",
-        value: formatCount(riskRows.length),
-        meta: "Rows from `/roads/analytics/risk`",
-        accent: "text-[#39ef7d]",
-      },
       {
         label: "Total Incidents",
         value: formatCount(totalIncidents),
@@ -425,45 +323,52 @@ function RoadsPage({ docsUrl }) {
         accent: "text-cyan-50",
       },
       {
-        label: "Road Segments",
-        value: formatCount(totalSegments),
-        meta: "Segments inside the shared analytics filter set",
+        label: "Roads With Incidents",
+        value: formatCount(roadsWithIncidents),
+        meta: `${formatCount(overviewData?.totalSegments || analyticsMeta?.counts?.road_segments_total || 0)} segments in scope`,
+        accent: "text-[#39ef7d]",
+      },
+      {
+        label: "Road Coverage",
+        value: formatPercent(roadCoveragePct),
+        meta: `${formatCount(overviewData?.roadsWithoutIncidents || 0)} roads without linked incidents`,
         accent: "text-[#60a5fa]",
       },
       {
-        label: "High Risk Segments",
-        value: formatCount(highRiskCount),
-        meta: "Rows currently flagged as high or elevated risk",
+        label: "Avg Incidents / km",
+        value: formatMetricValue(averageIncidentsPerKm, "incidents/km"),
+        meta:
+          overviewData?.currentVsPreviousPct !== null && overviewData?.currentVsPreviousPct !== undefined
+            ? `${formatSignedPercent(overviewData.currentVsPreviousPct)} vs previous period`
+            : "Current filtered selection",
         accent: "text-[#f59e0b]",
       },
       {
-        label: "Top Highway",
-        value: topHighway,
-        meta: topHighwayCount ? `${formatCount(topHighwayCount)} incidents` : "No ranked highway data",
+        label: "Top Road",
+        value: topRoad?.name || topRoad?.highway || "No data",
+        meta: topRoad
+          ? `${formatCount(topRoad.incidents)} incidents · ${formatBandLabel(topRoad.riskBand)}`
+          : "No ranked road available",
         accent: "text-[#ffb072]",
       },
       {
-        label: "Network Length",
-        value: formatDistanceKm(totalLengthKm),
-        meta: anomalyData
-          ? `${anomalyData.flag ? "Flagged" : "Stable"} anomaly at ${formatRatio(anomalyRatio)}`
-          : "Length derived from current risk feed",
+        label: "Dominant Crime",
+        value: topCrimeType?.crimeType || "No data",
+        meta: topOutcome?.outcome
+          ? `${topOutcome.outcome} · ${formatCount(topOutcome.count)}`
+          : "No dominant outcome",
         accent: "text-[#22c55e]",
       },
     ];
-  }, [
-    analyticsMeta?.counts,
-    anomalyData,
-    effectiveDateRange.from,
-    effectiveDateRange.to,
-    highwayData.items,
-    riskRows,
-    summaryData,
-    timeseriesData.total,
-  ]);
+  }, [analyticsMeta?.counts?.road_segments_total, analyticsMeta?.counts?.roads_with_incidents, chartsData.timeseries.total, effectiveDateRange.from, effectiveDateRange.to, overviewData]);
+
+  const insightMessages = useMemo(() => {
+    const merged = [...(overviewData?.insights || []), ...(chartsData.insights || [])].filter(Boolean);
+    return [...new Set(merged)].slice(0, 4);
+  }, [chartsData.insights, overviewData?.insights]);
 
   const isApplyingFilters = useMemo(
-    () => !areRoadFiltersEqual(roadFilters, appliedRoadFilters),
+    () => !areRoadFiltersEqual(appliedRoadFilters, roadFilters),
     [appliedRoadFilters, roadFilters],
   );
 
@@ -472,43 +377,43 @@ function RoadsPage({ docsUrl }) {
     : isApplyingFilters
       ? "Applying filters..."
       : loadingRiskFeed
-        ? "Loading road risk feed..."
+        ? "Loading dangerous roads..."
         : riskErrorMessage
           ? "Road risk feed unavailable"
-          : `Showing ${formatCount(riskRows.length)} road segments`;
+          : `Showing ${formatCount(riskRows.length)} dangerous roads`;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#071316]">
       <TopBar
         docsUrl={docsUrl}
         title="Roads Page"
-        subtitle="Road analytics endpoints drive the risk feed, monthly series, highway ranking, and anomaly watch."
+        subtitle="Road overview, charts, and risk endpoints drive this intelligence desk."
       />
 
       <div className="min-h-0 flex-1 overflow-hidden p-4">
         <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[320px,minmax(0,1.7fr)]">
           <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
             <FilterComponent
-              filters={roadFilters}
+              filters={panelFilters}
               monthOptions={monthOptions}
               crimeTypeOptions={crimeTypeOptions}
-              outcomeOptions={OUTCOME_CATEGORY_OPTIONS}
-              lsoaOptions={lsoaOptions}
+              outcomeOptions={outcomeOptions}
+              lsoaOptions={highwayOptions}
               visibleCrimeCount={riskRows.length}
               mode={isApplyingFilters ? "pending" : loadingRiskFeed ? "loading" : "risk desk"}
               layout="panel"
               title="Road Filters"
-              visibleLabel="Visible segments"
+              visibleLabel="Ranked roads"
               categorySectionTitle="Shared Filters"
-              crimeTypeLabel="Related Crime Type"
+              crimeTypeLabel="Crime Type"
               outcomeLabel="Outcome Category"
-              lsoaLabel="LSOA Name"
-              lsoaPlaceholder="Filter by LSOA"
-              lsoaEmptyMessage="No LSOA names are available for the current road analytics response."
+              lsoaLabel="Highway"
+              lsoaPlaceholder="Filter by road type"
+              lsoaEmptyMessage="No highway values are available from `/roads/analytics/meta`."
               onChange={(key, value) => {
                 setRoadFilters((current) => ({
                   ...current,
-                  [key]: value,
+                  [key === "lsoaName" ? "highway" : key]: value,
                 }));
               }}
               onClear={() => {
@@ -535,6 +440,8 @@ function RoadsPage({ docsUrl }) {
               ))}
             </div>
 
+            {insightMessages.length ? <RoadInsightStrip insights={insightMessages} /> : null}
+
             {riskErrorMessage ? (
               <div className="rounded-[20px] border border-red-300/30 bg-[#480000b8] px-4 py-3 text-sm text-red-100">
                 {riskErrorMessage}
@@ -554,13 +461,13 @@ function RoadsPage({ docsUrl }) {
                     Intelligence Workspace
                   </p>
                   <h2 className="mt-2 text-xl font-semibold text-cyan-50">
-                    Road risk feed and analytics
+                    Dangerous roads and charts
                   </h2>
                   <p className="mt-1 text-sm text-cyan-100/60">{roadStatusLabel}</p>
                 </div>
 
                 <div className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-xs uppercase tracking-[0.25em] text-cyan-100/55">
-                  {isApplyingFilters ? "Debounced filters" : "Analytics only"}
+                  {isApplyingFilters ? "Debounced filters" : "Overview + charts + risk"}
                 </div>
               </div>
 
@@ -570,10 +477,11 @@ function RoadsPage({ docsUrl }) {
                     key={tab.id}
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
-                    className={`rounded-full px-3 py-2 text-sm transition-colors ${activeTab === tab.id
+                    className={`rounded-full px-3 py-2 text-sm transition-colors ${
+                      activeTab === tab.id
                         ? "bg-cyan-100/10 text-cyan-50"
                         : "bg-transparent text-cyan-100/55 hover:bg-cyan-100/5 hover:text-cyan-50"
-                      }`}
+                    }`}
                   >
                     {tab.label}
                   </button>
@@ -584,7 +492,13 @@ function RoadsPage({ docsUrl }) {
                 {activeTab === "risk" ? (
                   <RoadRiskTab
                     riskRows={riskRows}
+                    riskMeta={riskMeta}
                     selectedRoad={selectedRoad}
+                    page={riskPage}
+                    pageSize={ROAD_RISK_PAGE_SIZE}
+                    sort={riskSort}
+                    onChangePage={setRiskPage}
+                    onChangeSort={setRiskSort}
                     onSelectRoad={setSelectedRoad}
                     isLoading={loadingRiskFeed}
                   />
@@ -592,24 +506,30 @@ function RoadsPage({ docsUrl }) {
 
                 {activeTab === "timeseries" ? (
                   <RoadTimeSeriesTab
-                    series={timeseriesData.series}
-                    total={timeseriesData.total}
+                    timeseries={chartsData.timeseries}
                     isLoading={loadingAnalytics}
                   />
                 ) : null}
 
                 {activeTab === "highways" ? (
                   <RoadHighwaysTab
-                    highwayItems={highwayData.items}
-                    otherCount={highwayData.otherCount}
+                    highwayItems={chartsData.byHighway}
                     selectedRoad={selectedRoad}
                     onSelectRoad={setSelectedRoad}
                     isLoading={loadingAnalytics}
                   />
                 ) : null}
 
-                {activeTab === "anomaly" ? (
-                  <RoadAnomalyTab anomalyData={anomalyData} isLoading={loadingAnalytics} />
+                {activeTab === "crime-types" ? (
+                  <RoadCrimeTypesTab items={chartsData.byCrimeType} isLoading={loadingAnalytics} />
+                ) : null}
+
+                {activeTab === "outcomes" ? (
+                  <RoadOutcomesTab
+                    outcomeItems={chartsData.byOutcome}
+                    bandBreakdown={chartsData.bandBreakdown}
+                    isLoading={loadingAnalytics}
+                  />
                 ) : null}
               </div>
             </div>
@@ -621,30 +541,38 @@ function RoadsPage({ docsUrl }) {
         <div className="flex flex-1 flex-col gap-1">
           <span className="text-[11px] text-cyan-100/60">API: {config.apiBaseUrl}</span>
           <span className="text-[11px] text-cyan-100/45">
-            Meta: `/roads/analytics/meta` | Risk: `/roads/analytics/risk`
+            Meta: `/roads/analytics/meta` | Overview: `/roads/analytics/overview` | Charts:
+            {" "}
+            `/roads/analytics/charts` | Risk: `/roads/analytics/risk`
           </span>
         </div>
 
         <div className="flex shrink-0 items-center gap-2 text-xs text-[#d2faf0]">
           <span>{roadStatusLabel}</span>
           <strong className="text-[#39ef7d]">Road Analytics</strong>
-          <span className="text-cyan-100/60">Drawer + tabs</span>
+          <span className="text-cyan-100/60">Risk + charts</span>
         </div>
       </div>
 
-      <SlidingRoadDrawer
-        road={selectedRoad}
-        isLoadingGeometry={loadingRoadGeometry}
-        detailErrorMessage={roadDetailErrorMessage}
-        onClose={() => setSelectedRoad(null)}
-      />
+      <SlidingRoadDrawer road={selectedRoad} onClose={() => setSelectedRoad(null)} />
     </div>
   );
 }
 
-function RoadRiskTab({ riskRows, selectedRoad, onSelectRoad, isLoading }) {
+function RoadRiskTab({
+  riskRows,
+  riskMeta,
+  selectedRoad,
+  page,
+  pageSize,
+  sort,
+  onChangePage,
+  onChangeSort,
+  onSelectRoad,
+  isLoading,
+}) {
   if (isLoading) {
-    return <EmptyAnalyticsState message="Loading road segments from `/roads/analytics/risk`." />;
+    return <EmptyAnalyticsState message="Loading dangerous roads from `/roads/analytics/risk`." />;
   }
 
   if (!riskRows.length) {
@@ -653,15 +581,45 @@ function RoadRiskTab({ riskRows, selectedRoad, onSelectRoad, isLoading }) {
     );
   }
 
+  const totalPages = Math.max(1, Math.ceil(riskRows.length / pageSize));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const pageStartIndex = (currentPage - 1) * pageSize;
+  const pagedRows = riskRows.slice(pageStartIndex, pageStartIndex + pageSize);
+  const visibleStart = pageStartIndex + 1;
+  const visibleEnd = pageStartIndex + pagedRows.length;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-white/5 px-4 py-3 text-sm text-cyan-100/70">
-        Sorted by incidents per kilometre from `/roads/analytics/risk`.
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-4 py-3 text-sm text-cyan-100/70">
+        <div>
+          Ranked shortlist returned by `/roads/analytics/risk` using the selected sort.
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {RISK_SORT_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChangeSort(option.value)}
+              className={`rounded-full px-3 py-1.5 text-xs uppercase tracking-[0.18em] transition-colors ${
+                sort === option.value
+                  ? "bg-cyan-100/10 text-cyan-50"
+                  : "bg-transparent text-cyan-100/55 hover:bg-cyan-100/5 hover:text-cyan-50"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="border-b border-white/5 px-4 py-3 text-xs uppercase tracking-[0.18em] text-cyan-100/45">
+        Showing {formatCount(visibleStart)}-{formatCount(visibleEnd)} of {formatCount(riskRows.length)} loaded rows · fetch limit {formatCount(riskMeta?.limit || riskRows.length)} · sorted by {sort.replaceAll("_", " ")}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="divide-y divide-white/5">
-          {riskRows.map((road) => (
+          {pagedRows.map((road) => (
             <RoadRiskRow
               key={road.selectionKey}
               road={road}
@@ -671,29 +629,63 @@ function RoadRiskTab({ riskRows, selectedRoad, onSelectRoad, isLoading }) {
           ))}
         </div>
       </div>
+
+      {totalPages > 1 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/5 px-4 py-3">
+          <p className="text-xs uppercase tracking-[0.18em] text-cyan-100/45">
+            Page {formatCount(currentPage)} of {formatCount(totalPages)}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onChangePage(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="rounded-full border border-white/10 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-cyan-50 transition-colors hover:bg-cyan-100/10 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Previous
+            </button>
+
+            {Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => (
+              <button
+                key={pageNumber}
+                type="button"
+                onClick={() => onChangePage(pageNumber)}
+                className={`rounded-full px-3 py-1.5 text-xs uppercase tracking-[0.18em] transition-colors ${
+                  currentPage === pageNumber
+                    ? "bg-cyan-100/10 text-cyan-50"
+                    : "bg-transparent text-cyan-100/55 hover:bg-cyan-100/5 hover:text-cyan-50"
+                }`}
+              >
+                {pageNumber}
+              </button>
+            ))}
+
+            <button
+              type="button"
+              onClick={() => onChangePage(currentPage + 1)}
+              disabled={currentPage === totalPages}
+              className="rounded-full border border-white/10 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-cyan-50 transition-colors hover:bg-cyan-100/10 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function RoadTimeSeriesTab({ series, total, isLoading }) {
+function RoadTimeSeriesTab({ timeseries, isLoading }) {
+  const overallSeries = timeseries.series[0]?.points || [];
+
   if (isLoading) {
-    return <EmptyAnalyticsState message="Loading time series from `/roads/analytics/timeseries`." />;
+    return <EmptyAnalyticsState message="Loading time series from `/roads/analytics/charts`." />;
   }
 
-  if (!series.length) {
-    return (
-      <EmptyAnalyticsState message="No road time series is available for the current selection." />
-    );
+  if (!overallSeries.length) {
+    return <EmptyAnalyticsState message="No road time series is available for the current selection." />;
   }
-
-  const peakMonth =
-    [...series].sort(
-      (left, right) => right.count - left.count || left.month.localeCompare(right.month),
-    )[0] || null;
-  const quietestMonth =
-    [...series].sort(
-      (left, right) => left.count - right.count || left.month.localeCompare(right.month),
-    )[0] || null;
 
   return (
     <div className="grid h-full gap-4 overflow-y-auto p-4 xl:grid-cols-[minmax(0,1.45fr),320px]">
@@ -701,45 +693,37 @@ function RoadTimeSeriesTab({ series, total, isLoading }) {
         <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Time Series</p>
         <h3 className="mt-2 text-lg font-semibold text-cyan-50">Monthly road incident curve</h3>
         <p className="mt-1 text-sm text-cyan-100/60">
-          Monthly counts returned by `/roads/analytics/timeseries`.
+          Trend line returned from `/roads/analytics/charts` using `timeseriesGroupBy=overall`.
         </p>
         <div className="mt-6">
-          <TimeSeriesChart series={series} />
+          <TimeSeriesChart series={overallSeries} />
         </div>
       </section>
 
       <section className="space-y-3">
-        <MiniMetricCard label="Total in series" value={formatCount(total)} />
+        <MiniMetricCard label="Total in series" value={formatCount(timeseries.total)} />
         <MiniMetricCard
           label="Peak month"
-          value={peakMonth ? formatMonthLabel(peakMonth.month) : "No data"}
-          meta={peakMonth ? `${formatCount(peakMonth.count)} incidents` : ""}
+          value={timeseries.peak ? formatMonthLabel(timeseries.peak.month) : "No data"}
+          meta={timeseries.peak ? `${formatCount(timeseries.peak.count)} incidents` : ""}
         />
         <MiniMetricCard
-          label="Quietest month"
-          value={quietestMonth ? formatMonthLabel(quietestMonth.month) : "No data"}
-          meta={quietestMonth ? `${formatCount(quietestMonth.count)} incidents` : ""}
+          label="Previous period"
+          value={formatSignedPercent(timeseries.currentVsPreviousPct)}
+          meta="Compared with the matched previous period"
         />
       </section>
     </div>
   );
 }
 
-function RoadHighwaysTab({
-  highwayItems,
-  otherCount,
-  selectedRoad,
-  onSelectRoad,
-  isLoading,
-}) {
+function RoadHighwaysTab({ highwayItems, selectedRoad, onSelectRoad, isLoading }) {
   if (isLoading) {
-    return <EmptyAnalyticsState message="Loading highway ranking from `/roads/analytics/highways`." />;
+    return <EmptyAnalyticsState message="Loading highway breakdown from `/roads/analytics/charts`." />;
   }
 
   if (!highwayItems.length) {
-    return (
-      <EmptyAnalyticsState message="No highway ranking is available for the current road selection." />
-    );
+    return <EmptyAnalyticsState message="No highway breakdown is available for the current selection." />;
   }
 
   const topHighway = highwayItems[0] || null;
@@ -748,9 +732,9 @@ function RoadHighwaysTab({
     <div className="grid h-full gap-4 overflow-y-auto p-4 xl:grid-cols-[minmax(0,1.2fr),320px]">
       <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
         <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Highways</p>
-        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Highway ranking</h3>
+        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Highway mix</h3>
         <p className="mt-1 text-sm text-cyan-100/60">
-          Ranked highway categories returned by `/roads/analytics/highways`.
+          Road type composition returned by `/roads/analytics/charts`.
         </p>
 
         <div className="mt-6 space-y-3">
@@ -759,21 +743,18 @@ function RoadHighwaysTab({
               key={item.selectionKey}
               type="button"
               onClick={() => onSelectRoad(item)}
-              className={`w-full rounded-[18px] border px-4 py-4 text-left transition-colors ${item.selectionKey === selectedRoad?.selectionKey
+              className={`w-full rounded-[18px] border px-4 py-4 text-left transition-colors ${
+                item.selectionKey === selectedRoad?.selectionKey
                   ? "border-cyan-200/20 bg-cyan-100/10"
                   : "border-white/5 bg-[#030b0e]/55 hover:bg-white/[0.03]"
-                }`}
+              }`}
             >
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-cyan-50">{item.highway}</p>
-                  <p className="mt-1 text-xs text-cyan-100/55">
-                    {item.name || "Highway class aggregate"}
-                  </p>
+                  <p className="mt-1 text-xs text-cyan-100/55">{item.message || "Highway breakdown row"}</p>
                 </div>
-                <span className="text-sm font-semibold text-cyan-50">
-                  {formatCount(item.count)}
-                </span>
+                <span className="text-sm font-semibold text-cyan-50">{formatCount(item.count)}</span>
               </div>
               <BarRow
                 item={{ label: item.highway, count: item.count }}
@@ -781,15 +762,6 @@ function RoadHighwaysTab({
               />
             </button>
           ))}
-
-          {otherCount ? (
-            <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/55 px-4 py-4">
-              <BarRow
-                item={{ label: "Other", count: otherCount }}
-                maxValue={highwayItems[0]?.count || otherCount}
-              />
-            </div>
-          ) : null}
         </div>
       </section>
 
@@ -801,103 +773,114 @@ function RoadHighwaysTab({
         />
         <MiniMetricCard
           label="Visible groups"
-          value={formatCount(highwayItems.length + (otherCount ? 1 : 0))}
-          meta={otherCount ? "Includes grouped remainder" : "Direct ranked result"}
+          value={formatCount(highwayItems.length)}
+          meta="Limited by the charts endpoint"
         />
-        {otherCount ? (
-          <MiniMetricCard
-            label="Other count"
-            value={formatCount(otherCount)}
-            meta="Remaining highway groups outside the visible list"
-          />
-        ) : null}
+        <MiniMetricCard
+          label="Top density"
+          value={formatMetricValue(topHighway?.incidentsPerKm, "incidents/km")}
+          meta="Highest ranked highway group in the current response"
+        />
       </section>
     </div>
   );
 }
 
-function RoadAnomalyTab({ anomalyData, isLoading }) {
+function RoadCrimeTypesTab({ items, isLoading }) {
   if (isLoading) {
-    return <EmptyAnalyticsState message="Loading anomaly watch from `/roads/analytics/anomaly`." />;
+    return <EmptyAnalyticsState message="Loading crime type composition from `/roads/analytics/charts`." />;
   }
 
-  if (!anomalyData) {
-    return (
-      <EmptyAnalyticsState message="No road anomaly result is available for the current filter set." />
-    );
+  if (!items.length) {
+    return <EmptyAnalyticsState message="No crime type composition is available for the current selection." />;
   }
 
   return (
     <div className="grid h-full gap-4 overflow-y-auto p-4 xl:grid-cols-[minmax(0,1.2fr),320px]">
-      <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-5">
-        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Anomaly Watch</p>
-        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Target month comparison</h3>
+      <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Crime Types</p>
+        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Road-linked crime mix</h3>
         <p className="mt-1 text-sm text-cyan-100/60">
-          The selected target month is compared against the previous baseline window.
+          Dominant linked crime categories returned by `/roads/analytics/charts`.
         </p>
 
-        <div className="mt-6 grid gap-3 md:grid-cols-2">
-          <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/60 p-4">
-            <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Target</p>
-            <p className="mt-3 text-3xl font-semibold text-cyan-50">
-              {formatRatio(anomalyData.ratio)}
-            </p>
-            <p className="mt-2 text-sm text-cyan-100/60">
-              {anomalyData.flag ? "Flagged above baseline" : "Within expected range"}
-            </p>
-          </div>
-
-          <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/60 p-4">
-            <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">
-              Baseline Mean
-            </p>
-            <p className="mt-3 text-3xl font-semibold text-cyan-50">
-              {formatCount(anomalyData.baselineMean)}
-            </p>
-            <p className="mt-2 text-sm text-cyan-100/60">
-              Average monthly incidents across the lookback window
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-[18px] border border-white/5 bg-[#030b0e]/60 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">
-                Target Month
-              </p>
-              <p className="mt-2 text-lg font-semibold text-cyan-50">
-                {formatMonthLabel(anomalyData.target)}
+        <div className="mt-6 space-y-4">
+          {items.map((item) => (
+            <div key={item.key} className="rounded-[18px] border border-white/5 bg-[#030b0e]/55 px-4 py-4">
+              <BarRow item={{ label: item.label, count: item.count }} maxValue={items[0]?.count || 1} />
+              <p className="mt-3 text-xs text-cyan-100/55">
+                {formatPercent(item.share)} of linked incidents in the current selection
               </p>
             </div>
-            <div className="text-right">
-              <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">
-                Target Count
-              </p>
-              <p className="mt-2 text-lg font-semibold text-cyan-50">
-                {formatCount(anomalyData.targetCount)}
-              </p>
-            </div>
-          </div>
+          ))}
         </div>
       </section>
 
       <section className="space-y-3">
         <MiniMetricCard
-          label="Target month"
-          value={formatMonthLabel(anomalyData.target)}
-          meta="Driven by `/roads/analytics/anomaly`"
+          label="Top crime type"
+          value={items[0]?.label || "No data"}
+          meta={items[0] ? `${formatCount(items[0].count)} incidents` : ""}
         />
         <MiniMetricCard
-          label="Ratio"
-          value={formatRatio(anomalyData.ratio)}
-          meta={anomalyData.flag ? "Flagged anomaly" : "No anomaly flag"}
+          label="Top share"
+          value={formatPercent(items[0]?.share || 0)}
+          meta="Largest contribution inside the selected road scope"
         />
+      </section>
+    </div>
+  );
+}
+
+function RoadOutcomesTab({ outcomeItems, bandBreakdown, isLoading }) {
+  if (isLoading) {
+    return <EmptyAnalyticsState message="Loading outcome and band charts from `/roads/analytics/charts`." />;
+  }
+
+  if (!outcomeItems.length && !hasBandBreakdown(bandBreakdown)) {
+    return <EmptyAnalyticsState message="No outcome or band breakdown data is available for the current selection." />;
+  }
+
+  const orderedBands = normalizeBandRows(bandBreakdown);
+
+  return (
+    <div className="grid h-full gap-4 overflow-y-auto p-4 xl:grid-cols-[minmax(0,1.2fr),320px]">
+      <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Outcomes</p>
+        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Outcome mix and risk bands</h3>
+        <p className="mt-1 text-sm text-cyan-100/60">
+          Outcome composition plus band distribution returned by `/roads/analytics/charts`.
+        </p>
+
+        {outcomeItems.length ? (
+          <div className="mt-6 space-y-4">
+            {outcomeItems.map((item) => (
+              <div key={item.key} className="rounded-[18px] border border-white/5 bg-[#030b0e]/55 px-4 py-4">
+                <BarRow item={{ label: item.label, count: item.count }} maxValue={outcomeItems[0]?.count || 1} />
+                <p className="mt-3 text-xs text-cyan-100/55">
+                  {formatPercent(item.share)} of linked incidents in the current selection
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="space-y-3">
         <MiniMetricCard
-          label="Target incidents"
-          value={formatCount(anomalyData.targetCount)}
-          meta={`Baseline mean ${formatCount(anomalyData.baselineMean)}`}
+          label="Top outcome"
+          value={outcomeItems[0]?.label || "No data"}
+          meta={outcomeItems[0] ? `${formatCount(outcomeItems[0].count)} incidents` : ""}
         />
+
+        <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+          <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Band Breakdown</p>
+          <div className="mt-4 space-y-3">
+            {orderedBands.map((item) => (
+              <BandBreakdownRow key={item.label} item={item} maxValue={orderedBands[0]?.count || 1} />
+            ))}
+          </div>
+        </div>
       </section>
     </div>
   );
@@ -908,8 +891,9 @@ function RoadRiskRow({ road, isSelected, onSelect }) {
     <button
       type="button"
       onClick={onSelect}
-      className={`grid w-full gap-4 px-4 py-4 text-left transition-colors lg:grid-cols-[minmax(0,1.2fr),minmax(0,1fr),minmax(0,0.9fr),minmax(0,0.85fr)] ${isSelected ? "bg-cyan-100/10" : "bg-transparent hover:bg-white/[0.03]"
-        }`}
+      className={`grid w-full gap-4 px-4 py-4 text-left transition-colors lg:grid-cols-[minmax(0,1.25fr),minmax(0,1fr),minmax(0,1fr),minmax(0,0.9fr)] ${
+        isSelected ? "bg-cyan-100/10" : "bg-transparent hover:bg-white/[0.03]"
+      }`}
     >
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Road</p>
@@ -920,6 +904,7 @@ function RoadRiskRow({ road, isSelected, onSelect }) {
           {road.highway}
           {road.roadId ? ` / Segment ${road.roadId}` : ""}
         </p>
+        <p className="mt-2 text-xs text-cyan-100/50">{road.message || "No narrative supplied"}</p>
       </div>
 
       <div className="min-w-0">
@@ -928,41 +913,60 @@ function RoadRiskRow({ road, isSelected, onSelect }) {
         <p className="mt-1 text-xs text-cyan-100/55">
           {formatMetricValue(road.incidentsPerKm, "incidents/km")}
         </p>
+        <p className="mt-2 text-xs text-cyan-100/50">{formatPercent(road.shareOfIncidents)} of scope incidents</p>
       </div>
 
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Network</p>
-        <p className="mt-2 text-sm text-cyan-50">{formatDistanceKm(road.lengthKm)}</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Signals</p>
+        <p className="mt-2 text-sm text-cyan-50">{road.dominantCrimeType || "No dominant crime"}</p>
         <p className="mt-1 truncate text-xs text-cyan-100/55">
-          {road.lsoaName || road.location || "No LSOA recorded"}
+          {road.dominantOutcome || "No dominant outcome"}
         </p>
       </div>
 
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Risk</p>
-        <p className="mt-2 text-sm text-cyan-50">{road.riskBand || "Observed"}</p>
-        <p className="mt-1 text-xs text-cyan-100/55">
-          {formatMetricValue(road.score, "score")}
+        <p className="mt-2 text-sm text-cyan-50">{formatBandLabel(road.riskBand)}</p>
+        <p className="mt-1 text-xs text-cyan-100/55">{formatMetricValue(road.score, "score")}</p>
+        <p className="mt-2 text-xs text-cyan-100/50">
+          {formatSignedPercent(road.previousPeriodChangePct)}
         </p>
       </div>
     </button>
   );
 }
 
-function SlidingRoadDrawer({ road, isLoadingGeometry, detailErrorMessage, onClose }) {
+function RoadInsightStrip({ insights }) {
+  return (
+    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      {insights.map((insight) => (
+        <div
+          key={insight}
+          className="rounded-[18px] border border-cyan-100/10 bg-cyan-100/5 px-4 py-3 text-sm text-cyan-100/75"
+        >
+          {insight}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SlidingRoadDrawer({ road, onClose }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
       <button
         type="button"
         aria-label="Close roads drawer"
         onClick={onClose}
-        className={`absolute inset-0 bg-black/45 transition-opacity duration-300 ${road ? "pointer-events-auto opacity-100" : "opacity-0"
-          }`}
+        className={`absolute inset-0 bg-black/45 transition-opacity duration-300 ${
+          road ? "pointer-events-auto opacity-100" : "opacity-0"
+        }`}
       />
 
       <div
-        className={`absolute inset-y-0 right-0 w-full border-l border-white/10 bg-[#030b0e] shadow-2xl transition-transform duration-300 sm:w-[46vw] sm:max-w-[46vw] ${road ? "translate-x-0" : "translate-x-full"
-          }`}
+        className={`absolute inset-y-0 right-0 w-full border-l border-white/10 bg-[#030b0e] shadow-2xl transition-transform duration-300 sm:w-[46vw] sm:max-w-[46vw] ${
+          road ? "translate-x-0" : "translate-x-full"
+        }`}
       >
         <div className="h-full overflow-y-auto p-4">
           {road ? (
@@ -977,7 +981,7 @@ function SlidingRoadDrawer({ road, isLoadingGeometry, detailErrorMessage, onClos
                       {road.name || road.highway}
                     </h2>
                     <p className="mt-1 text-sm text-cyan-100/60">
-                      Selected from `{road.sourceType === "highways" ? "/roads/analytics/highways" : "/roads/analytics/risk"}`
+                      Selected from `{road.sourceType === "highway" ? "/roads/analytics/charts" : "/roads/analytics/risk"}`
                     </p>
                   </div>
 
@@ -1002,55 +1006,91 @@ function SlidingRoadDrawer({ road, isLoadingGeometry, detailErrorMessage, onClos
                   </button>
                 </div>
 
-                <div className="flex w-full justify-between p-2 gap-6">
-                  <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4 w-full">
+                <div className="flex w-full justify-between gap-6 p-2">
+                  <section className="w-full rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
                     <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
                       Segment Identity
                     </p>
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
                       <RoadDetailField label="Road name" value={road.name || "Not supplied"} />
                       <RoadDetailField label="Highway" value={road.highway || "Unclassified"} />
-                      <RoadDetailField label="Segment ID" value={road.roadId} subtle />
-                      <RoadDetailField label="LSOA Name" value={road.lsoaName || "Not supplied"} />
-                      <RoadDetailField label="Location" value={road.location || "Not supplied"} />
+                      <RoadDetailField label="Segment ID" value={road.roadId || "Not supplied"} subtle />
                       <RoadDetailField
-                        label="Geometry"
-                        value={road.geometry?.type || "Not supplied"}
+                        label="Length"
+                        value={formatDistanceKm(road.lengthKm)}
+                      />
+                      <RoadDetailField
+                        label="Source type"
+                        value={road.sourceType === "highway" ? "Charts highway group" : "Risk feed row"}
+                      />
+                      <RoadDetailField
+                        label="Message"
+                        value={road.message || "No narrative supplied"}
                         subtle
                       />
                     </div>
                   </section>
 
-                  <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4 w-full">
+                  <section className="w-full rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
                     <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
                       Risk Metrics
                     </p>
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <RoadDetailField
-                        label="Incidents"
-                        value={formatCount(road.incidents)}
-                      />
+                      <RoadDetailField label="Incidents" value={formatCount(road.incidents)} />
                       <RoadDetailField
                         label="Incidents per km"
                         value={formatMetricValue(road.incidentsPerKm)}
                       />
-                      <RoadDetailField label="Length" value={formatDistanceKm(road.lengthKm)} />
-                      <RoadDetailField label="Risk band" value={road.riskBand || "Observed"} />
+                      <RoadDetailField label="Risk band" value={formatBandLabel(road.riskBand)} />
                       <RoadDetailField label="Score" value={formatMetricValue(road.score)} />
                       <RoadDetailField
-                        label="Count"
-                        value={formatCount(road.count || road.incidents)}
+                        label="Share of incidents"
+                        value={formatPercent(road.shareOfIncidents)}
+                      />
+                      <RoadDetailField
+                        label="Previous change"
+                        value={formatSignedPercent(road.previousPeriodChangePct)}
                       />
                     </div>
                   </section>
                 </div>
               </div>
 
-              <RoadGeometryMap
-                road={road}
-                isLoadingGeometry={isLoadingGeometry}
-                detailErrorMessage={detailErrorMessage}
-              />
+              <section className="flex min-h-[320px] flex-col rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
+                      Selection Signals
+                    </p>
+                    <p className="mt-1 text-sm text-cyan-100/60">
+                      This drawer now stays inside the analytics contract and does not fetch extra road geometry.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/60 p-4">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">Dominant Crime</p>
+                    <p className="mt-3 text-base font-semibold text-cyan-50">
+                      {road.dominantCrimeType || "No dominant crime"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/60 p-4">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">Dominant Outcome</p>
+                    <p className="mt-3 text-base font-semibold text-cyan-50">
+                      {road.dominantOutcome || "No dominant outcome"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/60 p-4 md:col-span-2">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">Narrative</p>
+                    <p className="mt-3 text-sm leading-6 text-cyan-100/70">
+                      {road.message || "No narrative message is available for this row."}
+                    </p>
+                  </div>
+                </div>
+              </section>
             </div>
           ) : null}
         </div>
@@ -1072,159 +1112,6 @@ function RoadDetailField({ label, value, subtle = false }) {
   );
 }
 
-const DRAWER_ROAD_MAP_SOURCE_ID = "drawer-road-source";
-const DRAWER_ROAD_MAP_LINE_LAYER_ID = "drawer-road-line";
-const DRAWER_ROAD_MAP_LINE_HALO_LAYER_ID = "drawer-road-line-halo";
-const DRAWER_ROAD_MAP_POINT_LAYER_ID = "drawer-road-point";
-const DRAWER_ROAD_MAP_STYLE = {
-  version: 8,
-  sources: {
-    darkBase: {
-      type: "raster",
-      tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "By Adil Aabideen",
-    },
-  },
-  layers: [
-    {
-      id: "dark-base-layer",
-      type: "raster",
-      source: "darkBase",
-      minzoom: 0,
-      maxzoom: 22,
-    },
-  ],
-};
-
-function RoadGeometryMap({ road, isLoadingGeometry, detailErrorMessage }) {
-  console.log("road", road);
-  const mapContainerRef = useRef(null);
-  const mapRef = useRef(null);
-  const [mapRuntimeErrorMessage, setMapRuntimeErrorMessage] = useState("");
-  const roadFeature = useMemo(() => toRoadGeoJsonFeature(road), [road]);
-  const mapErrorMessage = !config.mapboxAccessToken
-    ? "Set VITE_MAPBOX_ACCESS_TOKEN to render the road geometry map."
-    : !mapboxgl.supported()
-      ? "Mapbox GL JS is not supported in this browser."
-      : mapRuntimeErrorMessage;
-
-  useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) {
-      return undefined;
-    }
-
-    if (!config.mapboxAccessToken || !mapboxgl.supported()) {
-      return undefined;
-    }
-
-    mapboxgl.accessToken = config.mapboxAccessToken;
-
-    const map = new mapboxgl.Map({
-      container: mapContainerRef.current,
-      style: DRAWER_ROAD_MAP_STYLE,
-      center: getRoadFeatureCenter(roadFeature),
-      zoom: 14,
-      attributionControl: false,
-    });
-
-    mapRef.current = map;
-    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: false }), "bottom-right");
-
-    map.on("load", () => {
-      if (roadFeature) {
-        upsertRoadMapFeature(map, roadFeature);
-        fitRoadFeature(map, roadFeature, 0);
-      }
-
-      setTimeout(() => {
-        map.resize();
-        if (roadFeature) {
-          fitRoadFeature(map, roadFeature, 300);
-        }
-      }, 350);
-    });
-
-    map.on("error", (event) => {
-      const message = event?.error?.message;
-
-      if (message) {
-        setMapRuntimeErrorMessage(message);
-      }
-    });
-
-    return () => {
-      map.remove();
-      mapRef.current = null;
-    };
-  }, [roadFeature]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-
-    if (!map || !roadFeature) {
-      return;
-    }
-
-    const updateFeature = () => {
-      upsertRoadMapFeature(map, roadFeature);
-      fitRoadFeature(map, roadFeature, 300);
-    };
-
-    if (map.isStyleLoaded()) {
-      updateFeature();
-      return;
-    }
-
-    map.once("load", updateFeature);
-  }, [roadFeature]);
-
-  return (
-    <section className="flex min-h-[360px] flex-col rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
-            Road Geometry
-          </p>
-          <p className="mt-1 text-sm text-cyan-100/60">
-            Segment rendered from GeoJSON coordinates
-          </p>
-        </div>
-
-        {roadFeature ? (
-          <span className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-cyan-100/60">
-            {roadFeature.geometry.type}
-          </span>
-        ) : null}
-      </div>
-
-      {detailErrorMessage ? (
-        <div className="mb-3 rounded-xl border border-red-300/30 bg-[#480000b8] px-3 py-3 text-sm text-red-100">
-          {detailErrorMessage}
-        </div>
-      ) : null}
-
-      {mapErrorMessage ? (
-        <div className="mb-3 rounded-xl border border-red-300/30 bg-[#480000b8] px-3 py-3 text-sm text-red-100">
-          {mapErrorMessage}
-        </div>
-      ) : null}
-
-      {!roadFeature && isLoadingGeometry ? (
-        <div className="flex h-full min-h-[280px] items-center justify-center rounded-[16px] border border-cyan-100/10 bg-cyan-100/5 text-sm text-cyan-100/70">
-          Loading road GeoJSON...
-        </div>
-      ) : !roadFeature ? (
-        <div className="flex h-full min-h-[280px] items-center justify-center rounded-[16px] border border-cyan-100/10 bg-cyan-100/5 px-4 text-center text-sm text-cyan-100/70">
-          No GeoJSON road geometry is available for this selection.
-        </div>
-      ) : (
-        <div ref={mapContainerRef} className="min-h-[300px] flex-1 overflow-hidden rounded-[16px]" />
-      )}
-    </section>
-  );
-}
-
 function TimeSeriesChart({ series }) {
   const [hoveredIndex, setHoveredIndex] = useState(null);
   const width = 720;
@@ -1243,7 +1130,6 @@ function TimeSeriesChart({ series }) {
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
     .join(" ");
   const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
-
   const hovered = hoveredIndex !== null ? points[hoveredIndex] : null;
 
   return (
@@ -1270,7 +1156,7 @@ function TimeSeriesChart({ series }) {
 
         {points.map((point, index) => (
           <g
-            key={point.month}
+            key={`${point.month}-${index}`}
             onMouseEnter={() => setHoveredIndex(index)}
             onMouseLeave={() => setHoveredIndex(null)}
             className="cursor-pointer"
@@ -1334,6 +1220,25 @@ function BarRow({ item, maxValue }) {
   );
 }
 
+function BandBreakdownRow({ item, maxValue }) {
+  const widthPercent = maxValue > 0 ? (item.count / maxValue) * 100 : 0;
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="text-sm text-cyan-100/75">{item.label}</span>
+        <span className="text-sm font-semibold text-cyan-50">{formatCount(item.count)}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-cyan-100/10">
+        <div
+          className={`h-full rounded-full ${item.fillClass}`}
+          style={{ width: `${widthPercent}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function MiniMetricCard({ label, value, meta = "Current filtered feed" }) {
   return (
     <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
@@ -1355,298 +1260,196 @@ function EmptyAnalyticsState({ message }) {
   );
 }
 
-function normalizeRoadTimeseries(payload) {
-  const seriesSource = Array.isArray(payload?.series) ? payload.series : resolveItems(payload);
-  const series = seriesSource
-    .map((item) => ({
-      month: getRoadProperty(item, "month", "target", "label"),
-      count: getRoadNumber(item, "count", "incidents", "incident_count", "total"),
-    }))
-    .filter((item) => item.month);
-
-  const total = getRoadNumber(payload, "total", "total_incidents", "count") || sumCounts(series);
-
-  return { series, total };
+function normalizeRoadOverview(payload) {
+  return {
+    totalSegments: getRoadNumber(payload, "total_segments"),
+    totalLengthKm: getRoadLengthKm(payload),
+    roadsWithIncidents: getRoadNumber(payload, "roads_with_incidents"),
+    roadsWithoutIncidents: getRoadNumber(payload, "roads_without_incidents"),
+    roadCoveragePct: getRoadNumber(payload, "road_coverage_pct"),
+    uniqueHighwayTypes: getRoadNumber(payload, "unique_highway_types"),
+    totalIncidents: getRoadNumber(payload, "total_incidents"),
+    averageIncidentsPerKm: getRoadNumber(payload, "avg_incidents_per_km"),
+    currentVsPreviousPct: getRoadNumber(payload, "current_vs_previous_pct"),
+    topRoad: payload?.top_road ? toRoadRecord(payload.top_road) : null,
+    topHighway: payload?.top_highway
+      ? normalizeRoadChartHighwayItem(payload.top_highway, 0)
+      : null,
+    topCrimeType: payload?.top_crime_type
+      ? {
+          crimeType: getRoadProperty(payload.top_crime_type, "crime_type"),
+          count: getRoadNumber(payload.top_crime_type, "count"),
+        }
+      : null,
+    topOutcome: payload?.top_outcome
+      ? {
+          outcome: getRoadProperty(payload.top_outcome, "outcome"),
+          count: getRoadNumber(payload.top_outcome, "count"),
+        }
+      : null,
+    bandBreakdown: normalizeBandBreakdown(payload?.band_breakdown),
+    insights: normalizeInsights(payload?.insights),
+  };
 }
 
-function normalizeRoadHighwayData(payload) {
-  const items = resolveItems(payload).map((item, index) => normalizeRoadHighwayItem(item, index));
+function normalizeRoadCharts(payload) {
+  const timeseries = payload?.timeseries || {};
+
+  return {
+    timeseries: {
+      groupBy: getRoadProperty(timeseries, "groupBy", "group_by") || "overall",
+      series: Array.isArray(timeseries?.series)
+        ? timeseries.series.map((seriesItem, index) => ({
+            key: getRoadProperty(seriesItem, "key") || `series-${index + 1}`,
+            total: getRoadNumber(seriesItem, "total"),
+            points: Array.isArray(seriesItem?.points)
+              ? seriesItem.points
+                  .map((point) => ({
+                    month: getRoadProperty(point, "month"),
+                    count: getRoadNumber(point, "count"),
+                  }))
+                  .filter((point) => point.month)
+              : [],
+          }))
+        : [],
+      total: getRoadNumber(timeseries, "total"),
+      peak: timeseries?.peak
+        ? {
+            month: getRoadProperty(timeseries.peak, "month"),
+            count: getRoadNumber(timeseries.peak, "count"),
+          }
+        : null,
+      currentVsPreviousPct: getRoadNumber(timeseries, "current_vs_previous_pct"),
+    },
+    byHighway: resolveItems(payload?.by_highway).map((item, index) =>
+      normalizeRoadChartHighwayItem(item, index),
+    ),
+    byCrimeType: resolveItems(payload?.by_crime_type).map((item, index) =>
+      normalizeBreakdownItem(item, "crime_type", index),
+    ),
+    byOutcome: resolveItems(payload?.by_outcome).map((item, index) =>
+      normalizeBreakdownItem(item, "outcome", index),
+    ),
+    bandBreakdown: normalizeBandBreakdown(payload?.band_breakdown),
+    insights: normalizeInsights(payload?.insights),
+  };
+}
+
+function normalizeRoadRiskResponse(payload) {
+  const items = resolveItems(payload?.items).map((item, index) => normalizeRoadRiskItem(item, index));
 
   return {
     items,
-    otherCount: getRoadNumber(payload, "other_count", "otherCount"),
+    meta: {
+      returned: getRoadNumber(payload?.meta, "returned") || items.length,
+      limit: getRoadNumber(payload?.meta, "limit") || ROAD_RISK_FETCH_LIMIT,
+      sort: getRoadProperty(payload?.meta, "sort") || "risk_score",
+    },
   };
 }
 
-function normalizeRoadHighwayItem(item, index) {
-  const name =
-    getRoadProperty(item, "name", "road_name", "roadName", "label", "title") || null;
-  const highway =
-    getRoadProperty(item, "highway", "highway_type", "road_class", "classification", "name") ||
-    `Highway ${index + 1}`;
+function normalizeRoadRiskItem(item, index) {
+  const roadRecord = toRoadRecord(item);
 
+  return {
+    ...roadRecord,
+    sourceType: "risk",
+    selectionKey: createRoadSelectionKey("risk", item, index),
+    message: getRoadProperty(item, "message"),
+    shareOfIncidents: getRoadNumber(item, "share_of_incidents", "share"),
+    previousPeriodChangePct: getRoadNumber(item, "previous_period_change_pct"),
+    dominantCrimeType: getRoadProperty(item, "dominant_crime_type", "dominantCrimeType"),
+    dominantOutcome: getRoadProperty(item, "dominant_outcome", "dominantOutcome"),
+  };
+}
+
+function normalizeRoadChartHighwayItem(item, index) {
   return {
     ...toRoadRecord(item),
-    sourceType: "highways",
-    name,
-    highway,
-    count: getRoadNumber(item, "count", "incidents", "incident_count", "total"),
+    sourceType: "highway",
     selectionKey: createRoadSelectionKey("highway", item, index),
+    count: getRoadNumber(item, "count", "incident_count"),
+    segmentCount: getRoadNumber(item, "segment_count"),
+    share: getRoadNumber(item, "share", "share_of_incidents"),
+    message: getRoadProperty(item, "message"),
   };
 }
 
-function normalizeRoadRiskItems(payload) {
-  return resolveItems(payload).map((item, index) => {
-    const roadRecord = toRoadRecord(item);
-
-    return {
-      ...roadRecord,
-      sourceType: "risk",
-      selectionKey: createRoadSelectionKey("risk", item, index),
-      count: roadRecord.incidents,
-    };
-  });
-}
-
-function normalizeRoadAnomaly(payload) {
+function normalizeBreakdownItem(item, key, index) {
   return {
-    target: getRoadProperty(payload, "target", "month"),
-    targetCount: getRoadNumber(payload, "target_count", "targetCount", "count"),
-    baselineMean: getRoadNumber(payload, "baseline_mean", "baselineMean", "mean"),
-    ratio: getRoadNumber(payload, "ratio"),
-    flag: Boolean(getRoadProperty(payload, "flag")) || getRoadNumber(payload, "ratio") >= 1.5,
+    key: `${key}-${getRoadProperty(item, key) || index}`,
+    label: getRoadProperty(item, key) || `Item ${index + 1}`,
+    count: getRoadNumber(item, "count"),
+    share: getRoadNumber(item, "share"),
   };
+}
+
+function normalizeBandBreakdown(breakdown) {
+  return {
+    red: getRoadNumber(breakdown, "red"),
+    orange: getRoadNumber(breakdown, "orange"),
+    green: getRoadNumber(breakdown, "green"),
+  };
+}
+
+function normalizeBandRows(bandBreakdown) {
+  return [
+    { label: "Red", count: getRoadNumber(bandBreakdown, "red"), fillClass: "bg-[#ef4444]" },
+    { label: "Orange", count: getRoadNumber(bandBreakdown, "orange"), fillClass: "bg-[#f97316]" },
+    { label: "Green", count: getRoadNumber(bandBreakdown, "green"), fillClass: "bg-[#22c55e]" },
+  ];
+}
+
+function normalizeInsights(items) {
+  return Array.isArray(items) ? items.filter(Boolean) : [];
+}
+
+function hasBandBreakdown(bandBreakdown) {
+  return Object.values(bandBreakdown || {}).some((value) => Number(value) > 0);
+}
+
+function resolveItems(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  return [];
 }
 
 function toRoadRecord(item) {
-  const properties = item?.properties || item || {};
-  const lengthKm = getRoadLengthKm(properties);
-  const incidentsPerKm =
-    getRoadNumber(
-      properties,
-      "incidents_per_km",
-      "incidentsPerKm",
-      "risk",
-      "risk_rate",
-      "incident_rate",
-    ) || null;
+  const record = item?.properties || item || {};
 
   return {
-    ...properties,
-    geometry: item?.geometry || properties?.geometry || null,
-    roadId: getRoadProperty(properties, "road_id", "roadId", "segment_id", "segmentId", "id"),
-    name: getRoadProperty(properties, "name", "road_name", "roadName", "title", "label"),
+    ...record,
+    roadId: getRoadProperty(record, "segment_id", "segmentId", "road_id", "roadId", "id"),
+    name: getRoadProperty(record, "name", "road_name", "roadName", "label", "title"),
     highway:
-      getRoadProperty(
-        properties,
-        "highway",
-        "highway_type",
-        "road_class",
-        "classification",
-        "ref",
-      ) || "Unclassified",
-    lsoaName: getRoadProperty(properties, "lsoa_name", "lsoaName"),
-    location: getRoadProperty(properties, "location", "location_text", "display_location"),
-    incidents: getRoadNumber(
-      properties,
-      "incidents",
-      "incident_count",
-      "incidents_count",
-      "crime_count",
-      "count",
-      "total",
-    ),
-    lengthKm,
-    incidentsPerKm,
+      getRoadProperty(record, "highway", "highway_type", "road_class", "classification") ||
+      "Unclassified",
+    incidents: getRoadNumber(record, "incident_count", "count", "incidents"),
+    incidentsPerKm: getRoadNumber(record, "incidents_per_km", "incidentsPerKm"),
+    lengthKm: getRoadLengthKm(record),
+    score: getRoadNumber(record, "risk_score", "riskScore", "score"),
     riskBand:
-      getRoadProperty(properties, "risk_band", "riskBand", "band") ||
-      deriveRiskBand(incidentsPerKm),
-    score: getRoadNumber(properties, "score", "risk_score", "riskScore", "index"),
+      getRoadProperty(record, "band", "risk_band", "riskBand") ||
+      deriveRiskBand(getRoadNumber(record, "incidents_per_km", "incidentsPerKm")),
+    dominantCrimeType: getRoadProperty(record, "dominant_crime_type", "dominantCrimeType"),
+    dominantOutcome: getRoadProperty(record, "dominant_outcome", "dominantOutcome"),
+    message: getRoadProperty(record, "message"),
+    shareOfIncidents: getRoadNumber(record, "share_of_incidents", "share"),
+    previousPeriodChangePct: getRoadNumber(record, "previous_period_change_pct"),
+    count: getRoadNumber(record, "count", "incident_count", "incidents"),
+    segmentCount: getRoadNumber(record, "segment_count"),
   };
 }
 
 function mergeRoadSelection(current, next) {
   return {
+    ...current,
     ...next,
-    geometry: current?.geometry || next?.geometry || null,
-    incidents: Number(next?.incidents) > 0 ? next.incidents : current?.incidents,
-    incidentsPerKm:
-      Number(next?.incidentsPerKm) > 0 ? next.incidentsPerKm : current?.incidentsPerKm,
-    riskBand: next?.riskBand || current?.riskBand || null,
-    score: Number(next?.score) > 0 ? next.score : current?.score,
-    count: Number(next?.count) > 0 ? next.count : current?.count,
-    lengthKm: Number(next?.lengthKm) > 0 ? next.lengthKm : current?.lengthKm,
-    lsoaName: next?.lsoaName || current?.lsoaName || null,
-    location: next?.location || current?.location || null,
     selectionKey: next?.selectionKey || current?.selectionKey,
     sourceType: next?.sourceType || current?.sourceType,
   };
-}
-
-function mergeRoadDetail(current, detail) {
-  return {
-    ...detail,
-    ...current,
-    geometry: detail?.geometry || current?.geometry || null,
-    roadId: current?.roadId || detail?.roadId || null,
-    name: current?.name || detail?.name || null,
-    highway: current?.highway || detail?.highway || null,
-    lengthKm: Number(detail?.lengthKm) > 0 ? detail.lengthKm : current?.lengthKm,
-  };
-}
-
-function toRoadGeoJsonFeature(road) {
-  if (!road?.geometry) {
-    return null;
-  }
-
-  return {
-    type: "Feature",
-    geometry: road.geometry,
-    properties: {
-      id: road.roadId,
-      name: road.name,
-      highway: road.highway,
-      length_m: Number(road.lengthKm) > 0 ? road.lengthKm * 1000 : null,
-    },
-  };
-}
-
-function getRoadFeatureCenter(feature) {
-  const coordinates = extractGeometryCoordinates(feature?.geometry);
-
-  if (!coordinates.length) {
-    return [
-      WEST_YORKSHIRE_BBOX.minLon + ((WEST_YORKSHIRE_BBOX.maxLon - WEST_YORKSHIRE_BBOX.minLon) / 2),
-      WEST_YORKSHIRE_BBOX.minLat + ((WEST_YORKSHIRE_BBOX.maxLat - WEST_YORKSHIRE_BBOX.minLat) / 2),
-    ];
-  }
-
-  const [lonSum, latSum] = coordinates.reduce(
-    (totals, coordinate) => [totals[0] + coordinate[0], totals[1] + coordinate[1]],
-    [0, 0],
-  );
-
-  return [lonSum / coordinates.length, latSum / coordinates.length];
-}
-
-function fitRoadFeature(map, feature, duration = 300) {
-  const coordinates = extractGeometryCoordinates(feature?.geometry);
-
-  if (!coordinates.length) {
-    return;
-  }
-
-  const bounds = coordinates.reduce(
-    (accumulator, coordinate) => accumulator.extend(coordinate),
-    new mapboxgl.LngLatBounds(coordinates[0], coordinates[0]),
-  );
-
-  map.fitBounds(bounds, {
-    padding: 60,
-    duration,
-    maxZoom: feature?.geometry?.type === "Point" ? 17 : 19,
-  });
-}
-
-function extractGeometryCoordinates(geometry) {
-  if (!geometry) {
-    return [];
-  }
-
-  if (geometry.type === "Point") {
-    return [geometry.coordinates];
-  }
-
-  if (geometry.type === "LineString" || geometry.type === "MultiPoint") {
-    return geometry.coordinates;
-  }
-
-  if (geometry.type === "MultiLineString" || geometry.type === "Polygon") {
-    return geometry.coordinates.flat();
-  }
-
-  if (geometry.type === "MultiPolygon") {
-    return geometry.coordinates.flat(2);
-  }
-
-  return [];
-}
-
-function upsertRoadMapFeature(map, feature) {
-  const sourceData = {
-    type: "FeatureCollection",
-    features: [feature],
-  };
-
-  const existingSource = map.getSource(DRAWER_ROAD_MAP_SOURCE_ID);
-
-  if (existingSource) {
-    existingSource.setData(sourceData);
-    return;
-  }
-
-  map.addSource(DRAWER_ROAD_MAP_SOURCE_ID, {
-    type: "geojson",
-    data: sourceData,
-  });
-
-  map.addLayer({
-    id: DRAWER_ROAD_MAP_LINE_HALO_LAYER_ID,
-    type: "line",
-    source: DRAWER_ROAD_MAP_SOURCE_ID,
-    filter: ["any", ["==", ["geometry-type"], "LineString"], ["==", ["geometry-type"], "MultiLineString"]],
-    paint: {
-      "line-color": "rgba(34, 197, 94, 0.25)",
-      "line-width": 14,
-    },
-  });
-
-  map.addLayer({
-    id: DRAWER_ROAD_MAP_LINE_LAYER_ID,
-    type: "line",
-    source: DRAWER_ROAD_MAP_SOURCE_ID,
-    filter: ["any", ["==", ["geometry-type"], "LineString"], ["==", ["geometry-type"], "MultiLineString"]],
-    paint: {
-      "line-color": "#22c55e",
-      "line-width": 6,
-      "line-opacity": 1,
-    },
-  });
-
-  map.addLayer({
-    id: DRAWER_ROAD_MAP_POINT_LAYER_ID,
-    type: "circle",
-    source: DRAWER_ROAD_MAP_SOURCE_ID,
-    filter: ["==", ["geometry-type"], "Point"],
-    paint: {
-      "circle-radius": 6,
-      "circle-color": "#3b82f6",
-      "circle-stroke-color": "#071316",
-      "circle-stroke-width": 2,
-    },
-  });
-}
-
-function resolveItems(payload) {
-  const candidates = [
-    payload,
-    payload?.items,
-    payload?.results,
-    payload?.rows,
-    payload?.series,
-    payload?.features,
-    payload?.data,
-    payload?.data?.items,
-  ];
-
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      return candidate;
-    }
-  }
-
-  return [];
 }
 
 function getRoadProperty(source, ...keys) {
@@ -1671,13 +1474,13 @@ function getRoadNumber(source, ...keys) {
 }
 
 function getRoadLengthKm(source) {
-  const lengthKm = getRoadNumber(source, "length_km", "lengthKm", "network_length_km");
+  const lengthKm = getRoadNumber(source, "length_km", "lengthKm", "total_length_km");
 
   if (lengthKm > 0) {
     return lengthKm;
   }
 
-  const lengthM = getRoadNumber(source, "length_m", "lengthM");
+  const lengthM = getRoadNumber(source, "length_m", "lengthM", "total_length_m");
 
   if (lengthM > 0) {
     return lengthM / 1000;
@@ -1689,71 +1492,27 @@ function getRoadLengthKm(source) {
 function createRoadSelectionKey(prefix, item, index) {
   return [
     prefix,
-    getRoadProperty(item, "road_id", "roadId", "segment_id", "segmentId", "id", "highway", "name"),
-    getRoadProperty(item, "name", "road_name", "roadName", "label", "title"),
+    getRoadProperty(item, "segment_id", "segmentId", "road_id", "roadId", "id", "highway"),
+    getRoadProperty(item, "name", "road_name", "roadName", "label"),
     index,
   ]
     .filter(Boolean)
     .join("-");
 }
 
-function isHighRiskRoad(road) {
-  const band = String(road?.riskBand || "").toLowerCase();
-
-  if (band.includes("high") || band.includes("elevated")) {
-    return true;
-  }
-
-  return Number(road?.incidentsPerKm) >= 5 || Number(road?.score) >= 5;
-}
-
-function deriveRiskBand(incidentsPerKm) {
-  const value = Number(incidentsPerKm);
-
-  if (!Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-
-  if (value >= 8) {
-    return "High";
-  }
-
-  if (value >= 4) {
-    return "Elevated";
-  }
-
-  return "Observed";
-}
-
-function getSummaryNumber(summaryData, ...keys) {
-  const records = [summaryData, summaryData?.counts, summaryData?.summary];
-
-  for (const record of records) {
-    if (!record) {
-      continue;
-    }
-
-    const value = getRoadNumber(record, ...keys);
-
-    if (value > 0) {
-      return value;
-    }
-  }
-
-  return 0;
-}
-
-function sumRoadLengthsKm(items) {
-  return items.reduce((total, item) => total + (Number(item?.lengthKm) || 0), 0);
-}
-
-function sumCounts(items) {
-  return items.reduce((total, item) => total + (Number(item?.count) || 0), 0);
+function cloneRoadFilters(filters) {
+  return {
+    ...filters,
+    bbox: filters?.bbox ? { ...filters.bbox } : null,
+  };
 }
 
 function createDefaultFiltersFromMeta(months) {
   if (!months?.min || !months?.max) {
-    return { ...DEFAULT_ROAD_FILTERS };
+    return {
+      ...DEFAULT_ROAD_FILTERS,
+      bbox: { ...WEST_YORKSHIRE_BBOX },
+    };
   }
 
   const maxIndex = monthToIndex(months.max);
@@ -1764,6 +1523,7 @@ function createDefaultFiltersFromMeta(months) {
     ...DEFAULT_ROAD_FILTERS,
     monthFrom: indexToMonth(fromIndex),
     monthTo: months.max,
+    bbox: { ...WEST_YORKSHIRE_BBOX },
   };
 }
 
@@ -1773,7 +1533,25 @@ function areRoadFiltersEqual(left, right) {
     left?.monthTo === right?.monthTo &&
     left?.crimeType === right?.crimeType &&
     left?.outcomeCategory === right?.outcomeCategory &&
-    left?.lsoaName === right?.lsoaName
+    left?.highway === right?.highway &&
+    areBboxesEqual(left?.bbox, right?.bbox)
+  );
+}
+
+function areBboxesEqual(left, right) {
+  if (!left && !right) {
+    return true;
+  }
+
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.minLon === right.minLon &&
+    left.minLat === right.minLat &&
+    left.maxLon === right.maxLon &&
+    left.maxLat === right.maxLat
   );
 }
 
@@ -1786,6 +1564,24 @@ function indexToMonth(index) {
   const year = Math.floor(index / 12);
   const month = (index % 12) + 1;
   return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function deriveRiskBand(incidentsPerKm) {
+  const value = Number(incidentsPerKm);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  if (value >= 8) {
+    return "red";
+  }
+
+  if (value >= 4) {
+    return "orange";
+  }
+
+  return "green";
 }
 
 function formatMonthLabel(month) {
@@ -1829,14 +1625,52 @@ function formatMetricValue(value, suffix = "") {
   return `${numericValue.toFixed(numericValue >= 10 ? 0 : 2)}${suffix ? ` ${suffix}` : ""}`;
 }
 
-function formatRatio(value) {
+function formatPercent(value) {
   const numericValue = Number(value);
 
   if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return "0.0%";
+  }
+
+  return `${numericValue.toFixed(1)}%`;
+}
+
+function formatSignedPercent(value) {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
     return "No data";
   }
 
-  return `${numericValue.toFixed(2)}x`;
+  const prefix = numericValue > 0 ? "+" : "";
+  return `${prefix}${numericValue.toFixed(1)}%`;
+}
+
+function formatBandLabel(value) {
+  const label = String(value || "").trim().toLowerCase();
+
+  if (!label) {
+    return "No band";
+  }
+
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function createEmptyRoadChartsData() {
+  return {
+    timeseries: {
+      groupBy: "overall",
+      series: [],
+      total: 0,
+      peak: null,
+      currentVsPreviousPct: null,
+    },
+    byHighway: [],
+    byCrimeType: [],
+    byOutcome: [],
+    bandBreakdown: { red: 0, orange: 0, green: 0 },
+    insights: [],
+  };
 }
 
 export default RoadsPage;

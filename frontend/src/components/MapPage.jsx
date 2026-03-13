@@ -98,16 +98,24 @@ function ensureRoadsLayer(map, { startMonth, endMonth } = {}) {
 }
 
 function logRoadDebugInfo(map) {
-  const roadFeatures = map
-    .querySourceFeatures(ROADS_SOURCE_ID, { sourceLayer: "roads" })
-    .slice(0, 10)
-    .map((feature) => feature.properties || {});
+  const allFeatures = map.querySourceFeatures(ROADS_SOURCE_ID, { sourceLayer: "roads" });
+
+  const byBand = { green: [], orange: [], red: [] };
+  for (const f of allFeatures) {
+    const band = f.properties?.band;
+    if (band && byBand[band] && byBand[band].length < 5) {
+      byBand[band].push(f.properties);
+    }
+  }
 
   console.log("roadsService.getVectorTilesUrl()", roadsService.getVectorTilesUrl());
   console.log(`${ROADS_LAYER_ID} line-color`, map.getPaintProperty(ROADS_LAYER_ID, "line-color"));
+  console.log("green (5):", byBand.green);
+  console.log("orange (5):", byBand.orange);
+  console.log("red (5):", byBand.red);
   console.log(
-    `${ROADS_SOURCE_ID} feature properties`,
-    roadFeatures.length > 0 ? roadFeatures : "No road features loaded in the current viewport yet.",
+    `Total features in viewport: ${allFeatures.length}`,
+    `(green: ${byBand.green.length}, orange: ${byBand.orange.length}, red: ${byBand.red.length})`,
   );
 }
 

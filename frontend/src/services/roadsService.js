@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../config/env";
-import { fetchJson, toFeatureCollection, toQueryString } from "./serviceUtils";
+import { fetchJson, toQueryString } from "./serviceUtils";
 
 function toBboxQuery(bbox) {
   if (!bbox) {
@@ -17,71 +17,58 @@ function toBboxQuery(bbox) {
 function buildRoadAnalyticsQuery({
   from,
   to,
-  target,
-  baselineMonths,
   bbox,
   crimeTypes,
   lastOutcomeCategories,
-  lsoaNames,
+  highways,
   limit,
   sort,
+  timeseriesGroupBy,
+  groupLimit,
 }) {
   return toQueryString({
     from,
     to,
-    target,
-    baselineMonths,
     ...toBboxQuery(bbox),
     crimeType: crimeTypes,
     lastOutcomeCategory: lastOutcomeCategories,
-    lsoaName: lsoaNames,
+    highway: highways,
     limit,
     sort,
+    timeseriesGroupBy,
+    groupLimit,
   });
 }
 
 export const roadsService = {
-  getVectorTilesUrl({ startMonth, endMonth } = {}) {
-    const params = new URLSearchParams({ includeRisk: "true" });
-    if (startMonth) params.set("startMonth", startMonth);
-    if (endMonth) params.set("endMonth", endMonth);
-    return `${API_BASE_URL}/tiles/roads/{z}/{x}/{y}.mvt?${params}`;
-  },
+  getVectorTilesUrl({
+    includeRisk = true,
+    month,
+    startMonth,
+    endMonth,
+    crimeTypes,
+  } = {}) {
+    const params = new URLSearchParams();
 
-  async getRoadsInBoundingBox(
-    { minLon, minLat, maxLon, maxLat, limit = 1200 },
-    requestOptions = {},
-  ) {
-    const query = toQueryString({ minLon, minLat, maxLon, maxLat, limit });
-    const data = await fetchJson(
-      `${API_BASE_URL}/roads?${query}`,
-      "Failed to fetch roads in viewport",
-      requestOptions,
-    );
+    params.set("includeRisk", includeRisk ? "true" : "false");
 
-    return toFeatureCollection(data);
-  },
+    if (month) {
+      params.set("month", month);
+    }
 
-  async getNearestRoad({ lon, lat }, requestOptions = {}) {
-    const query = toQueryString({ lon, lat });
-    return fetchJson(`${API_BASE_URL}/roads/nearest?${query}`, "Failed to fetch nearest road", requestOptions);
-  },
+    if (startMonth) {
+      params.set("startMonth", startMonth);
+    }
 
-  async getRoadStats({ minLon, minLat, maxLon, maxLat }, requestOptions = {}) {
-    const query = toQueryString({ minLon, minLat, maxLon, maxLat });
-    return fetchJson(`${API_BASE_URL}/roads/stats?${query}`, "Failed to fetch road stats", requestOptions);
-  },
+    if (endMonth) {
+      params.set("endMonth", endMonth);
+    }
 
-  async getRoadById(id, requestOptions = {}) {
-    return fetchJson(`${API_BASE_URL}/roads/${id}`, "Failed to fetch road details", requestOptions);
-  },
+    if (Array.isArray(crimeTypes)) {
+      crimeTypes.filter(Boolean).forEach((crimeType) => params.append("crimeType", crimeType));
+    }
 
-  async getRoadByIdGeoJson(id, requestOptions = {}) {
-    return fetchJson(
-      `${API_BASE_URL}/roads/${id}/geojson`,
-      "Failed to fetch road GeoJSON",
-      requestOptions,
-    );
+    return `${API_BASE_URL}/tiles/roads/{z}/{x}/{y}.mvt?${params.toString()}`;
   },
 
   async getRoadAnalyticsMeta(requestOptions = {}) {
@@ -92,8 +79,8 @@ export const roadsService = {
     );
   },
 
-  async getRoadAnalyticsSummary(
-    { from, to, bbox, crimeTypes, lastOutcomeCategories, lsoaNames },
+  async getRoadAnalyticsOverview(
+    { from, to, bbox, crimeTypes, lastOutcomeCategories, highways },
     requestOptions = {},
   ) {
     const query = buildRoadAnalyticsQuery({
@@ -102,18 +89,28 @@ export const roadsService = {
       bbox,
       crimeTypes,
       lastOutcomeCategories,
-      lsoaNames,
+      highways,
     });
 
     return fetchJson(
-      `${API_BASE_URL}/roads/analytics/summary?${query}`,
-      "Failed to fetch road summary analytics",
+      `${API_BASE_URL}/roads/analytics/overview?${query}`,
+      "Failed to fetch road overview analytics",
       requestOptions,
     );
   },
 
-  async getRoadAnalyticsTimeseries(
-    { from, to, bbox, crimeTypes, lastOutcomeCategories, lsoaNames },
+  async getRoadAnalyticsCharts(
+    {
+      from,
+      to,
+      bbox,
+      crimeTypes,
+      lastOutcomeCategories,
+      highways,
+      timeseriesGroupBy = "overall",
+      groupLimit = 5,
+      limit = 8,
+    },
     requestOptions = {},
   ) {
     const query = buildRoadAnalyticsQuery({
@@ -122,33 +119,15 @@ export const roadsService = {
       bbox,
       crimeTypes,
       lastOutcomeCategories,
-      lsoaNames,
-    });
-
-    return fetchJson(
-      `${API_BASE_URL}/roads/analytics/timeseries?${query}`,
-      "Failed to fetch road time series analytics",
-      requestOptions,
-    );
-  },
-
-  async getRoadAnalyticsHighways(
-    { from, to, bbox, crimeTypes, lastOutcomeCategories, lsoaNames, limit = 10 },
-    requestOptions = {},
-  ) {
-    const query = buildRoadAnalyticsQuery({
-      from,
-      to,
-      bbox,
-      crimeTypes,
-      lastOutcomeCategories,
-      lsoaNames,
+      highways,
+      timeseriesGroupBy,
+      groupLimit,
       limit,
     });
 
     return fetchJson(
-      `${API_BASE_URL}/roads/analytics/highways?${query}`,
-      "Failed to fetch road highway analytics",
+      `${API_BASE_URL}/roads/analytics/charts?${query}`,
+      "Failed to fetch road chart analytics",
       requestOptions,
     );
   },
@@ -160,8 +139,8 @@ export const roadsService = {
       bbox,
       crimeTypes,
       lastOutcomeCategories,
-      lsoaNames,
-      sort = "incidents_per_km",
+      highways,
+      sort = "risk_score",
       limit = 25,
     },
     requestOptions = {},
@@ -172,7 +151,7 @@ export const roadsService = {
       bbox,
       crimeTypes,
       lastOutcomeCategories,
-      lsoaNames,
+      highways,
       sort,
       limit,
     });
@@ -180,26 +159,6 @@ export const roadsService = {
     return fetchJson(
       `${API_BASE_URL}/roads/analytics/risk?${query}`,
       "Failed to fetch road risk analytics",
-      requestOptions,
-    );
-  },
-
-  async getRoadAnalyticsAnomaly(
-    { target, baselineMonths = 6, bbox, crimeTypes, lastOutcomeCategories, lsoaNames },
-    requestOptions = {},
-  ) {
-    const query = buildRoadAnalyticsQuery({
-      target,
-      baselineMonths,
-      bbox,
-      crimeTypes,
-      lastOutcomeCategories,
-      lsoaNames,
-    });
-
-    return fetchJson(
-      `${API_BASE_URL}/roads/analytics/anomaly?${query}`,
-      "Failed to fetch road anomaly analytics",
       requestOptions,
     );
   },

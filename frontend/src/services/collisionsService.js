@@ -18,26 +18,26 @@ function toBboxQuery(bbox) {
   };
 }
 
-function buildSharedCrimeQuery({
+function buildSharedCollisionQuery({
   from,
   to,
   bbox,
-  crimeTypes,
-  lastOutcomeCategories,
+  collisionTypes,
+  severityValues,
   lsoaNames,
   limit,
   cursor,
-  target,
-  baselineMonths,
 }) {
   return toQueryString({
     from,
     to,
-    target,
-    baselineMonths,
     ...toBboxQuery(bbox),
-    crimeType: crimeTypes,
-    lastOutcomeCategory: lastOutcomeCategories,
+    collisionType: collisionTypes,
+    crimeType: collisionTypes,
+    severity: severityValues,
+    collisionSeverity: severityValues,
+    outcomeCategory: severityValues,
+    lastOutcomeCategory: severityValues,
     lsoaName: lsoaNames,
     limit,
     cursor,
@@ -107,80 +107,81 @@ function resolveCursor(payload) {
   );
 }
 
-export const crimeService = {
-  async getCrimeIncidents(
-    { from, to, bbox, crimeTypes, lastOutcomeCategories, lsoaNames, limit, cursor },
+export const collisionsService = {
+  async getCollisionIncidents(
+    { from, to, bbox, collisionTypes, severityValues, lsoaNames, limit, cursor },
     requestOptions = {},
   ) {
-    const query = buildSharedCrimeQuery({
+    const query = buildSharedCollisionQuery({
       from,
       to,
       bbox,
-      crimeTypes,
-      lastOutcomeCategories,
+      collisionTypes,
+      severityValues,
       lsoaNames,
       limit,
       cursor,
     });
 
     return fetchJson(
-      `${config.apiBaseUrl}/crimes/incidents?${query}`,
-      "Failed to fetch crime incidents",
+      `${config.apiBaseUrl}/collisions/incidents?${query}`,
+      "Failed to fetch collision incidents",
       requestOptions,
     );
   },
 
-  async getCrimeAnalyticsSummary(
-    { from, to, bbox, crimeTypes, lastOutcomeCategories, lsoaNames },
+  async getCollisionAnalyticsSummary(
+    { from, to, bbox, collisionTypes, severityValues, lsoaNames },
     requestOptions = {},
   ) {
-    const query = buildSharedCrimeQuery({
+    const query = buildSharedCollisionQuery({
       from,
       to,
       bbox,
-      crimeTypes,
-      lastOutcomeCategories,
+      collisionTypes,
+      severityValues,
       lsoaNames,
     });
 
     return fetchJson(
-      `${config.apiBaseUrl}/crimes/analytics/summary?${query}`,
-      "Failed to fetch crime summary analytics",
+      `${config.apiBaseUrl}/collisions/analytics/summary?${query}`,
+      "Failed to fetch collision summary analytics",
       requestOptions,
     );
   },
 
-  async getCrimeAnalyticsTimeseries(
-    { from, to, bbox, crimeTypes, lastOutcomeCategories, lsoaNames },
+  async getCollisionAnalyticsTimeseries(
+    { from, to, bbox, collisionTypes, severityValues, lsoaNames },
     requestOptions = {},
   ) {
-    const query = buildSharedCrimeQuery({
+    const query = buildSharedCollisionQuery({
       from,
       to,
       bbox,
-      crimeTypes,
-      lastOutcomeCategories,
+      collisionTypes,
+      severityValues,
       lsoaNames,
     });
 
     return fetchJson(
-      `${config.apiBaseUrl}/crimes/analytics/timeseries?${query}`,
-      "Failed to fetch crime time series analytics",
+      `${config.apiBaseUrl}/collisions/analytics/timeseries?${query}`,
+      "Failed to fetch collision time series analytics",
       requestOptions,
     );
   },
 
-  async getCrimesForViewport(
+  async getCollisionsForViewport(
     {
       minLon,
       minLat,
       maxLon,
       maxLat,
       zoom,
+      month,
       startMonth,
       endMonth,
-      crimeTypes,
-      lastOutcomeCategories,
+      collisionTypes,
+      severityValues,
       lsoaNames,
       limit,
       mode = "auto",
@@ -194,10 +195,15 @@ export const crimeService = {
       maxLon,
       maxLat,
       zoom: clampZoom(zoom),
+      month,
       startMonth,
       endMonth,
-      crimeType: crimeTypes,
-      lastOutcomeCategory: lastOutcomeCategories,
+      collisionType: collisionTypes,
+      crimeType: collisionTypes,
+      severity: severityValues,
+      collisionSeverity: severityValues,
+      outcomeCategory: severityValues,
+      lastOutcomeCategory: severityValues,
       lsoaName: lsoaNames,
       limit,
       mode,
@@ -205,8 +211,8 @@ export const crimeService = {
     });
 
     const payload = await fetchJson(
-      `${config.apiBaseUrl}/crimes/map?${query}`,
-      "Failed to fetch crimes for the current viewport",
+      `${config.apiBaseUrl}/collisions/map?${query}`,
+      "Failed to fetch collisions for the current viewport",
       requestOptions,
     );
 
@@ -217,15 +223,7 @@ export const crimeService = {
       mode: resolveMode(payload, data),
       nextCursor: resolveCursor(payload),
       featureCount: data.features.length,
-      sourceLabel: "crime API",
+      sourceLabel: "collisions API",
     };
-  },
-
-  async getCrimeById(crimeId, requestOptions = {}) {
-    return fetchJson(
-      `${config.apiBaseUrl}/crimes/${crimeId}`,
-      "Failed to fetch the selected crime",
-      requestOptions,
-    );
   },
 };

@@ -1,92 +1,143 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import FilterComponent from "./FilterComponent";
-import InfoComponents from "./InfoComponents";
 import TopBar from "./TopBar";
-import {
-  CRIME_TYPE_OPTIONS,
-  OUTCOME_CATEGORY_OPTIONS,
-  createMonthOptions,
-} from "../constants/crimeFilterOptions";
+import { createMonthOptions } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
-import { crimeService } from "../services";
-import {
-  DEFAULT_CRIME_FILTERS,
-  WEST_YORKSHIRE_BBOX,
-  normalizeCrimeFeature,
-  toSearchOptions,
-} from "../utils/crimeUtils";
+import { collisionsService } from "../services";
+import { DEFAULT_CRIME_FILTERS, WEST_YORKSHIRE_BBOX, toSearchOptions } from "../utils/crimeUtils";
 
-const CRIME_PAGE_LIMIT = 250;
+const COLLISIONS_PAGE_LIMIT = 250;
 const BREAKDOWN_LIMIT = 10;
 const FILTER_REQUEST_DEBOUNCE_MS = 450;
 const WORKSPACE_TABS = [
   { id: "feed", label: "Incident Feed" },
   { id: "timeseries", label: "Time Series" },
-  { id: "types", label: "Crime Types" },
-  { id: "outcomes", label: "Outcomes" },
+  { id: "types", label: "Collision Types" },
+  { id: "severity", label: "Severity" },
 ];
 
-function CrimePage({ docsUrl }) {
+const DRAWER_MAP_SOURCE_ID = "collision-drawer-source";
+const DRAWER_MAP_CIRCLE_LAYER_ID = "collision-drawer-circle";
+const DRAWER_MAP_HALO_LAYER_ID = "collision-drawer-circle-halo";
+const DRAWER_MAP_STYLE = {
+  version: 8,
+  glyphs: "mapbox://fonts/mapbox/{fontstack}/{range}.pbf",
+  sources: {
+    darkBase: {
+      type: "raster",
+      tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      attribution: "By Adil Aabideen",
+    },
+  },
+  layers: [
+    {
+      id: "dark-base-layer",
+      type: "raster",
+      source: "darkBase",
+      minzoom: 0,
+      maxzoom: 22,
+    },
+  ],
+};
+
+function CollisionsPage({ docsUrl }) {
   const [activeTab, setActiveTab] = useState("feed");
-  const [crimeFilters, setCrimeFilters] = useState(DEFAULT_CRIME_FILTERS);
-  const [appliedCrimeFilters, setAppliedCrimeFilters] = useState(DEFAULT_CRIME_FILTERS);
+  const [collisionFilters, setCollisionFilters] = useState({ ...DEFAULT_CRIME_FILTERS });
+  const [appliedCollisionFilters, setAppliedCollisionFilters] = useState({ ...DEFAULT_CRIME_FILTERS });
   const [incidentPageIndex, setIncidentPageIndex] = useState(0);
   const [incidentCursorStack, setIncidentCursorStack] = useState([null]);
-  const [crimeRows, setCrimeRows] = useState([]);
+  const [collisionRows, setCollisionRows] = useState([]);
   const [incidentsMeta, setIncidentsMeta] = useState(null);
   const [summaryData, setSummaryData] = useState(null);
   const [timeseriesData, setTimeseriesData] = useState({ series: [], total: 0 });
-  const [selectedCrime, setSelectedCrime] = useState(null);
+  const [selectedCollision, setSelectedCollision] = useState(null);
   const [loadingIncidents, setLoadingIncidents] = useState(true);
   const [loadingAnalytics, setLoadingAnalytics] = useState(true);
-  const [loadingCrimeDetail, setLoadingCrimeDetail] = useState(false);
-  const [crimeErrorMessage, setCrimeErrorMessage] = useState("");
+  const [collisionErrorMessage, setCollisionErrorMessage] = useState("");
   const [analyticsErrorMessage, setAnalyticsErrorMessage] = useState("");
-  const [detailErrorMessage, setDetailErrorMessage] = useState("");
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
-      setAppliedCrimeFilters((current) =>
-        areCrimeFiltersEqual(current, crimeFilters) ? current : { ...crimeFilters },
+      setAppliedCollisionFilters((current) =>
+        areCollisionFiltersEqual(current, collisionFilters)
+          ? current
+          : { ...collisionFilters },
       );
     }, FILTER_REQUEST_DEBOUNCE_MS);
 
     return () => {
       window.clearTimeout(timerId);
     };
-  }, [crimeFilters]);
+  }, [collisionFilters]);
 
   const monthOptions = useMemo(() => createMonthOptions(48), []);
 
+  const collisionTypeOptions = useMemo(
+    () =>
+      toSearchOptions(
+        [
+          ...collisionRows.map((item) => item.collisionType),
+          ...resolveItems(
+            getCollisionProperty(summaryData, "top_collision_types", "top_incident_types", "top_crime_types"),
+          ).map((item) =>
+            getCollisionProperty(item, "collision_type", "incident_type", "crime_type", "label"),
+          ),
+        ],
+        collisionFilters.crimeType,
+      ),
+    [collisionFilters.crimeType, collisionRows, summaryData],
+  );
+
+  const severityOptions = useMemo(
+    () =>
+      toSearchOptions(
+        [
+          ...collisionRows.map((item) => item.severityLabel),
+          ...resolveItems(
+            getCollisionProperty(summaryData, "top_severities", "top_outcomes", "top_outcome_categories"),
+          ).map((item) =>
+            getCollisionProperty(item, "severity", "outcome", "label", "last_outcome_category"),
+          ),
+        ],
+        collisionFilters.outcomeCategory,
+      ),
+    [collisionFilters.outcomeCategory, collisionRows, summaryData],
+  );
+
   const lsoaOptions = useMemo(
-    () => toSearchOptions(crimeRows.map((item) => item.lsoaName), crimeFilters.lsoaName),
-    [crimeFilters.lsoaName, crimeRows],
+    () => toSearchOptions(collisionRows.map((item) => item.lsoaName), collisionFilters.lsoaName),
+    [collisionFilters.lsoaName, collisionRows],
   );
 
   const effectiveDateRange = useMemo(
     () => ({
-      from: appliedCrimeFilters.monthFrom || DEFAULT_CRIME_FILTERS.monthFrom,
-      to: appliedCrimeFilters.monthTo || DEFAULT_CRIME_FILTERS.monthTo,
+      from: appliedCollisionFilters.monthFrom || DEFAULT_CRIME_FILTERS.monthFrom,
+      to: appliedCollisionFilters.monthTo || DEFAULT_CRIME_FILTERS.monthTo,
     }),
-    [appliedCrimeFilters.monthFrom, appliedCrimeFilters.monthTo],
+    [appliedCollisionFilters.monthFrom, appliedCollisionFilters.monthTo],
   );
 
-  const sharedCrimeQuery = useMemo(
+  const sharedCollisionQuery = useMemo(
     () => ({
       from: effectiveDateRange.from,
       to: effectiveDateRange.to,
       bbox: WEST_YORKSHIRE_BBOX,
-      crimeTypes: appliedCrimeFilters.crimeType ? [appliedCrimeFilters.crimeType] : undefined,
-      lastOutcomeCategories: appliedCrimeFilters.outcomeCategory
-        ? [appliedCrimeFilters.outcomeCategory]
+      collisionTypes: appliedCollisionFilters.crimeType
+        ? [appliedCollisionFilters.crimeType]
         : undefined,
-      lsoaNames: appliedCrimeFilters.lsoaName ? [appliedCrimeFilters.lsoaName] : undefined,
+      severityValues: appliedCollisionFilters.outcomeCategory
+        ? [appliedCollisionFilters.outcomeCategory]
+        : undefined,
+      lsoaNames: appliedCollisionFilters.lsoaName
+        ? [appliedCollisionFilters.lsoaName]
+        : undefined,
     }),
     [
-      appliedCrimeFilters.crimeType,
-      appliedCrimeFilters.lsoaName,
-      appliedCrimeFilters.outcomeCategory,
+      appliedCollisionFilters.crimeType,
+      appliedCollisionFilters.lsoaName,
+      appliedCollisionFilters.outcomeCategory,
       effectiveDateRange.from,
       effectiveDateRange.to,
     ],
@@ -95,8 +146,8 @@ function CrimePage({ docsUrl }) {
   useEffect(() => {
     setIncidentPageIndex(0);
     setIncidentCursorStack([null]);
-    setSelectedCrime(null);
-  }, [sharedCrimeQuery]);
+    setSelectedCollision(null);
+  }, [sharedCollisionQuery]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -104,13 +155,13 @@ function CrimePage({ docsUrl }) {
 
     const loadIncidents = async () => {
       setLoadingIncidents(true);
-      setCrimeErrorMessage("");
+      setCollisionErrorMessage("");
 
       try {
-        const incidentsResult = await crimeService.getCrimeIncidents(
+        const incidentsResult = await collisionsService.getCollisionIncidents(
           {
-            ...sharedCrimeQuery,
-            limit: CRIME_PAGE_LIMIT,
+            ...sharedCollisionQuery,
+            limit: COLLISIONS_PAGE_LIMIT,
             cursor: currentCursor,
           },
           {
@@ -122,41 +173,31 @@ function CrimePage({ docsUrl }) {
           return;
         }
 
-        const normalizedCrimes = resolveItems(incidentsResult?.items).map((item) =>
-          normalizeCrimeFeature(item),
+        const normalizedCollisions = resolveItems(incidentsResult?.items).map((item) =>
+          normalizeCollisionRecord(item),
         );
 
-        setCrimeRows(normalizedCrimes);
+        setCollisionRows(normalizedCollisions);
         setIncidentsMeta(incidentsResult?.meta || null);
-        setSelectedCrime((current) => {
+        setSelectedCollision((current) => {
           if (!current?.recordId) {
             return null;
           }
 
-          const matchedCrime =
-            normalizedCrimes.find((crime) => crime.recordId === current.recordId) || null;
-
-          if (!matchedCrime) {
-            return null;
-          }
-
-          return {
-            ...matchedCrime,
-            geometry: current.geometry || matchedCrime.geometry || null,
-            lon: current.lon ?? matchedCrime.lon ?? null,
-            lat: current.lat ?? matchedCrime.lat ?? null,
-            context: current.context ?? matchedCrime.context ?? null,
-          };
+          return (
+            normalizedCollisions.find((collision) => collision.recordId === current.recordId) ||
+            null
+          );
         });
       } catch (error) {
         if (error?.name === "AbortError") {
           return;
         }
 
-        setCrimeRows([]);
+        setCollisionRows([]);
         setIncidentsMeta(null);
-        setSelectedCrime(null);
-        setCrimeErrorMessage(error?.message || "Failed to fetch crime incidents");
+        setSelectedCollision(null);
+        setCollisionErrorMessage(error?.message || "Failed to fetch collision incidents");
       } finally {
         if (!controller.signal.aborted) {
           setLoadingIncidents(false);
@@ -169,7 +210,7 @@ function CrimePage({ docsUrl }) {
     return () => {
       controller.abort();
     };
-  }, [incidentCursorStack, incidentPageIndex, sharedCrimeQuery]);
+  }, [incidentCursorStack, incidentPageIndex, sharedCollisionQuery]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -180,10 +221,10 @@ function CrimePage({ docsUrl }) {
 
       try {
         const [summaryResult, timeseriesResult] = await Promise.allSettled([
-          crimeService.getCrimeAnalyticsSummary(sharedCrimeQuery, {
+          collisionsService.getCollisionAnalyticsSummary(sharedCollisionQuery, {
             signal: controller.signal,
           }),
-          crimeService.getCrimeAnalyticsTimeseries(sharedCrimeQuery, {
+          collisionsService.getCollisionAnalyticsTimeseries(sharedCollisionQuery, {
             signal: controller.signal,
           }),
         ]);
@@ -226,171 +267,149 @@ function CrimePage({ docsUrl }) {
     return () => {
       controller.abort();
     };
-  }, [sharedCrimeQuery]);
-
-  useEffect(() => {
-    const selectedCrimeId = selectedCrime?.recordId;
-    const hasGeometry = Boolean(selectedCrime?.geometry);
-
-    if (!selectedCrimeId) {
-      setLoadingCrimeDetail(false);
-      setDetailErrorMessage("");
-      return undefined;
-    }
-
-    if (hasGeometry) {
-      setLoadingCrimeDetail(false);
-      setDetailErrorMessage("");
-      return undefined;
-    }
-
-    const controller = new AbortController();
-
-    const loadCrimeDetail = async () => {
-      setLoadingCrimeDetail(true);
-      setDetailErrorMessage("");
-
-      try {
-        const detailFeature = await crimeService.getCrimeById(selectedCrimeId, {
-          signal: controller.signal,
-        });
-
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        const normalizedDetail = normalizeCrimeFeature(detailFeature);
-
-        setSelectedCrime((current) => {
-          if (!current || current.recordId !== selectedCrimeId) {
-            return current;
-          }
-
-          return {
-            ...current,
-            ...normalizedDetail,
-          };
-        });
-      } catch (error) {
-        if (error?.name === "AbortError") {
-          return;
-        }
-
-        setDetailErrorMessage(error?.message || "Failed to fetch crime detail GeoJSON");
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoadingCrimeDetail(false);
-        }
-      }
-    };
-
-    void loadCrimeDetail();
-
-    return () => {
-      controller.abort();
-    };
-  }, [selectedCrime?.geometry, selectedCrime?.recordId]);
+  }, [sharedCollisionQuery]);
 
   const summaryCards = useMemo(() => {
-    const topCrimeType = summaryData?.top_crime_type;
-    const outcomeCoverage =
-      summaryData?.total_crimes > 0
-        ? Math.round((summaryData.crimes_with_outcomes / summaryData.total_crimes) * 100)
-        : 0;
+    const totalCollisions = getCollisionNumber(
+      summaryData,
+      "total_collisions",
+      "total_incidents",
+      "total_crimes",
+    );
+    const uniqueLsoas = getCollisionNumber(summaryData, "unique_lsoas");
+    const uniqueCollisionTypes = getCollisionNumber(
+      summaryData,
+      "unique_collision_types",
+      "unique_incident_types",
+      "unique_crime_types",
+    );
+    const collisionsWithSeverity = getCollisionNumber(
+      summaryData,
+      "collisions_with_severity",
+      "collisions_with_outcomes",
+      "incidents_with_outcomes",
+      "crimes_with_outcomes",
+    );
+    const topCollisionType =
+      getCollisionProperty(summaryData, "top_collision_type", "top_incident_type", "top_crime_type")
+      || null;
+    const severityCoverage =
+      totalCollisions > 0 ? Math.round((collisionsWithSeverity / totalCollisions) * 100) : 0;
 
     return [
       {
-        label: "Returned Incidents",
-        value: formatCount(crimeRows.length),
+        label: "Returned Collisions",
+        value: formatCount(collisionRows.length),
         meta: incidentsMeta?.nextCursor
-          ? `Page ${incidentPageIndex + 1} with more incidents available`
-          : `Page ${incidentPageIndex + 1} incident feed`,
+          ? `Page ${incidentPageIndex + 1} with more collisions available`
+          : `Page ${incidentPageIndex + 1} collision feed`,
         accent: "text-[#39ef7d]",
       },
       {
-        label: "Total Crimes",
-        value: formatCount(summaryData?.total_crimes || 0),
+        label: "Total Collisions",
+        value: formatCount(totalCollisions),
         meta: `${formatMonthLabel(effectiveDateRange.from)} to ${formatMonthLabel(effectiveDateRange.to)}`,
         accent: "text-cyan-50",
       },
       {
         label: "Unique LSOAs",
-        value: formatCount(summaryData?.unique_lsoas || 0),
+        value: formatCount(uniqueLsoas),
         meta: "Spatial coverage in filter set",
         accent: "text-[#60a5fa]",
       },
       {
-        label: "Crime Categories",
-        value: formatCount(summaryData?.unique_crime_types || 0),
-        meta: "Distinct crime types returned",
+        label: "Collision Categories",
+        value: formatCount(uniqueCollisionTypes),
+        meta: "Distinct types returned",
         accent: "text-[#f59e0b]",
       },
       {
-        label: "Top Crime Type",
-        value: topCrimeType?.crime_type || "No data",
-        meta: topCrimeType ? `${formatCount(topCrimeType.count)} incidents` : "No incidents",
+        label: "Top Collision Type",
+        value:
+          getCollisionProperty(topCollisionType, "collision_type", "incident_type", "crime_type")
+          || "No data",
+        meta: topCollisionType
+          ? `${formatCount(getCollisionNumber(topCollisionType, "count"))} records`
+          : "No collisions",
         accent: "text-[#ffb072]",
       },
       {
-        label: "Cases With Outcomes",
-        value: formatCount(summaryData?.crimes_with_outcomes || 0),
-        meta: `${outcomeCoverage}% with outcome data`,
+        label: "Records With Severity",
+        value: formatCount(collisionsWithSeverity),
+        meta: `${severityCoverage}% with severity data`,
         accent: "text-[#22c55e]",
       },
     ];
-  }, [crimeRows.length, effectiveDateRange.from, effectiveDateRange.to, incidentPageIndex, incidentsMeta?.nextCursor, summaryData]);
+  }, [collisionRows.length, effectiveDateRange.from, effectiveDateRange.to, incidentPageIndex, incidentsMeta?.nextCursor, summaryData]);
 
   const typeBreakdownItems = useMemo(
-    () => normalizeBreakdownItems(summaryData?.top_crime_types, "crime_type"),
-    [summaryData?.top_crime_types],
+    () =>
+      normalizeBreakdownItems(
+        getCollisionProperty(summaryData, "top_collision_types", "top_incident_types", "top_crime_types"),
+        "collision_type",
+        "incident_type",
+        "crime_type",
+      ),
+    [summaryData],
   );
 
-  const outcomeBreakdownItems = useMemo(
-    () => normalizeBreakdownItems(summaryData?.top_outcomes, "outcome"),
-    [summaryData?.top_outcomes],
+  const severityBreakdownItems = useMemo(
+    () =>
+      normalizeBreakdownItems(
+        getCollisionProperty(summaryData, "top_severities", "top_outcomes", "top_outcome_categories"),
+        "severity",
+        "outcome",
+        "last_outcome_category",
+      ),
+    [summaryData],
   );
 
   const isApplyingFilters = useMemo(
-    () => !areCrimeFiltersEqual(crimeFilters, appliedCrimeFilters),
-    [appliedCrimeFilters, crimeFilters],
+    () => !areCollisionFiltersEqual(collisionFilters, appliedCollisionFilters),
+    [appliedCollisionFilters, collisionFilters],
   );
 
-  const crimeStatusLabel = isApplyingFilters
+  const collisionStatusLabel = isApplyingFilters
     ? "Applying filters..."
     : loadingIncidents
-      ? "Loading incidents..."
-      : crimeErrorMessage
-        ? "Incident feed unavailable"
-        : `Showing ${formatCount(crimeRows.length)} incidents`;
+      ? "Loading collisions..."
+      : collisionErrorMessage
+        ? "Collision feed unavailable"
+        : `Showing ${formatCount(collisionRows.length)} collisions`;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#071316]">
       <TopBar
         docsUrl={docsUrl}
-        title="Crime Page"
-        subtitle="Canonical analytics endpoints drive the incident feed, KPI cards, and chart tabs."
+        title="Collisions Page"
+        subtitle="Collision incidents, KPI cards, and chart tabs mirror the crime intelligence desk."
       />
 
       <div className="min-h-0 flex-1 overflow-hidden p-4">
         <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[320px,minmax(0,1.7fr)]">
           <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
             <FilterComponent
-              filters={crimeFilters}
+              filters={collisionFilters}
               monthOptions={monthOptions}
-              crimeTypeOptions={CRIME_TYPE_OPTIONS}
-              outcomeOptions={OUTCOME_CATEGORY_OPTIONS}
+              crimeTypeOptions={collisionTypeOptions}
+              outcomeOptions={severityOptions}
               lsoaOptions={lsoaOptions}
-              visibleCrimeCount={crimeRows.length}
-              mode={isApplyingFilters ? "pending" : loadingIncidents ? "loading" : "incidents"}
+              visibleCrimeCount={collisionRows.length}
+              mode={isApplyingFilters ? "pending" : loadingIncidents ? "loading" : "collisions"}
               layout="panel"
+              title="Collision Filters"
+              visibleLabel="Visible collisions"
+              categorySectionTitle="Shared Filters"
+              crimeTypeLabel="Collision Type"
+              outcomeLabel="Severity / Outcome"
               onChange={(key, value) => {
-                setCrimeFilters((current) => ({
+                setCollisionFilters((current) => ({
                   ...current,
                   [key]: value,
                 }));
               }}
               onClear={() => {
-                setCrimeFilters(createDefaultFiltersFromMeta());
+                setCollisionFilters({ ...DEFAULT_CRIME_FILTERS });
               }}
             />
           </div>
@@ -413,9 +432,9 @@ function CrimePage({ docsUrl }) {
               ))}
             </div>
 
-            {crimeErrorMessage ? (
+            {collisionErrorMessage ? (
               <div className="rounded-[20px] border border-red-300/30 bg-[#480000b8] px-4 py-3 text-sm text-red-100">
-                {crimeErrorMessage}
+                {collisionErrorMessage}
               </div>
             ) : null}
 
@@ -432,9 +451,9 @@ function CrimePage({ docsUrl }) {
                     Intelligence Workspace
                   </p>
                   <h2 className="mt-2 text-xl font-semibold text-cyan-50">
-                    Incident feed and analytics
+                    Collision feed and analytics
                   </h2>
-                  <p className="mt-1 text-sm text-cyan-100/60">{crimeStatusLabel}</p>
+                  <p className="mt-1 text-sm text-cyan-100/60">{collisionStatusLabel}</p>
                 </div>
 
                 <div className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-xs uppercase tracking-[0.25em] text-cyan-100/55">
@@ -461,12 +480,12 @@ function CrimePage({ docsUrl }) {
 
               <div className="min-h-0 flex-1 overflow-hidden">
                 {activeTab === "feed" ? (
-                  <IncidentFeedTab
-                    crimeRows={crimeRows}
+                  <CollisionFeedTab
+                    collisionRows={collisionRows}
                     hasNextPage={Boolean(incidentsMeta?.nextCursor)}
                     hasPreviousPage={incidentPageIndex > 0}
                     pageNumber={incidentPageIndex + 1}
-                    selectedCrime={selectedCrime}
+                    selectedCollision={selectedCollision}
                     onNextPage={() => {
                       if (!incidentsMeta?.nextCursor) {
                         return;
@@ -482,13 +501,13 @@ function CrimePage({ docsUrl }) {
                     onPreviousPage={() => {
                       setIncidentPageIndex((current) => Math.max(0, current - 1));
                     }}
-                    onSelectCrime={setSelectedCrime}
+                    onSelectCollision={setSelectedCollision}
                     isLoading={loadingIncidents}
                   />
                 ) : null}
 
                 {activeTab === "timeseries" ? (
-                  <TimeSeriesTab
+                  <CollisionTimeSeriesTab
                     series={timeseriesData.series}
                     total={timeseriesData.total}
                     isLoading={loadingAnalytics}
@@ -496,24 +515,22 @@ function CrimePage({ docsUrl }) {
                 ) : null}
 
                 {activeTab === "types" ? (
-                  <BreakdownTab
-                    title="Crime type breakdown"
-                    subtitle="Ranked distribution from `summary.top_crime_types`."
+                  <CollisionBreakdownTab
+                    title="Collision type breakdown"
+                    subtitle="Ranked distribution from the summary endpoint."
                     items={typeBreakdownItems}
-                    otherCount={0}
                     isLoading={loadingAnalytics}
-                    emptyMessage="No crime type analytics are available for the current selection."
+                    emptyMessage="No collision type analytics are available for the current selection."
                   />
                 ) : null}
 
-                {activeTab === "outcomes" ? (
-                  <BreakdownTab
-                    title="Outcome breakdown"
-                    subtitle="Ranked distribution from `summary.top_outcomes`."
-                    items={outcomeBreakdownItems}
-                    otherCount={0}
+                {activeTab === "severity" ? (
+                  <CollisionBreakdownTab
+                    title="Severity breakdown"
+                    subtitle="Ranked severity distribution from the summary endpoint."
+                    items={severityBreakdownItems}
                     isLoading={loadingAnalytics}
-                    emptyMessage="No outcome analytics are available for the current selection."
+                    emptyMessage="No severity analytics are available for the current selection."
                   />
                 ) : null}
               </div>
@@ -526,54 +543,52 @@ function CrimePage({ docsUrl }) {
         <div className="flex flex-1 flex-col gap-1">
           <span className="text-[11px] text-cyan-100/60">API: {config.apiBaseUrl}</span>
           <span className="text-[11px] text-cyan-100/45">
-            Incidents: `/crimes/incidents` | Summary: `/crimes/analytics/summary` | Timeseries:
+            Incidents: {"/collisions/incidents"} | Summary: {"/collisions/analytics/summary"} |
             {" "}
-            {"/crimes/analytics/timeseries"} | Detail: {"/crimes/{crime_id}"}
+            Timeseries: {"/collisions/analytics/timeseries"}
           </span>
         </div>
 
         <div className="flex shrink-0 items-center gap-2 text-xs text-[#d2faf0]">
-          <span>{crimeStatusLabel}</span>
-          <strong className="text-[#39ef7d]">Analytics API</strong>
+          <span>{collisionStatusLabel}</span>
+          <strong className="text-[#39ef7d]">Collisions API</strong>
           <span className="text-cyan-100/60">Drawer + charts</span>
         </div>
       </div>
 
-      <SlidingCrimeDrawer
-        crime={selectedCrime}
-        isLoadingDetail={loadingCrimeDetail}
-        detailErrorMessage={detailErrorMessage}
-        onClose={() => setSelectedCrime(null)}
+      <SlidingCollisionDrawer
+        collision={selectedCollision}
+        onClose={() => setSelectedCollision(null)}
       />
     </div>
   );
 }
 
-function IncidentFeedTab({
-  crimeRows,
+function CollisionFeedTab({
+  collisionRows,
   hasNextPage,
   hasPreviousPage,
   pageNumber,
-  selectedCrime,
+  selectedCollision,
   onNextPage,
   onPreviousPage,
-  onSelectCrime,
+  onSelectCollision,
   isLoading,
 }) {
   if (isLoading) {
-    return <EmptyAnalyticsState message="Loading incidents from `/crimes/incidents`." />;
+    return <EmptyAnalyticsState message="Loading collisions from `/collisions/incidents`." />;
   }
 
-  if (!crimeRows.length) {
+  if (!collisionRows.length) {
     return (
-      <EmptyAnalyticsState message="No crimes match this filter set. Adjust the filters to repopulate the incident feed." />
+      <EmptyAnalyticsState message="No collisions match this filter set. Adjust the filters to repopulate the incident feed." />
     );
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-4 py-3 text-sm text-cyan-100/70">
-        <div>Paginated incident rows returned by `/crimes/incidents`.</div>
+        <div>Paginated collision rows returned by `/collisions/incidents`.</div>
 
         <div className="flex items-center gap-2">
           <button
@@ -602,13 +617,13 @@ function IncidentFeedTab({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="divide-y divide-white/5">
-          {crimeRows.map((crime) => (
-            <CrimeFeedRow
-              key={`${crime.recordId ?? crime.crimeId ?? crime.location}-${crime.month}`}
-              crime={crime}
-              isSelected={crime.recordId === selectedCrime?.recordId}
+          {collisionRows.map((collision) => (
+            <CollisionFeedRow
+              key={`${collision.recordId ?? collision.collisionId ?? collision.location}-${collision.month}`}
+              collision={collision}
+              isSelected={collision.recordId === selectedCollision?.recordId}
               onSelect={() => {
-                onSelectCrime(crime);
+                onSelectCollision(collision);
               }}
             />
           ))}
@@ -618,9 +633,9 @@ function IncidentFeedTab({
   );
 }
 
-function TimeSeriesTab({ series, total, isLoading }) {
+function CollisionTimeSeriesTab({ series, total, isLoading }) {
   if (isLoading) {
-    return <EmptyAnalyticsState message="Loading time series from `/crimes/analytics/timeseries`." />;
+    return <EmptyAnalyticsState message="Loading time series from `/collisions/analytics/timeseries`." />;
   }
 
   if (!series.length) {
@@ -642,9 +657,9 @@ function TimeSeriesTab({ series, total, isLoading }) {
     <div className="grid h-full gap-4 overflow-y-auto p-4 xl:grid-cols-[minmax(0,1.45fr),320px]">
       <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
         <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">Time Series</p>
-        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Monthly incident curve</h3>
+        <h3 className="mt-2 text-lg font-semibold text-cyan-50">Monthly collision curve</h3>
         <p className="mt-1 text-sm text-cyan-100/60">
-          Monthly counts returned by `/crimes/analytics/timeseries`.
+          Monthly counts returned by `/collisions/analytics/timeseries`.
         </p>
         <div className="mt-6">
           <TimeSeriesChart series={series} />
@@ -656,19 +671,19 @@ function TimeSeriesTab({ series, total, isLoading }) {
         <MiniMetricCard
           label="Peak month"
           value={peakMonth ? formatMonthLabel(peakMonth.month) : "No data"}
-          meta={peakMonth ? `${formatCount(peakMonth.count)} incidents` : ""}
+          meta={peakMonth ? `${formatCount(peakMonth.count)} records` : ""}
         />
         <MiniMetricCard
           label="Quietest month"
           value={quietestMonth ? formatMonthLabel(quietestMonth.month) : "No data"}
-          meta={quietestMonth ? `${formatCount(quietestMonth.count)} incidents` : ""}
+          meta={quietestMonth ? `${formatCount(quietestMonth.count)} records` : ""}
         />
       </section>
     </div>
   );
 }
 
-function BreakdownTab({ title, subtitle, items, otherCount, isLoading, emptyMessage }) {
+function CollisionBreakdownTab({ title, subtitle, items, isLoading, emptyMessage }) {
   if (isLoading) {
     return <EmptyAnalyticsState message={`Loading ${title.toLowerCase()} analytics.`} />;
   }
@@ -690,13 +705,6 @@ function BreakdownTab({ title, subtitle, items, otherCount, isLoading, emptyMess
           {topItems.map((item) => (
             <BarRow key={item.label} item={item} maxValue={topItems[0]?.count || 1} />
           ))}
-
-          {otherCount ? (
-            <BarRow
-              item={{ label: "Other", count: otherCount }}
-              maxValue={topItems[0]?.count || otherCount}
-            />
-          ) : null}
         </div>
       </section>
 
@@ -704,26 +712,19 @@ function BreakdownTab({ title, subtitle, items, otherCount, isLoading, emptyMess
         <MiniMetricCard
           label="Top category"
           value={topItems[0]?.label || "No data"}
-          meta={topItems[0] ? `${formatCount(topItems[0].count)} incidents` : ""}
+          meta={topItems[0] ? `${formatCount(topItems[0].count)} records` : ""}
         />
         <MiniMetricCard
           label="Visible categories"
-          value={formatCount(items.length + (otherCount ? 1 : 0))}
-          meta={otherCount ? "Includes grouped remainder" : "Direct ranked result"}
+          value={formatCount(items.length)}
+          meta="Direct ranked result"
         />
-        {otherCount ? (
-          <MiniMetricCard
-            label="Other count"
-            value={formatCount(otherCount)}
-            meta="Remaining categories outside the top list"
-          />
-        ) : null}
       </section>
     </div>
   );
 }
 
-function CrimeFeedRow({ crime, isSelected, onSelect }) {
+function CollisionFeedRow({ collision, isSelected, onSelect }) {
   return (
     <button
       type="button"
@@ -733,96 +734,69 @@ function CrimeFeedRow({ crime, isSelected, onSelect }) {
       }`}
     >
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Crime type</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Collision type</p>
         <p className="mt-2 truncate text-sm font-semibold text-cyan-50">
-          {crime.crimeType || "Unknown"}
+          {collision.collisionType || "Unknown"}
         </p>
         <p className="mt-1 text-xs text-cyan-100/55">
-          Record {crime.recordId || "—"}
-          {crime.crimeId ? ` / Crime ${crime.crimeId}` : ""}
+          Record {collision.recordId || "—"}
+          {collision.collisionId ? ` / Collision ${collision.collisionId}` : ""}
         </p>
       </div>
 
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Location</p>
         <p className="mt-2 truncate text-sm text-cyan-50">
-          {crime.location || "Location unavailable"}
+          {collision.location || "Location unavailable"}
         </p>
         <p className="mt-1 truncate text-xs text-cyan-100/55">
-          {crime.lsoaName || "No LSOA recorded"}
+          {collision.lsoaName || "No LSOA recorded"}
         </p>
       </div>
 
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Reported</p>
-        <p className="mt-2 text-sm text-cyan-50">{formatMonthLabel(crime.month)}</p>
+        <p className="mt-2 text-sm text-cyan-50">{formatMonthLabel(collision.month)}</p>
         <p className="mt-1 truncate text-xs text-cyan-100/55">
-          {crime.reportedBy || "Unknown source"}
+          {collision.reportedBy || "Unknown source"}
         </p>
       </div>
 
       <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Outcome</p>
+        <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Severity</p>
         <p className="mt-2 text-sm text-cyan-50">
-          {crime.outcomeCategory || "Pending or not recorded"}
+          {collision.severityLabel || "Pending or not recorded"}
         </p>
       </div>
     </button>
   );
 }
 
-function SlidingCrimeDrawer({ crime, isLoadingDetail, detailErrorMessage, onClose }) {
+function SlidingCollisionDrawer({ collision, onClose }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
       <button
         type="button"
-        aria-label="Close crime drawer"
+        aria-label="Close collision drawer"
         onClick={onClose}
         className={`absolute inset-0 bg-black/45 transition-opacity duration-300 ${
-          crime ? "pointer-events-auto opacity-100" : "opacity-0"
+          collision ? "pointer-events-auto opacity-100" : "opacity-0"
         }`}
       />
 
       <div
         className={`absolute inset-y-0 right-0 w-full border-l border-white/10 bg-[#030b0e] shadow-2xl transition-transform duration-300 sm:w-[60vw] sm:max-w-[60vw] ${
-          crime ? "translate-x-0" : "translate-x-full"
+          collision ? "translate-x-0" : "translate-x-full"
         }`}
       >
         <div className="h-full overflow-y-auto p-4">
-          {crime ? (
+          {collision ? (
             <div className="grid h-full gap-4 lg:grid-cols-[minmax(260px,0.82fr),minmax(0,1.18fr)]">
               <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-                {detailErrorMessage ? (
-                  <div className="rounded-xl border border-red-300/30 bg-[#480000b8] px-3 py-3 text-sm text-red-100">
-                    {detailErrorMessage}
-                  </div>
-                ) : null}
-                {isLoadingDetail ? (
-                  <div className="rounded-xl border border-cyan-100/10 bg-cyan-100/5 px-3 py-3 text-sm text-cyan-100/80">
-                    Loading crime GeoJSON...
-                  </div>
-                ) : null}
-
-                <InfoComponents
-                  compact
-                  className="h-full max-w-none rounded-[20px] bg-[#071316]/70 shadow-none"
-                  showActionButton={false}
-                  recordId={crime.recordId}
-                  crimeId={crime.crimeId}
-                  crimeType={crime.crimeType}
-                  month={crime.month}
-                  reportedBy={crime.reportedBy}
-                  fallsWithin={crime.fallsWithin}
-                  location={crime.location}
-                  lsoaCode={crime.lsoaCode}
-                  lsoaName={crime.lsoaName}
-                  outcomeCategory={crime.outcomeCategory}
-                  context={crime.context}
-                  onClose={onClose}
-                />
+                <CollisionInfoPanel collision={collision} onClose={onClose} />
               </div>
 
-              <CrimeLocationMap crime={crime} isLoadingDetail={isLoadingDetail} />
+              <CollisionLocationMap collision={collision} />
             </div>
           ) : null}
         </div>
@@ -831,38 +805,81 @@ function SlidingCrimeDrawer({ crime, isLoadingDetail, detailErrorMessage, onClos
   );
 }
 
-const DRAWER_MAP_SOURCE_ID = "crime-drawer-source";
-const DRAWER_MAP_CIRCLE_LAYER_ID = "crime-drawer-circle";
-const DRAWER_MAP_HALO_LAYER_ID = "crime-drawer-circle-halo";
-const DRAWER_MAP_STYLE = {
-  version: 8,
-  glyphs: "mapbox://fonts/mapbox/{fontstack}/{range}.pbf",
-  sources: {
-    darkBase: {
-      type: "raster",
-      tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "By Adil Aabideen",
-    },
-  },
-  layers: [
-    {
-      id: "dark-base-layer",
-      type: "raster",
-      source: "darkBase",
-      minzoom: 0,
-      maxzoom: 22,
-    },
-  ],
-};
+function CollisionInfoPanel({ collision, onClose }) {
+  return (
+    <div className="pointer-events-auto flex h-full w-full flex-col gap-3 overflow-y-auto rounded-[20px] border border-cyan-200/10 bg-[#071316]/70 p-3 shadow-none">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold tracking-wide text-cyan-50">
+          Collision Information
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-cyan-100/50 transition-colors hover:bg-cyan-100/10 hover:text-cyan-50"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
 
-function CrimeLocationMap({ crime, isLoadingDetail }) {
+      <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
+        <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
+          Type of Collision
+        </h3>
+        <div className="flex items-center justify-between text-sm text-cyan-50">
+          <span className="text-lg font-semibold">{collision.collisionType ?? "—"}</span>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
+        <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
+          Collision Report
+        </h3>
+        <CollisionInfoField label="Record ID" value={collision.recordId} subtle />
+        <CollisionInfoField label="Collision ID" value={collision.collisionId} subtle />
+        <CollisionInfoField label="Month" value={collision.month} />
+        <CollisionInfoField label="Reported By" value={collision.reportedBy} />
+        <CollisionInfoField label="Falls Within" value={collision.fallsWithin} />
+        <CollisionInfoField label="Location" value={collision.location} />
+        <CollisionInfoField label="LSOA Code" value={collision.lsoaCode} />
+        <CollisionInfoField label="LSOA Name" value={collision.lsoaName} />
+        <CollisionInfoField label="Severity" value={collision.severityLabel} />
+      </section>
+
+      <section className="flex flex-col gap-2 rounded-lg bg-cyan-100/5 p-3">
+        <h3 className="text-base font-medium uppercase tracking-wider text-cyan-100/50">
+          Further Information
+        </h3>
+        <CollisionInfoField label="Context" value={collision.context} />
+      </section>
+    </div>
+  );
+}
+
+function CollisionInfoField({ label, value, subtle = false }) {
+  const valueClassName = subtle
+    ? "text-sm font-medium break-all"
+    : "text-base font-semibold";
+
+  return (
+    <div className="flex flex-col items-start text-sm text-cyan-50">
+      <span className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">
+        {label}:
+      </span>
+      <span className={valueClassName}>{value ?? "—"}</span>
+    </div>
+  );
+}
+
+function CollisionLocationMap({ collision }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const [mapRuntimeErrorMessage, setMapRuntimeErrorMessage] = useState("");
-  const crimeFeature = useMemo(() => toCrimeGeoJsonFeature(crime), [crime]);
+  const collisionFeature = useMemo(() => toCollisionGeoJsonFeature(collision), [collision]);
   const mapErrorMessage = !config.mapboxAccessToken
-    ? "Set VITE_MAPBOX_ACCESS_TOKEN to render the crime location map."
+    ? "Set VITE_MAPBOX_ACCESS_TOKEN to render the collision location map."
     : !mapboxgl.supported()
       ? "Mapbox GL JS is not supported in this browser."
       : mapRuntimeErrorMessage;
@@ -872,11 +889,7 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
       return undefined;
     }
 
-    if (!config.mapboxAccessToken) {
-      return undefined;
-    }
-
-    if (!mapboxgl.supported()) {
+    if (!config.mapboxAccessToken || !mapboxgl.supported()) {
       return undefined;
     }
 
@@ -885,7 +898,7 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
       style: DRAWER_MAP_STYLE,
-      center: getCrimeFeatureCenter(crimeFeature),
+      center: getCollisionFeatureCenter(collisionFeature),
       zoom: 14,
       attributionControl: false,
       interactive: false,
@@ -894,10 +907,10 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
     mapRef.current = map;
 
     map.on("load", () => {
-      if (crimeFeature) {
-        upsertCrimeMapFeature(map, crimeFeature);
+      if (collisionFeature) {
+        upsertCollisionMapFeature(map, collisionFeature);
         map.jumpTo({
-          center: getCrimeFeatureCenter(crimeFeature),
+          center: getCollisionFeatureCenter(collisionFeature),
           zoom: 15,
         });
       }
@@ -915,19 +928,19 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
       map.remove();
       mapRef.current = null;
     };
-  }, [crimeFeature]);
+  }, [collisionFeature]);
 
   useEffect(() => {
     const map = mapRef.current;
 
-    if (!map || !crimeFeature) {
+    if (!map || !collisionFeature) {
       return;
     }
 
     const updateFeature = () => {
-      upsertCrimeMapFeature(map, crimeFeature);
+      upsertCollisionMapFeature(map, collisionFeature);
       map.easeTo({
-        center: getCrimeFeatureCenter(crimeFeature),
+        center: getCollisionFeatureCenter(collisionFeature),
         zoom: 15,
         duration: 300,
       });
@@ -939,20 +952,20 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
     }
 
     map.once("load", updateFeature);
-  }, [crimeFeature]);
+  }, [collisionFeature]);
 
   return (
     <div className="flex min-h-[320px] flex-col rounded-[20px] border border-white/10 bg-[#071316]/70 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
-            Crime Location
+            Collision Location
           </p>
-          <p className="mt-1 text-sm text-cyan-100/70">Rendered from GeoJSON</p>
+          <p className="mt-1 text-sm text-cyan-100/70">Rendered from row GeoJSON / coordinates</p>
         </div>
-        {crimeFeature ? (
+        {collisionFeature ? (
           <span className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-cyan-100/60">
-            {crimeFeature.geometry.type}
+            {collisionFeature.geometry.type}
           </span>
         ) : null}
       </div>
@@ -963,13 +976,9 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
         </div>
       ) : null}
 
-      {!crimeFeature && isLoadingDetail ? (
-        <div className="flex h-full min-h-[240px] items-center justify-center rounded-[16px] border border-cyan-100/10 bg-cyan-100/5 text-sm text-cyan-100/70">
-          Loading GeoJSON for the selected crime...
-        </div>
-      ) : !crimeFeature ? (
+      {!collisionFeature ? (
         <div className="flex h-full min-h-[240px] items-center justify-center rounded-[16px] border border-cyan-100/10 bg-cyan-100/5 px-4 text-center text-sm text-cyan-100/70">
-          No geometry is available for this crime.
+          No geometry is available for this collision.
         </div>
       ) : (
         <div ref={mapContainerRef} className="min-h-[260px] flex-1 overflow-hidden rounded-[16px]" />
@@ -978,34 +987,34 @@ function CrimeLocationMap({ crime, isLoadingDetail }) {
   );
 }
 
-function toCrimeGeoJsonFeature(crime) {
-  if (!crime) {
+function toCollisionGeoJsonFeature(collision) {
+  if (!collision) {
     return null;
   }
 
-  if (crime.geometry) {
+  if (collision.geometry) {
     return {
       type: "Feature",
-      geometry: crime.geometry,
+      geometry: collision.geometry,
       properties: {
-        id: crime.recordId,
-        crime_id: crime.crimeId,
-        crime_type: crime.crimeType,
+        id: collision.recordId,
+        collision_id: collision.collisionId,
+        collision_type: collision.collisionType,
       },
     };
   }
 
-  if (Number.isFinite(crime.lon) && Number.isFinite(crime.lat)) {
+  if (Number.isFinite(collision.lon) && Number.isFinite(collision.lat)) {
     return {
       type: "Feature",
       geometry: {
         type: "Point",
-        coordinates: [crime.lon, crime.lat],
+        coordinates: [collision.lon, collision.lat],
       },
       properties: {
-        id: crime.recordId,
-        crime_id: crime.crimeId,
-        crime_type: crime.crimeType,
+        id: collision.recordId,
+        collision_id: collision.collisionId,
+        collision_type: collision.collisionType,
       },
     };
   }
@@ -1013,12 +1022,20 @@ function toCrimeGeoJsonFeature(crime) {
   return null;
 }
 
-function getCrimeFeatureCenter(feature) {
+function getCollisionFeatureCenter(feature) {
   const coordinates = feature?.geometry?.type === "Point" ? feature.geometry.coordinates : null;
-  return Array.isArray(coordinates) ? coordinates : [WEST_YORKSHIRE_BBOX.minLon + ((WEST_YORKSHIRE_BBOX.maxLon - WEST_YORKSHIRE_BBOX.minLon) / 2), WEST_YORKSHIRE_BBOX.minLat + ((WEST_YORKSHIRE_BBOX.maxLat - WEST_YORKSHIRE_BBOX.minLat) / 2)];
+
+  return Array.isArray(coordinates)
+    ? coordinates
+    : [
+        WEST_YORKSHIRE_BBOX.minLon +
+          ((WEST_YORKSHIRE_BBOX.maxLon - WEST_YORKSHIRE_BBOX.minLon) / 2),
+        WEST_YORKSHIRE_BBOX.minLat +
+          ((WEST_YORKSHIRE_BBOX.maxLat - WEST_YORKSHIRE_BBOX.minLat) / 2),
+      ];
 }
 
-function upsertCrimeMapFeature(map, feature) {
+function upsertCollisionMapFeature(map, feature) {
   const sourceData = {
     type: "FeatureCollection",
     features: [feature],
@@ -1080,7 +1097,6 @@ function TimeSeriesChart({ series }) {
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
     .join(" ");
   const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
-
   const hovered = hoveredIndex !== null ? points[hoveredIndex] : null;
 
   return (
@@ -1107,7 +1123,7 @@ function TimeSeriesChart({ series }) {
 
         {points.map((point, index) => (
           <g
-            key={point.month}
+            key={`${point.month}-${index}`}
             onMouseEnter={() => setHoveredIndex(index)}
             onMouseLeave={() => setHoveredIndex(null)}
             className="cursor-pointer"
@@ -1133,7 +1149,7 @@ function TimeSeriesChart({ series }) {
           }}
         >
           <p className="font-semibold text-cyan-50">{formatMonthLabel(hovered.month)}</p>
-          <p className="mt-0.5 text-cyan-100/60">{formatCount(hovered.count)} incidents</p>
+          <p className="mt-0.5 text-cyan-100/60">{formatCount(hovered.count)} records</p>
         </div>
       )}
 
@@ -1192,11 +1208,7 @@ function EmptyAnalyticsState({ message }) {
   );
 }
 
-function createDefaultFiltersFromMeta() {
-  return { ...DEFAULT_CRIME_FILTERS };
-}
-
-function areCrimeFiltersEqual(left, right) {
+function areCollisionFiltersEqual(left, right) {
   return (
     left?.monthFrom === right?.monthFrom &&
     left?.monthTo === right?.monthTo &&
@@ -1210,15 +1222,103 @@ function resolveItems(items) {
   return Array.isArray(items) ? items : [];
 }
 
-function normalizeBreakdownItems(items, labelKey) {
-  if (!Array.isArray(items)) {
-    return [];
+function getCollisionProperty(source, ...keys) {
+  const record = source?.properties || source || {};
+
+  for (const key of keys) {
+    const value = record?.[key];
+
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
   }
 
-  return items.map((item) => ({
-    label: item?.[labelKey] || "Unknown",
-    count: Number(item?.count) || 0,
-  }));
+  return null;
+}
+
+function getCollisionNumber(source, ...keys) {
+  const value = getCollisionProperty(source, ...keys);
+  const numericValue = Number(value);
+
+  return Number.isFinite(numericValue) ? numericValue : 0;
+}
+
+function normalizeCollisionRecord(feature) {
+  const properties = feature?.properties || feature || {};
+  const coordinates =
+    feature?.geometry?.type === "Point"
+      ? feature.geometry.coordinates
+      : Number.isFinite(Number(properties?.lon)) && Number.isFinite(Number(properties?.lat))
+        ? [Number(properties.lon), Number(properties.lat)]
+        : null;
+
+  return {
+    ...properties,
+    geometry: feature?.geometry || null,
+    lon: coordinates ? Number(coordinates[0]) : getCollisionNumber(properties, "lon", "longitude"),
+    lat: coordinates ? Number(coordinates[1]) : getCollisionNumber(properties, "lat", "latitude"),
+    recordId: getCollisionProperty(properties, "recordId", "record_id", "id", "ID"),
+    collisionId: getCollisionProperty(
+      properties,
+      "collisionId",
+      "collision_id",
+      "incident_id",
+      "reference",
+      "collision_reference",
+    ),
+    month: getCollisionProperty(properties, "month", "Month"),
+    collisionType: getCollisionProperty(
+      properties,
+      "collisionType",
+      "collision_type",
+      "incident_type",
+      "accident_type",
+      "crime_type",
+    ),
+    severityLabel: getCollisionProperty(
+      properties,
+      "severity",
+      "severity_label",
+      "accident_severity",
+      "casualty_severity",
+      "outcomeCategory",
+      "last_outcome_category",
+    ),
+    reportedBy: getCollisionProperty(
+      properties,
+      "reportedBy",
+      "reported_by",
+      "police_force",
+      "source",
+    ),
+    fallsWithin: getCollisionProperty(
+      properties,
+      "fallsWithin",
+      "falls_within",
+      "area_name",
+      "borough",
+    ),
+    location: getCollisionProperty(
+      properties,
+      "location",
+      "location_text",
+      "road_name",
+      "street_name",
+      "display_location",
+    ) || (coordinates ? `${coordinates[1]}, ${coordinates[0]}` : null),
+    lsoaCode: getCollisionProperty(properties, "lsoaCode", "lsoa_code"),
+    lsoaName: getCollisionProperty(properties, "lsoaName", "lsoa_name"),
+    context: getCollisionProperty(properties, "context", "Context"),
+  };
+}
+
+function normalizeBreakdownItems(items, ...labelKeys) {
+  return resolveItems(items)
+    .map((item) => ({
+      label: getCollisionProperty(item, ...labelKeys) || "Unknown",
+      count: getCollisionNumber(item, "count"),
+    }))
+    .filter((item) => item.label);
 }
 
 function formatMonthLabel(month) {
@@ -1242,4 +1342,4 @@ function formatCount(value) {
   return new Intl.NumberFormat("en-GB").format(Number(value) || 0);
 }
 
-export default CrimePage;
+export default CollisionsPage;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import CollisionsPage from "./components/CollisionsPage";
 import CrimePage from "./components/CrimePage";
 import MapPage from "./components/MapPage";
 import RoadsPage from "./components/RoadsPage";
@@ -134,6 +135,8 @@ function DashboardRoute() {
           />
         ) : activePage === "crime" ? (
           <CrimePage docsUrl={docsUrl} />
+        ) : activePage === "collisions" ? (
+          <CollisionsPage docsUrl={docsUrl} />
         ) : activePage === "roads" ? (
           <RoadsPage docsUrl={docsUrl} />
         ) : activePage === "watchlist" ? (

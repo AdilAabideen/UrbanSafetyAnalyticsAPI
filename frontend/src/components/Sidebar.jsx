@@ -37,6 +37,20 @@ const NAV_ITEMS = [
     ),
   },
   {
+    id: "collisions",
+    label: "Collisions Page",
+    icon: (
+      <>
+        <path d="M7 17h4" />
+        <path d="M13 17h4" />
+        <circle cx="8" cy="17" r="3" />
+        <circle cx="16" cy="17" r="3" />
+        <path d="M5 17V9l3-3h5l3 4h3v7" />
+        <path d="M13 10h4" />
+      </>
+    ),
+  },
+  {
     id: "watchlist",
     label: "Create Watchlist",
     icon: (

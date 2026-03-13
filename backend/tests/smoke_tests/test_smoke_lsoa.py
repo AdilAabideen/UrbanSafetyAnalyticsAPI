@@ -58,5 +58,7 @@ def test_lsoa_categories_returns_ranked_lsoa_names():
     assert data["items"][0]["lsoa_name"] == "Leeds 111B"
     assert data["items"][0]["lsoa_code"] == "E01011354"
     assert data["items"][0]["count"] == 23439
-    assert data["items"][0]["bbox"]["minLon"] == -1.582
-    assert data["items"][0]["bbox"]["maxLat"] == 53.812
+    assert data["items"][0]["minLon"] == -1.582
+    assert data["items"][0]["minLat"] == 53.781
+    assert data["items"][0]["maxLon"] == -1.541
+    assert data["items"][0]["maxLat"] == 53.812

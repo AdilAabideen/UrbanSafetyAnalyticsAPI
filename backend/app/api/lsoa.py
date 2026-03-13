@@ -45,12 +45,10 @@ def get_lsoa_categories(db: Session = Depends(get_db)):
                 "lsoa_code": row["lsoa_code"],
                 "lsoa_name": row["lsoa_name"],
                 "count": row["count"],
-                "bbox": {
-                    "minLon": row["min_lon"],
-                    "minLat": row["min_lat"],
-                    "maxLon": row["max_lon"],
-                    "maxLat": row["max_lat"],
-                },
+                "minLon": row["min_lon"],
+                "minLat": row["min_lat"],
+                "maxLon": row["max_lon"],
+                "maxLat": row["max_lat"],
             }
             for row in rows
         ]

@@ -69,3 +69,72 @@ class RouteCompareRequest(BaseModel):
     crimeType: Optional[CrimeType] = None
     includeCollisions: bool = False
     routes: List[RouteCompareItem]
+
+
+class AnalyticsMetaResponse(BaseModel):
+    months: Dict[str, Optional[str]]
+    crime_types: List[str]
+    counts: Dict[str, Any]
+
+
+class AnalyticsScope(BaseModel):
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+    target: Optional[str] = None
+    baselineMonths: Optional[int] = None
+    bbox: Optional[Dict[str, Any]] = None
+    mode: Optional[str] = None
+    crimeType: Optional[str] = None
+    includeCollisions: Optional[bool] = None
+    method: Optional[str] = None
+    k: Optional[int] = None
+
+
+class RiskScoreResponse(BaseModel):
+    scope: AnalyticsScope
+    generated_at: str
+    score_basis: str
+    risk_score: int
+    score: int
+    pct: float
+    band: str
+    metrics: Dict[str, Any]
+    explain: Dict[str, Any]
+
+
+class RiskForecastResponse(BaseModel):
+    scope: AnalyticsScope
+    generated_at: str
+    score_basis: str
+    history: List[Dict[str, Any]]
+    forecast: Dict[str, Any]
+    explanation: Dict[str, Any]
+
+
+class HotspotStabilitySeriesItem(BaseModel):
+    month: str
+    jaccard_vs_prev: float
+    overlap_count: int
+
+
+class PersistentHotspotItem(BaseModel):
+    segment_id: int
+    appearances: int
+    appearance_ratio: float
+
+
+class HotspotSummary(BaseModel):
+    months_evaluated: int
+    average_jaccard: float
+    persistent_hotspot_count: int
+    notes: str
+
+
+class HotspotStabilityResponse(BaseModel):
+    scope: AnalyticsScope
+    generated_at: str
+    stability_series: List[HotspotStabilitySeriesItem]
+    persistent_hotspots: List[PersistentHotspotItem]
+    summary: HotspotSummary
+    topk_by_month: Optional[List[Dict[str, Any]]] = None
+

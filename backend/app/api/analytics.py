@@ -12,9 +12,13 @@ from ..api_utils.analytics_db_utils import (
 from ..api_utils.analytics_utils import AnalyticsAPIError
 from ..db import get_db
 from ..schemas.analytics_schemas import (
+    AnalyticsMetaResponse,
     CrimeType,
     ForecastRequest,
+    HotspotStabilityResponse,
+    RiskForecastResponse,
     RiskScoreRequest,
+    RiskScoreResponse,
     RouteCompareItem,
     RouteCompareRequest,
     RouteRiskRequest,
@@ -25,13 +29,16 @@ from ..schemas.analytics_schemas import (
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
-@router.get("/meta")
-def analytics_meta(db: Session = Depends(get_db)):
+@router.get("/meta", response_model=AnalyticsMetaResponse)
+def analytics_meta(db: Session = Depends(get_db)) -> AnalyticsMetaResponse:
     return build_analytics_meta_payload(db)
 
 
-@router.post("/risk/score")
-def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db)):
+@router.post("/risk/score", response_model=RiskScoreResponse)
+def analytics_risk_score(
+    request: RiskScoreRequest,
+    db: Session = Depends(get_db),
+) -> RiskScoreResponse:
     return build_risk_score_payload(
         db,
         from_value=request.from_,
@@ -48,8 +55,11 @@ def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db
     )
 
 
-@router.post("/risk/forecast")
-def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_db)):
+@router.post("/risk/forecast", response_model=RiskForecastResponse)
+def analytics_risk_forecast(
+    request: ForecastRequest,
+    db: Session = Depends(get_db),
+) -> RiskForecastResponse:
     return build_risk_forecast_payload(
         db,
         target=request.target,
@@ -68,7 +78,7 @@ def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_
     )
 
 
-@router.get("/patterns/hotspot-stability")
+@router.get("/patterns/hotspot-stability", response_model=HotspotStabilityResponse)
 def analytics_hotspot_stability(
     from_: str = Query(..., alias="from"),
     to: str = Query(...),
@@ -80,7 +90,7 @@ def analytics_hotspot_stability(
     maxLat: Optional[float] = Query(None),
     crimeType: Optional[CrimeType] = Query(None),
     db: Session = Depends(get_db),
-):
+) -> HotspotStabilityResponse:
     return build_hotspot_stability_payload(
         db,
         from_value=from_,

@@ -12,7 +12,14 @@ from ..errors import (
     NotFoundError,
     ValidationError,
 )
-from ..schemas.auth_schemas import AuthRequest, ProfileUpdateRequest
+from ..schemas.auth_schemas import (
+    AuthRequest,
+    LoginResponse,
+    MeResponse,
+    ProfileUpdateRequest,
+    RegisterResponse,
+    UpdateMeResponse,
+)
 
 
 router = APIRouter(tags=["auth"])
@@ -28,8 +35,8 @@ def _execute(db, query, params):
         ) from exc
 
 
-@router.post("/auth/register")
-def register(payload: AuthRequest, db: Session = Depends(get_db)):
+@router.post("/auth/register", response_model=RegisterResponse)
+def register(payload: AuthRequest, db: Session = Depends(get_db)) -> RegisterResponse:
     existing_query = text(
         """
         SELECT u.id
@@ -73,8 +80,8 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/auth/login")
-def login(payload: AuthRequest, db: Session = Depends(get_db)):
+@router.post("/auth/login", response_model=LoginResponse)
+def login(payload: AuthRequest, db: Session = Depends(get_db)) -> LoginResponse:
     query = text(
         """
         SELECT
@@ -108,17 +115,17 @@ def login(payload: AuthRequest, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/me")
-def me(current_user=Depends(get_current_user)):
+@router.get("/me", response_model=MeResponse)
+def me(current_user=Depends(get_current_user)) -> MeResponse:
     return {"user": current_user}
 
 
-@router.patch("/me")
+@router.patch("/me", response_model=UpdateMeResponse)
 def update_me(
     payload: ProfileUpdateRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+ ) -> UpdateMeResponse:
     if payload.email is None and payload.password is None:
         raise ValidationError(
             error="INVALID_REQUEST",

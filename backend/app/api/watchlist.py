@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
@@ -19,6 +19,13 @@ from .analytics import (
 from ..api_utils.auth_utils import get_current_user
 from ..db import get_db
 from ..errors import ConflictError, DependencyError, NotFoundError, ValidationError
+from ..schemas.watchlist_schemas import (
+    WatchlistDeleteResponse,
+    WatchlistListResponse,
+    WatchlistRunListResponse,
+    WatchlistRunResult,
+    WatchlistSingleResponse,
+)
 
 
 router = APIRouter(tags=["watchlists"])
@@ -666,12 +673,15 @@ def _run_watchlist_hotspot_stability(db: Session, watchlist_id: int, watchlist_r
     )
 
 
-@router.get("/watchlists")
+@router.get(
+    "/watchlists",
+    response_model=Union[WatchlistListResponse, WatchlistSingleResponse],
+)
 def read_watchlists(
     watchlist_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> Union[WatchlistListResponse, WatchlistSingleResponse]:
     if watchlist_id is not None:
         row = _get_watchlist_row(db, watchlist_id, current_user["id"])
         return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, watchlist_id))}
@@ -701,12 +711,12 @@ def read_watchlists(
     }
 
 
-@router.post("/watchlists", status_code=status.HTTP_201_CREATED)
+@router.post("/watchlists", status_code=status.HTTP_201_CREATED, response_model=WatchlistSingleResponse)
 def create_watchlist(
     payload: WatchlistCreateRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistSingleResponse:
     name = _normalize_required_text(payload.name, "name")
     _validate_bbox(payload.min_lon, payload.min_lat, payload.max_lon, payload.max_lat)
 
@@ -752,13 +762,13 @@ def create_watchlist(
     return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, row["id"]))}
 
 
-@router.patch("/watchlists/{watchlist_id}")
+@router.patch("/watchlists/{watchlist_id}", response_model=WatchlistSingleResponse)
 def update_watchlist(
     watchlist_id: int,
     payload: WatchlistUpdateRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistSingleResponse:
     update_fields = []
     query_params = {
         "watchlist_id": watchlist_id,
@@ -845,12 +855,12 @@ def update_watchlist(
     return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, watchlist_id))}
 
 
-@router.delete("/watchlists/{watchlist_id}")
+@router.delete("/watchlists/{watchlist_id}", response_model=WatchlistDeleteResponse)
 def delete_watchlist(
     watchlist_id: int,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistDeleteResponse:
     query = text(
         """
         DELETE FROM watchlists
@@ -879,12 +889,12 @@ def delete_watchlist(
     return {"deleted": True, "watchlist_id": row["id"]}
 
 
-@router.post("/watchlists/{watchlist_id}/risk-score/run")
+@router.post("/watchlists/{watchlist_id}/risk-score/run", response_model=WatchlistRunResult)
 def run_watchlist_risk_score(
     watchlist_id: int,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistRunResult:
     watchlist_row = _get_watchlist_row(db, watchlist_id, current_user["id"])
     preference = _require_watchlist_preference(db, watchlist_id)
     try:
@@ -893,14 +903,14 @@ def run_watchlist_risk_score(
         return _analytics_error_response(exc)
 
 
-@router.get("/watchlists/{watchlist_id}/risk-score/results")
+@router.get("/watchlists/{watchlist_id}/risk-score/results", response_model=WatchlistRunListResponse)
 def read_watchlist_risk_score_results(
     watchlist_id: int,
     run_id: Optional[int] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistRunListResponse:
     _get_watchlist_row(db, watchlist_id, current_user["id"])
     return _read_watchlist_results(
         db,
@@ -911,12 +921,12 @@ def read_watchlist_risk_score_results(
     )
 
 
-@router.post("/watchlists/{watchlist_id}/risk-forecast/run")
+@router.post("/watchlists/{watchlist_id}/risk-forecast/run", response_model=WatchlistRunResult)
 def run_watchlist_risk_forecast(
     watchlist_id: int,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistRunResult:
     watchlist_row = _get_watchlist_row(db, watchlist_id, current_user["id"])
     preference = _require_watchlist_preference(db, watchlist_id)
     try:
@@ -925,14 +935,14 @@ def run_watchlist_risk_forecast(
         return _analytics_error_response(exc)
 
 
-@router.get("/watchlists/{watchlist_id}/risk-forecast/results")
+@router.get("/watchlists/{watchlist_id}/risk-forecast/results", response_model=WatchlistRunListResponse)
 def read_watchlist_risk_forecast_results(
     watchlist_id: int,
     run_id: Optional[int] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistRunListResponse:
     _get_watchlist_row(db, watchlist_id, current_user["id"])
     return _read_watchlist_results(
         db,
@@ -943,12 +953,12 @@ def read_watchlist_risk_forecast_results(
     )
 
 
-@router.post("/watchlists/{watchlist_id}/hotspot-stability/run")
+@router.post("/watchlists/{watchlist_id}/hotspot-stability/run", response_model=WatchlistRunResult)
 def run_watchlist_hotspot_stability(
     watchlist_id: int,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistRunResult:
     watchlist_row = _get_watchlist_row(db, watchlist_id, current_user["id"])
     preference = _require_watchlist_preference(db, watchlist_id)
     try:
@@ -957,14 +967,14 @@ def run_watchlist_hotspot_stability(
         return _analytics_error_response(exc)
 
 
-@router.get("/watchlists/{watchlist_id}/hotspot-stability/results")
+@router.get("/watchlists/{watchlist_id}/hotspot-stability/results", response_model=WatchlistRunListResponse)
 def read_watchlist_hotspot_stability_results(
     watchlist_id: int,
     run_id: Optional[int] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> WatchlistRunListResponse:
     _get_watchlist_row(db, watchlist_id, current_user["id"])
     return _read_watchlist_results(
         db,

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..errors import DependencyError
+from ..schemas.lsoa_schemas import LsoaCategoriesResponse
 
 
 router = APIRouter(tags=["lsoa"])
@@ -20,8 +21,8 @@ def _execute(db, query, params):
         ) from exc
 
 
-@router.get("/lsoa/categories")
-def get_lsoa_categories(db: Session = Depends(get_db)):
+@router.get("/lsoa/categories", response_model=LsoaCategoriesResponse)
+def get_lsoa_categories(db: Session = Depends(get_db)) -> LsoaCategoriesResponse:
     query = text(
         """
         SELECT

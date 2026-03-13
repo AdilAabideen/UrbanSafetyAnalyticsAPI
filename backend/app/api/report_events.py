@@ -19,13 +19,20 @@ from ..api_utils.report_events_db_utils import (
     moderate_report,
 )
 from ..db import get_db
-from ..schemas.report_event_schemas import ReportedEventCreateRequest, ReportedEventModerationRequest
+from ..schemas.report_event_schemas import (
+    AdminReportedEventsResponse,
+    MyReportedEventsResponse,
+    ReportedEventCreateRequest,
+    ReportedEventModerationRequest,
+    SingleReportedEventResponse,
+    UserEventsResponse,
+)
 
 
 router = APIRouter(tags=["reported-events"])
 
 
-@router.post("/reported-events", status_code=status.HTTP_201_CREATED)
+@router.post("/reported-events", status_code=status.HTTP_201_CREATED, response_model=SingleReportedEventResponse)
 def create_reported_event(
     payload: ReportedEventCreateRequest,
     current_user=Depends(get_optional_current_user),
@@ -34,7 +41,7 @@ def create_reported_event(
     return {"report": create_report_record(db, payload, current_user)}
 
 
-@router.get("/reported-events/mine")
+@router.get("/reported-events/mine", response_model=MyReportedEventsResponse)
 def read_my_reported_events(
     status_value: Optional[str] = Depends(status_query),
     event_kind: Optional[str] = Depends(event_kind_query),
@@ -46,7 +53,7 @@ def read_my_reported_events(
     return list_own_reports(db, current_user["id"], status_value, event_kind, limit, cursor)
 
 
-@router.get("/admin/reported-events")
+@router.get("/admin/reported-events", response_model=AdminReportedEventsResponse)
 def read_admin_reported_events(
     status_value: Optional[str] = Depends(status_query),
     event_kind: Optional[str] = Depends(event_kind_query),
@@ -71,7 +78,10 @@ def read_admin_reported_events(
     )
 
 
-@router.patch("/admin/reported-events/{report_id}/moderation")
+@router.patch(
+    "/admin/reported-events/{report_id}/moderation",
+    response_model=SingleReportedEventResponse,
+)
 def moderate_reported_event(
     report_id: int,
     payload: ReportedEventModerationRequest,
@@ -82,7 +92,7 @@ def moderate_reported_event(
     return {"report": moderate_report(db, report_id, current_user["id"], payload)}
 
 
-@router.get("/user-events")
+@router.get("/user-events", response_model=UserEventsResponse)
 def read_user_event_features(
     status_value: Optional[str] = Depends(status_query),
     event_kind: Optional[str] = Depends(event_kind_query),

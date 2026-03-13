@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -15,3 +16,29 @@ class ProfileUpdateRequest(BaseModel):
 
     email: Optional[str] = None
     password: Optional[str] = Field(default=None, min_length=8)
+
+
+class UserPayload(BaseModel):
+    id: int
+    email: str
+    is_admin: bool
+    created_at: datetime
+
+
+class RegisterResponse(BaseModel):
+    user: UserPayload
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserPayload
+
+
+class MeResponse(BaseModel):
+    user: UserPayload
+
+
+class UpdateMeResponse(BaseModel):
+    user: UserPayload
+

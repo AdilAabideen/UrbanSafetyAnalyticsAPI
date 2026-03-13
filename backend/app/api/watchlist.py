@@ -92,6 +92,50 @@ def _normalize_crime_types(values):
     return normalized
 
 
+def _normalize_watchlist_mode(value, *, error_context: str):
+    normalized = _normalize_required_text(value, "travel_mode").lower()
+    aliases = {
+        "walk": "walk",
+        "walking": "walk",
+        "foot": "walk",
+        "pedestrian": "walk",
+        "drive": "drive",
+        "driving": "drive",
+        "car": "drive",
+        "vehicle": "drive",
+    }
+    canonical = aliases.get(normalized)
+    if canonical is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported watchlist travel_mode '{value}' for {error_context}. Use walk or drive.",
+        )
+    return canonical
+
+
+def _serialize_watchlist_mode(value):
+    normalized = (value or "").strip().lower()
+    aliases = {
+        "walk": "walk",
+        "walking": "walk",
+        "foot": "walk",
+        "pedestrian": "walk",
+        "drive": "drive",
+        "driving": "drive",
+        "car": "drive",
+        "vehicle": "drive",
+    }
+    return aliases.get(normalized, value)
+
+
+def _validate_watchlist_collision_mode(mode, include_collisions):
+    if include_collisions and mode != "drive":
+        raise HTTPException(
+            status_code=400,
+            detail="include_collisions is only supported when travel_mode is drive",
+        )
+
+
 def _watchlist_to_dict(row, preferences):
     return {
         "id": row["id"],
@@ -112,7 +156,7 @@ def _preference_to_dict(row):
         "watchlist_id": row["watchlist_id"],
         "window_months": row["window_months"],
         "crime_types": list(row["crime_types"] or []),
-        "travel_mode": row["travel_mode"],
+        "travel_mode": _serialize_watchlist_mode(row["travel_mode"]),
         "include_collisions": bool(row["include_collisions"]),
         "baseline_months": int(row["baseline_months"]),
         "hotspot_k": int(row["hotspot_k"]),
@@ -191,7 +235,9 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
         {"watchlist_id": watchlist_id, "user_id": user_id},
     )
 
-    travel_mode = _normalize_required_text(preference.travel_mode, "travel_mode")
+    travel_mode = _normalize_watchlist_mode(preference.travel_mode, error_context="watchlist preference")
+    include_collisions = bool(preference.include_collisions)
+    _validate_watchlist_collision_mode(travel_mode, include_collisions)
     query = text(
         """
         INSERT INTO watchlist_preferences (
@@ -246,7 +292,7 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
             "window_months": preference.window_months,
             "crime_types": _normalize_crime_types(preference.crime_types),
             "travel_mode": travel_mode,
-            "include_collisions": preference.include_collisions,
+            "include_collisions": include_collisions,
             "baseline_months": preference.baseline_months,
             "hotspot_k": preference.hotspot_k,
             "include_hotspot_stability": preference.include_hotspot_stability,
@@ -368,16 +414,81 @@ def _wrap_watchlist_run_response(
     }
 
 
+def _coerce_json_value(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _watchlist_run_to_dict(row):
+    return {
+        "id": row["id"],
+        "watchlist_id": row["watchlist_id"],
+        "report_type": row["report_type"],
+        "request": _coerce_json_value(row["request_params_json"]),
+        "result": _coerce_json_value(row["payload_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+def _read_watchlist_results(
+    db: Session,
+    *,
+    watchlist_id: int,
+    report_type: str,
+    run_id: Optional[int],
+    limit: int,
+):
+    query = text(
+        """
+        SELECT
+            war.id,
+            war.watchlist_id,
+            war.report_type,
+            war.request_params_json,
+            war.payload_json,
+            war.created_at
+        FROM watchlist_analytics_runs war
+        WHERE war.watchlist_id = :watchlist_id
+          AND war.report_type = :report_type
+          AND (:run_id IS NULL OR war.id = :run_id)
+        ORDER BY war.created_at DESC, war.id DESC
+        LIMIT :limit
+        """
+    )
+    rows = _execute(
+        db,
+        query,
+        {
+            "watchlist_id": watchlist_id,
+            "report_type": report_type,
+            "run_id": run_id,
+            "limit": limit,
+        },
+    ).mappings().all()
+
+    items = [_watchlist_run_to_dict(row) for row in rows]
+    if run_id is not None and not items:
+        raise HTTPException(status_code=404, detail="Watchlist result not found")
+    return {"items": items}
+
+
 def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, preference):
     latest_complete_month = _latest_complete_month()
     from_date = _shift_month(latest_complete_month, -(int(preference["window_months"]) - 1))
+    mode = _normalize_watchlist_mode(preference["travel_mode"], error_context="watchlist analytics")
+    include_collisions = bool(preference["include_collisions"])
+    _validate_watchlist_collision_mode(mode, include_collisions)
     request_params = {
         "from": _month_label(from_date),
         "to": _month_label(latest_complete_month),
         "bbox": _watchlist_bbox(watchlist_row),
         "crime_types": _normalize_crime_types(preference.get("crime_types") or []),
-        "mode": preference["travel_mode"],
-        "includeCollisions": bool(preference["include_collisions"]),
+        "mode": mode,
+        "includeCollisions": include_collisions,
         "weights": {
             "w_crime": float(preference["weight_crime"]),
             "w_collision": float(preference["weight_collision"]),
@@ -395,8 +506,8 @@ def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, pre
             max_lon=watchlist_row["max_lon"],
             max_lat=watchlist_row["max_lat"],
             crime_type=crime_type,
-            include_collisions=bool(preference["include_collisions"]),
-            mode=preference["travel_mode"],
+            include_collisions=include_collisions,
+            mode=mode,
             w_crime=float(preference["weight_crime"]),
             w_collision=float(preference["weight_collision"]),
         )
@@ -424,13 +535,16 @@ def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, 
 
     latest_complete_month = _latest_complete_month()
     target_month = _shift_month(latest_complete_month, 1)
+    mode = _normalize_watchlist_mode(preference["travel_mode"], error_context="watchlist analytics")
+    include_collisions = bool(preference["include_collisions"])
+    _validate_watchlist_collision_mode(mode, include_collisions)
     request_params = {
         "target": _month_label(target_month),
         "baselineMonths": int(preference["baseline_months"]),
         "bbox": _watchlist_bbox(watchlist_row),
         "crime_types": _normalize_crime_types(preference.get("crime_types") or []),
-        "mode": preference["travel_mode"],
-        "includeCollisions": bool(preference["include_collisions"]),
+        "mode": mode,
+        "includeCollisions": include_collisions,
         "returnRiskProjection": True,
         "weights": {
             "w_crime": float(preference["weight_crime"]),
@@ -451,8 +565,8 @@ def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, 
             baseline_months=int(preference["baseline_months"]),
             method="poisson_mean",
             return_risk_projection=True,
-            include_collisions=bool(preference["include_collisions"]),
-            mode=preference["travel_mode"],
+            include_collisions=include_collisions,
+            mode=mode,
             w_crime=float(preference["weight_crime"]),
             w_collision=float(preference["weight_collision"]),
         )
@@ -732,6 +846,24 @@ def run_watchlist_risk_score(
         return _analytics_error_response(exc)
 
 
+@router.get("/watchlists/{watchlist_id}/risk-score/results")
+def read_watchlist_risk_score_results(
+    watchlist_id: int,
+    run_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_watchlist_row(db, watchlist_id, current_user["id"])
+    return _read_watchlist_results(
+        db,
+        watchlist_id=watchlist_id,
+        report_type="risk_score",
+        run_id=run_id,
+        limit=limit,
+    )
+
+
 @router.post("/watchlists/{watchlist_id}/risk-forecast/run")
 def run_watchlist_risk_forecast(
     watchlist_id: int,
@@ -746,6 +878,24 @@ def run_watchlist_risk_forecast(
         return _analytics_error_response(exc)
 
 
+@router.get("/watchlists/{watchlist_id}/risk-forecast/results")
+def read_watchlist_risk_forecast_results(
+    watchlist_id: int,
+    run_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_watchlist_row(db, watchlist_id, current_user["id"])
+    return _read_watchlist_results(
+        db,
+        watchlist_id=watchlist_id,
+        report_type="risk_forecast",
+        run_id=run_id,
+        limit=limit,
+    )
+
+
 @router.post("/watchlists/{watchlist_id}/hotspot-stability/run")
 def run_watchlist_hotspot_stability(
     watchlist_id: int,
@@ -758,3 +908,21 @@ def run_watchlist_hotspot_stability(
         return _run_watchlist_hotspot_stability(db, watchlist_id, watchlist_row, preference)
     except AnalyticsAPIError as exc:
         return _analytics_error_response(exc)
+
+
+@router.get("/watchlists/{watchlist_id}/hotspot-stability/results")
+def read_watchlist_hotspot_stability_results(
+    watchlist_id: int,
+    run_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_watchlist_row(db, watchlist_id, current_user["id"])
+    return _read_watchlist_results(
+        db,
+        watchlist_id=watchlist_id,
+        report_type="hotspot_stability",
+        run_id=run_id,
+        limit=limit,
+    )

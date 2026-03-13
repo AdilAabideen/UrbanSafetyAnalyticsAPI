@@ -129,12 +129,24 @@ This file summarizes the current live backend endpoint surface.
   Run risk score for a watchlist, return the result, and store it against that watchlist.
   Protected: yes.
 
+- `GET /watchlists/{watchlist_id}/risk-score/results`
+  List stored risk score runs for a watchlist, or fetch one by `run_id`.
+  Protected: yes.
+
 - `POST /watchlists/{watchlist_id}/risk-forecast/run`
   Run forecast for a watchlist, return the result, and store it against that watchlist.
   Protected: yes.
 
+- `GET /watchlists/{watchlist_id}/risk-forecast/results`
+  List stored forecast runs for a watchlist, or fetch one by `run_id`.
+  Protected: yes.
+
 - `POST /watchlists/{watchlist_id}/hotspot-stability/run`
   Run hotspot stability for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
+- `GET /watchlists/{watchlist_id}/hotspot-stability/results`
+  List stored hotspot stability runs for a watchlist, or fetch one by `run_id`.
   Protected: yes.
 
 ## Current Route Count
@@ -148,6 +160,6 @@ This file summarizes the current live backend endpoint surface.
 - Roads analytics: `4`
 - Road tiles: `2`
 - LSOA: `1`
-- Watchlists: `7`
+- Watchlists: `10`
 
-Total current endpoints: `33`
+Total current endpoints: `36`

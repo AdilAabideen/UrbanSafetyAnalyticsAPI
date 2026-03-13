@@ -615,3 +615,43 @@ def moderate_report(db: Session, report_id: int, moderator_id: int, payload: Rep
         raise HTTPException(status_code=404, detail="Reported event not found")
     db.commit()
     return get_report_by_id(db, report_id, include_admin_fields=True)
+
+def _validate_optional_bbox(
+    min_lon: Optional[float],
+    min_lat: Optional[float],
+    max_lon: Optional[float],
+    max_lat: Optional[float],
+):
+    values = (min_lon, min_lat, max_lon, max_lat)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise HTTPException(status_code=400, detail="minLon, minLat, maxLon, and maxLat must all be provided together")
+
+    _validate_coordinates(min_lon, min_lat)
+    _validate_coordinates(max_lon, max_lat)
+    if min_lon >= max_lon:
+        raise HTTPException(status_code=400, detail="minLon must be less than maxLon")
+    if min_lat >= max_lat:
+        raise HTTPException(status_code=400, detail="minLat must be less than maxLat")
+
+    return {
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
+    }
+
+
+def _report_to_feature(row):
+    properties = _report_to_dict(row, include_admin_fields=False)
+    longitude = properties.pop("longitude")
+    latitude = properties.pop("latitude")
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [longitude, latitude],
+        },
+        "properties": properties,
+    }

@@ -226,7 +226,7 @@ def test_watchlist_risk_forecast_run_persists_against_watchlist(monkeypatch):
                     "watchlist_id": 7,
                     "window_months": 6,
                     "crime_types": ["burglary"],
-                    "travel_mode": "walk",
+                    "travel_mode": "walking",
                     "include_collisions": False,
                     "baseline_months": 6,
                     "hotspot_k": 20,
@@ -262,6 +262,7 @@ def test_watchlist_risk_forecast_run_persists_against_watchlist(monkeypatch):
     assert payload["report_type"] == "risk_forecast"
     assert payload["watchlist_run_id"] == 71
     assert payload["request"]["target"] == "2025-07"
+    assert payload["request"]["mode"] == "walk"
     assert payload["result"]["results_by_crime_type"]["burglary"]["forecast"]["expected_count"] == 10
 
 
@@ -288,3 +289,99 @@ def test_watchlist_hotspot_run_requires_preference():
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Watchlist preference is required to run analytics"
+
+
+def test_watchlist_risk_forecast_results_returns_stored_runs():
+    handlers = {
+        "FROM watchlists w": {
+            "rows": [
+                {
+                    "id": 7,
+                    "user_id": 1,
+                    "name": "City Centre",
+                    "min_lon": -1.6,
+                    "min_lat": 53.78,
+                    "max_lon": -1.52,
+                    "max_lat": 53.82,
+                    "created_at": "2026-03-13T12:00:00Z",
+                }
+            ],
+        },
+        "FROM watchlist_analytics_runs war": {
+            "rows": [
+                {
+                    "id": 71,
+                    "watchlist_id": 7,
+                    "report_type": "risk_forecast",
+                    "request_params_json": {
+                        "target": "2025-07",
+                        "baselineMonths": 6,
+                    },
+                    "payload_json": {
+                        "results_by_crime_type": {
+                            "burglary": {
+                                "forecast": {"expected_count": 10}
+                            }
+                        }
+                    },
+                    "created_at": "2026-03-13T12:03:00Z",
+                }
+            ],
+        },
+    }
+
+    response = _run_with_auth_db(
+        handlers,
+        "GET",
+        "/watchlists/7/risk-forecast/results?run_id=71",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["id"] == 71
+    assert payload["items"][0]["request"]["target"] == "2025-07"
+    assert payload["items"][0]["result"]["results_by_crime_type"]["burglary"]["forecast"]["expected_count"] == 10
+
+
+def test_watchlist_risk_forecast_rejects_collisions_without_drive():
+    handlers = {
+        "FROM watchlists w": {
+            "rows": [
+                {
+                    "id": 7,
+                    "user_id": 1,
+                    "name": "City Centre",
+                    "min_lon": -1.6,
+                    "min_lat": 53.78,
+                    "max_lon": -1.52,
+                    "max_lat": 53.82,
+                    "created_at": "2026-03-13T12:00:00Z",
+                }
+            ],
+        },
+        "FROM watchlist_preferences wp": {
+            "rows": [
+                {
+                    "id": 9,
+                    "watchlist_id": 7,
+                    "window_months": 6,
+                    "crime_types": [],
+                    "travel_mode": "walking",
+                    "include_collisions": True,
+                    "baseline_months": 6,
+                    "hotspot_k": 20,
+                    "include_hotspot_stability": True,
+                    "include_forecast": True,
+                    "weight_crime": 1.0,
+                    "weight_collision": 0.5,
+                    "created_at": "2026-03-13T12:00:00Z",
+                }
+            ],
+        },
+    }
+
+    response = _run_with_auth_db(handlers, "POST", "/watchlists/7/risk-forecast/run")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "include_collisions is only supported when travel_mode is drive"

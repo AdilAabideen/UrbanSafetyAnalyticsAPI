@@ -19,6 +19,10 @@ Important implementation note:
   - `POST /watchlists/{watchlist_id}/risk-score/run`
   - `POST /watchlists/{watchlist_id}/risk-forecast/run`
   - `POST /watchlists/{watchlist_id}/hotspot-stability/run`
+- stored watchlist runs can be fetched through:
+  - `GET /watchlists/{watchlist_id}/risk-score/results`
+  - `GET /watchlists/{watchlist_id}/risk-forecast/results`
+  - `GET /watchlists/{watchlist_id}/hotspot-stability/results`
 
 ## Shared Conventions
 

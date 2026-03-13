@@ -22,6 +22,30 @@ const NAV_ITEMS = [
       </>
     ),
   },
+  {
+    id: "roads",
+    label: "Roads Page",
+    icon: (
+      <>
+        <path d="M12 3v18" />
+        <path d="M8 6h8" />
+        <path d="M9 12h6" />
+        <path d="M8 18h8" />
+        <path d="M5 3h14" />
+        <path d="M5 21h14" />
+      </>
+    ),
+  },
+  {
+    id: "watchlist",
+    label: "Watchlist",
+    icon: (
+      <>
+        <path d="M12 3l7 4v5c0 5-3.5 8.5-7 9-3.5-.5-7-4-7-9V7l7-4z" />
+        <path d="M9.5 12l1.8 1.8L14.8 10" />
+      </>
+    ),
+  },
 ];
 
 function Sidebar({ activePage, onSelectPage }) {

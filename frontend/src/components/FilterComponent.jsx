@@ -11,6 +11,14 @@ function FilterComponent({
   onChange,
   onClear,
   layout = "overlay",
+  title = "Crime Filters",
+  visibleLabel = "Visible crimes",
+  categorySectionTitle = "Crime Filters",
+  crimeTypeLabel = "Crime Type",
+  outcomeLabel = "Last Outcome Category",
+  lsoaLabel = "LSOA Name",
+  lsoaPlaceholder = "Search LSOA",
+  lsoaEmptyMessage = "No LSOA names available for this view yet.",
 }) {
   const hasActiveFilters = Object.values(filters).some(Boolean);
   const isPanelLayout = layout === "panel";
@@ -22,9 +30,9 @@ function FilterComponent({
     <div className={containerClassName}>
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold tracking-wide text-cyan-50">Crime Filters</h2>
+          <h2 className="text-xl font-semibold tracking-wide text-cyan-50">{title}</h2>
           <p className="mt-1 text-xs text-cyan-100/60">
-            Visible crimes: {visibleCrimeCount} | Mode: {mode}
+            {visibleLabel}: {visibleCrimeCount} | Mode: {mode}
           </p>
         </div>
 
@@ -53,28 +61,28 @@ function FilterComponent({
 
       <section className="flex flex-col gap-3 rounded-lg bg-cyan-100/5 p-3">
         <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
-          Crime Filters
+          {categorySectionTitle}
         </h3>
         <SearchSelectField
-          label="Crime Type"
+          label={crimeTypeLabel}
           value={filters.crimeType}
           options={crimeTypeOptions}
           placeholder="All crime types"
           onChange={(value) => onChange("crimeType", value)}
         />
         <SearchSelectField
-          label="Last Outcome Category"
+          label={outcomeLabel}
           value={filters.outcomeCategory}
           options={outcomeOptions}
           placeholder="All outcomes"
           onChange={(value) => onChange("outcomeCategory", value)}
         />
         <SearchSelectField
-          label="LSOA Name"
+          label={lsoaLabel}
           value={filters.lsoaName}
           options={lsoaOptions}
-          placeholder="Search LSOA"
-          emptyMessage="No LSOA names available for this map view yet."
+          placeholder={lsoaPlaceholder}
+          emptyMessage={lsoaEmptyMessage}
           allowCustomValue
           onChange={(value) => onChange("lsoaName", value)}
         />

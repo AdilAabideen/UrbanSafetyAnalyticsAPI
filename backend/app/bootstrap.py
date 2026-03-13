@@ -38,11 +38,6 @@ DDL_STATEMENTS = [
         travel_mode TEXT NOT NULL,
         include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
         baseline_months INTEGER NOT NULL DEFAULT 6,
-        hotspot_k INTEGER NOT NULL DEFAULT 20,
-        include_hotspot_stability BOOLEAN NOT NULL DEFAULT TRUE,
-        include_forecast BOOLEAN NOT NULL DEFAULT TRUE,
-        weight_crime DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-        weight_collision DOUBLE PRECISION NOT NULL DEFAULT 0.0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
@@ -209,26 +204,11 @@ DDL_STATEMENTS = [
     ALTER TABLE watchlist_preferences
     ADD COLUMN IF NOT EXISTS baseline_months INTEGER NOT NULL DEFAULT 6
     """,
-    """
-    ALTER TABLE watchlist_preferences
-    ADD COLUMN IF NOT EXISTS hotspot_k INTEGER NOT NULL DEFAULT 20
-    """,
-    """
-    ALTER TABLE watchlist_preferences
-    ADD COLUMN IF NOT EXISTS include_hotspot_stability BOOLEAN NOT NULL DEFAULT TRUE
-    """,
-    """
-    ALTER TABLE watchlist_preferences
-    ADD COLUMN IF NOT EXISTS include_forecast BOOLEAN NOT NULL DEFAULT TRUE
-    """,
-    """
-    ALTER TABLE watchlist_preferences
-    ADD COLUMN IF NOT EXISTS weight_crime DOUBLE PRECISION NOT NULL DEFAULT 1.0
-    """,
-    """
-    ALTER TABLE watchlist_preferences
-    ADD COLUMN IF NOT EXISTS weight_collision DOUBLE PRECISION NOT NULL DEFAULT 0.0
-    """,
+    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS hotspot_k",
+    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS include_hotspot_stability",
+    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS include_forecast",
+    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS weight_crime",
+    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS weight_collision",
     """
     DO $$
     BEGIN

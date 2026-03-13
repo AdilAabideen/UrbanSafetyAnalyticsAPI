@@ -22,6 +22,12 @@ from ..db import get_db
 
 router = APIRouter(tags=["watchlists"])
 
+FIXED_HOTSPOT_K = 20
+FIXED_INCLUDE_HOTSPOT_STABILITY = True
+FIXED_INCLUDE_FORECAST = True
+FIXED_WEIGHT_CRIME = 1.0
+FIXED_WEIGHT_COLLISION = 0.8
+
 
 class WatchlistPreferencePayload(BaseModel):
     window_months: int = Field(..., ge=1)
@@ -29,11 +35,6 @@ class WatchlistPreferencePayload(BaseModel):
     travel_mode: str = Field(..., min_length=1)
     include_collisions: bool = False
     baseline_months: int = Field(default=6, ge=3, le=24)
-    hotspot_k: int = Field(default=20, ge=5, le=200)
-    include_hotspot_stability: bool = True
-    include_forecast: bool = True
-    weight_crime: float = 1.0
-    weight_collision: float = 0.0
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -159,11 +160,11 @@ def _preference_to_dict(row):
         "travel_mode": _serialize_watchlist_mode(row["travel_mode"]),
         "include_collisions": bool(row["include_collisions"]),
         "baseline_months": int(row["baseline_months"]),
-        "hotspot_k": int(row["hotspot_k"]),
-        "include_hotspot_stability": bool(row["include_hotspot_stability"]),
-        "include_forecast": bool(row["include_forecast"]),
-        "weight_crime": float(row["weight_crime"]),
-        "weight_collision": float(row["weight_collision"]),
+        "hotspot_k": FIXED_HOTSPOT_K,
+        "include_hotspot_stability": FIXED_INCLUDE_HOTSPOT_STABILITY,
+        "include_forecast": FIXED_INCLUDE_FORECAST,
+        "weight_crime": FIXED_WEIGHT_CRIME,
+        "weight_collision": FIXED_WEIGHT_COLLISION,
         "created_at": row["created_at"],
     }
 
@@ -202,11 +203,6 @@ def _get_watchlist_preference(db, watchlist_id):
             wp.travel_mode,
             wp.include_collisions,
             wp.baseline_months,
-            wp.hotspot_k,
-            wp.include_hotspot_stability,
-            wp.include_forecast,
-            wp.weight_crime,
-            wp.weight_collision,
             wp.created_at
         FROM watchlist_preferences wp
         WHERE wp.watchlist_id = :watchlist_id
@@ -246,12 +242,7 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
             crime_types,
             travel_mode,
             include_collisions,
-            baseline_months,
-            hotspot_k,
-            include_hotspot_stability,
-            include_forecast,
-            weight_crime,
-            weight_collision
+            baseline_months
         )
         SELECT
             w.id,
@@ -259,12 +250,7 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
             :crime_types,
             :travel_mode,
             :include_collisions,
-            :baseline_months,
-            :hotspot_k,
-            :include_hotspot_stability,
-            :include_forecast,
-            :weight_crime,
-            :weight_collision
+            :baseline_months
         FROM watchlists w
         WHERE w.id = :watchlist_id AND w.user_id = :user_id
         RETURNING
@@ -275,11 +261,6 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
             travel_mode,
             include_collisions,
             baseline_months,
-            hotspot_k,
-            include_hotspot_stability,
-            include_forecast,
-            weight_crime,
-            weight_collision,
             created_at
         """
     )
@@ -294,11 +275,6 @@ def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
             "travel_mode": travel_mode,
             "include_collisions": include_collisions,
             "baseline_months": preference.baseline_months,
-            "hotspot_k": preference.hotspot_k,
-            "include_hotspot_stability": preference.include_hotspot_stability,
-            "include_forecast": preference.include_forecast,
-            "weight_crime": preference.weight_crime,
-            "weight_collision": preference.weight_collision,
         },
     ).mappings().first()
     if not row:
@@ -323,9 +299,31 @@ def _shift_month(month_date, offset: int):
     return month_date.replace(year=year, month=month, day=1)
 
 
-def _latest_complete_month():
+def _latest_complete_month(db: Session, include_collisions: bool = False):
     current_month = datetime.now(timezone.utc).date().replace(day=1)
-    return _shift_month(current_month, -1)
+    calendar_latest = _shift_month(current_month, -1)
+
+    crime_row = _execute(db, text("SELECT MAX(month) AS max_month FROM crime_events"), {}).mappings().first() or {}
+    crime_max_month = crime_row.get("max_month")
+    if crime_max_month is None:
+        raise HTTPException(status_code=400, detail="Crime data is unavailable")
+
+    dataset_latest = crime_max_month
+    if include_collisions:
+        collision_row = _execute(
+            db,
+            text("SELECT MAX(month) AS max_month FROM collision_events"),
+            {},
+        ).mappings().first() or {}
+        collision_max_month = collision_row.get("max_month")
+        if collision_max_month is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Collision data is unavailable while include_collisions is enabled",
+            )
+        dataset_latest = min(dataset_latest, collision_max_month)
+
+    return min(calendar_latest, dataset_latest)
 
 
 def _watchlist_bbox(row):
@@ -442,8 +440,7 @@ def _read_watchlist_results(
     run_id: Optional[int],
     limit: int,
 ):
-    query = text(
-        """
+    base_select = """
         SELECT
             war.id,
             war.watchlist_id,
@@ -454,21 +451,32 @@ def _read_watchlist_results(
         FROM watchlist_analytics_runs war
         WHERE war.watchlist_id = :watchlist_id
           AND war.report_type = :report_type
-          AND (:run_id IS NULL OR war.id = :run_id)
+    """
+    params = {
+        "watchlist_id": watchlist_id,
+        "report_type": report_type,
+        "limit": limit,
+    }
+    if run_id is not None:
+        query = text(
+            base_select
+            + """
+          AND war.id = :run_id
         ORDER BY war.created_at DESC, war.id DESC
         LIMIT :limit
         """
-    )
-    rows = _execute(
-        db,
-        query,
-        {
-            "watchlist_id": watchlist_id,
-            "report_type": report_type,
-            "run_id": run_id,
-            "limit": limit,
-        },
-    ).mappings().all()
+        )
+        params["run_id"] = run_id
+    else:
+        query = text(
+            base_select
+            + """
+        ORDER BY war.created_at DESC, war.id DESC
+        LIMIT :limit
+        """
+        )
+
+    rows = _execute(db, query, params).mappings().all()
 
     items = [_watchlist_run_to_dict(row) for row in rows]
     if run_id is not None and not items:
@@ -477,11 +485,11 @@ def _read_watchlist_results(
 
 
 def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, preference):
-    latest_complete_month = _latest_complete_month()
-    from_date = _shift_month(latest_complete_month, -(int(preference["window_months"]) - 1))
     mode = _normalize_watchlist_mode(preference["travel_mode"], error_context="watchlist analytics")
     include_collisions = bool(preference["include_collisions"])
     _validate_watchlist_collision_mode(mode, include_collisions)
+    latest_complete_month = _latest_complete_month(db, include_collisions)
+    from_date = _shift_month(latest_complete_month, -(int(preference["window_months"]) - 1))
     request_params = {
         "from": _month_label(from_date),
         "to": _month_label(latest_complete_month),
@@ -490,8 +498,8 @@ def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, pre
         "mode": mode,
         "includeCollisions": include_collisions,
         "weights": {
-            "w_crime": float(preference["weight_crime"]),
-            "w_collision": float(preference["weight_collision"]),
+            "w_crime": FIXED_WEIGHT_CRIME,
+            "w_collision": FIXED_WEIGHT_COLLISION,
         },
     }
     results_by_crime_type = {}
@@ -508,8 +516,8 @@ def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, pre
             crime_type=crime_type,
             include_collisions=include_collisions,
             mode=mode,
-            w_crime=float(preference["weight_crime"]),
-            w_collision=float(preference["weight_collision"]),
+            w_crime=FIXED_WEIGHT_CRIME,
+            w_collision=FIXED_WEIGHT_COLLISION,
         )
 
     result = {"results_by_crime_type": results_by_crime_type}
@@ -530,14 +538,11 @@ def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, pre
 
 
 def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, preference):
-    if not preference["include_forecast"]:
-        raise HTTPException(status_code=400, detail="Forecast runs are disabled for this watchlist")
-
-    latest_complete_month = _latest_complete_month()
-    target_month = _shift_month(latest_complete_month, 1)
     mode = _normalize_watchlist_mode(preference["travel_mode"], error_context="watchlist analytics")
     include_collisions = bool(preference["include_collisions"])
     _validate_watchlist_collision_mode(mode, include_collisions)
+    latest_complete_month = _latest_complete_month(db, include_collisions)
+    target_month = _shift_month(latest_complete_month, 1)
     request_params = {
         "target": _month_label(target_month),
         "baselineMonths": int(preference["baseline_months"]),
@@ -547,8 +552,8 @@ def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, 
         "includeCollisions": include_collisions,
         "returnRiskProjection": True,
         "weights": {
-            "w_crime": float(preference["weight_crime"]),
-            "w_collision": float(preference["weight_collision"]),
+            "w_crime": FIXED_WEIGHT_CRIME,
+            "w_collision": FIXED_WEIGHT_COLLISION,
         },
     }
     results_by_crime_type = {}
@@ -567,8 +572,8 @@ def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, 
             return_risk_projection=True,
             include_collisions=include_collisions,
             mode=mode,
-            w_crime=float(preference["weight_crime"]),
-            w_collision=float(preference["weight_collision"]),
+            w_crime=FIXED_WEIGHT_CRIME,
+            w_collision=FIXED_WEIGHT_COLLISION,
         )
 
     result = {"results_by_crime_type": results_by_crime_type}
@@ -589,17 +594,14 @@ def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, 
 
 
 def _run_watchlist_hotspot_stability(db: Session, watchlist_id: int, watchlist_row, preference):
-    if not preference["include_hotspot_stability"]:
-        raise HTTPException(status_code=400, detail="Hotspot stability runs are disabled for this watchlist")
-
-    latest_complete_month = _latest_complete_month()
+    latest_complete_month = _latest_complete_month(db, include_collisions=False)
     from_date = _shift_month(latest_complete_month, -(int(preference["window_months"]) - 1))
     request_params = {
         "from": _month_label(from_date),
         "to": _month_label(latest_complete_month),
         "bbox": _watchlist_bbox(watchlist_row),
         "crime_types": _normalize_crime_types(preference.get("crime_types") or []),
-        "k": int(preference["hotspot_k"]),
+        "k": FIXED_HOTSPOT_K,
         "includeLists": True,
     }
     results_by_crime_type = {}
@@ -609,7 +611,7 @@ def _run_watchlist_hotspot_stability(db: Session, watchlist_id: int, watchlist_r
             db,
             from_value=request_params["from"],
             to_value=request_params["to"],
-            k=int(preference["hotspot_k"]),
+            k=FIXED_HOTSPOT_K,
             include_lists=True,
             min_lon=watchlist_row["min_lon"],
             min_lat=watchlist_row["min_lat"],

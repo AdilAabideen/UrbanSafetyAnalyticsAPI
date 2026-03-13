@@ -38,11 +38,21 @@ const NAV_ITEMS = [
   },
   {
     id: "watchlist",
-    label: "Watchlist",
+    label: "Create Watchlist",
     icon: (
       <>
         <path d="M12 3l7 4v5c0 5-3.5 8.5-7 9-3.5-.5-7-4-7-9V7l7-4z" />
         <path d="M9.5 12l1.8 1.8L14.8 10" />
+      </>
+    ),
+  },
+  {
+    id: "view-watchlist",
+    label: "View Watchlist",
+    icon: (
+      <>
+        <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+        <circle cx="12" cy="12" r="3" />
       </>
     ),
   },

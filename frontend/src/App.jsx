@@ -3,6 +3,7 @@ import CrimePage from "./components/CrimePage";
 import MapPage from "./components/MapPage";
 import RoadsPage from "./components/RoadsPage";
 import Sidebar from "./components/Sidebar";
+import ViewWatchlistPage from "./components/ViewWatchlistPage";
 import WatchlistPage from "./components/WatchlistPage";
 import { config } from "./config/env";
 
@@ -21,6 +22,8 @@ function App() {
           <RoadsPage docsUrl={docsUrl} />
         ) : activePage === "watchlist" ? (
           <WatchlistPage docsUrl={docsUrl} />
+        ) : activePage === "view-watchlist" ? (
+          <ViewWatchlistPage />
         ) : (
           <MapPage docsUrl={docsUrl} />
         )}

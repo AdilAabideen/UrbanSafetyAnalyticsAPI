@@ -76,6 +76,14 @@ export const roadsService = {
     return fetchJson(`${API_BASE_URL}/roads/${id}`, "Failed to fetch road details", requestOptions);
   },
 
+  async getRoadByIdGeoJson(id, requestOptions = {}) {
+    return fetchJson(
+      `${API_BASE_URL}/roads/${id}/geojson`,
+      "Failed to fetch road GeoJSON",
+      requestOptions,
+    );
+  },
+
   async getRoadAnalyticsMeta(requestOptions = {}) {
     return fetchJson(
       `${API_BASE_URL}/roads/analytics/meta`,

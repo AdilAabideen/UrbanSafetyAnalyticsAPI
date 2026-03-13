@@ -1,23 +1,20 @@
 import { API_BASE_URL } from "../config/env";
-
-async function parseJsonOrThrow(response, fallbackMessage) {
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || fallbackMessage);
-  }
-
-  return response.json();
-}
+import { fetchJson } from "./serviceUtils";
 
 export const generalService = {
-  async getRoot() {
-    const response = await fetch(`${API_BASE_URL}/`);
-    return parseJsonOrThrow(response, "Failed to reach API root");
+  async getRoot(requestOptions = {}) {
+    return fetchJson(`${API_BASE_URL}/`, "Failed to reach API root", requestOptions);
   },
 
-  async getHealth() {
-    const response = await fetch(`${API_BASE_URL}/health`);
-    return parseJsonOrThrow(response, "Health check failed");
+  async getHealth(requestOptions = {}) {
+    return fetchJson(`${API_BASE_URL}/health`, "Health check failed", requestOptions);
+  },
+
+  async getLsoaCategories(requestOptions = {}) {
+    return fetchJson(
+      `${API_BASE_URL}/lsoa/categories`,
+      "Failed to fetch LSOA categories",
+      requestOptions,
+    );
   },
 };
-

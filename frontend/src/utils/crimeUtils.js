@@ -119,3 +119,41 @@ export function toSearchOptions(values, selectedValue = "") {
 
   return uniqueValues.map((value) => ({ value, label: value }));
 }
+
+export function normalizeLsoaCategories(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : [];
+
+  return items
+    .map((item) => {
+      const lsoaName = getCrimeProperty(item, "lsoaName", "lsoa_name", "LSOA name");
+      const lsoaCode = getCrimeProperty(item, "lsoaCode", "lsoa_code", "LSOA code");
+      const minLon = Number(item?.minLon);
+      const minLat = Number(item?.minLat);
+      const maxLon = Number(item?.maxLon);
+      const maxLat = Number(item?.maxLat);
+      const hasBbox = [minLon, minLat, maxLon, maxLat].every((value) => Number.isFinite(value));
+
+      return {
+        lsoaCode,
+        lsoaName,
+        count: Number(item?.count) || 0,
+        bbox: hasBbox
+          ? {
+              minLon,
+              minLat,
+              maxLon,
+              maxLat,
+            }
+          : null,
+      };
+    })
+    .filter((item) => item.lsoaName);
+}
+
+export function findLsoaCategory(categories, lsoaName) {
+  if (!lsoaName) {
+    return null;
+  }
+
+  return categories.find((item) => item.lsoaName === lsoaName) || null;
+}

@@ -106,17 +106,17 @@ function WatchlistPage({ docsUrl }) {
       />
 
       <div className="min-h-0 flex-1 p-4">
-        <div className="grid grid-cols-2 grid-rows-1 h-full min-h-0 overflow-hidden rounded-[26px] border border-white/5 bg-[#030b0e] ">
-          <section className="flex h-full min-h-0 flex-col border-r-2 border-r-white/5 bg-[#001017]">
-            <div className="border-b border-white/5 px-5 py-2">
+        <div className="grid grid-cols-2 grid-rows-1 h-full min-h-0 overflow-hidden rounded-[26px] border border-white/5  ">
+          <section className="flex h-full min-h-0 flex-col border-r-2 border-r-white/5 ">
+            <div className="border-b border-white/5 px-5 py-4">
               <p className="text-[11px] uppercase tracking-[0.35em] text-cyan-100/40">
                 Watchlist Setup
               </p>
               <h2 className="mt-2 text-xl font-semibold text-cyan-50">Input Fields</h2>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-0 mt-[-15px]">
-              <div className="space-y-3 rounded-[24px]  bg-[#000c12]/70 p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-0 ">
+              <div className="space-y-3 rounded-[24px]  p-4">
                 <WatchlistField
                   label="ID"
                   value={watchlistForm.id}
@@ -522,14 +522,14 @@ function WatchlistPolygonMap({
 function WatchlistField({ label, value, onChange, placeholder, type = "text", inputMode }) {
   return (
     <label className="flex flex-col gap-2">
-      <span className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/38 text-white">{label}</span>
+      <span className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">{label}</span>
       <input
         type={type}
         value={value}
         inputMode={inputMode}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="h-11 rounded-[6px] border border-white/10 bg-white px-4 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-cyan-300"
+        className="rounded-md border border-cyan-200/10 bg-[#071316]/70 px-3 py-2 text-sm font-medium text-cyan-50 outline-none transition-colors placeholder:text-cyan-100/30 focus:border-cyan-400/40"
       />
     </label>
   );

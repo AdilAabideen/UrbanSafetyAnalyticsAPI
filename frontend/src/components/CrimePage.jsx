@@ -10,11 +10,13 @@ import {
   createMonthOptionsFromRange,
 } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
-import { crimeService } from "../services";
+import { crimeService, generalService } from "../services";
 import {
   DEFAULT_CRIME_FILTERS,
   WEST_YORKSHIRE_BBOX,
+  findLsoaCategory,
   normalizeCrimeFeature,
+  normalizeLsoaCategories,
   toSearchOptions,
 } from "../utils/crimeUtils";
 
@@ -40,7 +42,7 @@ function CrimePage({ docsUrl }) {
   const [timeseriesData, setTimeseriesData] = useState({ series: [], total: 0 });
   const [typeBreakdownData, setTypeBreakdownData] = useState({ items: [], otherCount: 0 });
   const [outcomeBreakdownData, setOutcomeBreakdownData] = useState({ items: [], otherCount: 0 });
-  const [lsoaOptions, setLsoaOptions] = useState([]);
+  const [lsoaCategories, setLsoaCategories] = useState([]);
   const [selectedCrime, setSelectedCrime] = useState(null);
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [loadingIncidents, setLoadingIncidents] = useState(true);
@@ -57,22 +59,35 @@ function CrimePage({ docsUrl }) {
       setLoadingMeta(true);
 
       try {
-        const payload = await crimeService.getAnalyticsMeta({ signal: controller.signal });
+        const [metaResult, lsoaResult] = await Promise.allSettled([
+          crimeService.getAnalyticsMeta({ signal: controller.signal }),
+          generalService.getLsoaCategories({ signal: controller.signal }),
+        ]);
 
         if (controller.signal.aborted) {
           return;
         }
 
-        setAnalyticsMeta(payload);
-        setCrimeFilters((current) => {
-          const defaultFilters = createDefaultFiltersFromMeta(payload?.months);
-          setAppliedCrimeFilters(defaultFilters);
-          return {
-            ...current,
-            monthFrom: defaultFilters.monthFrom,
-            monthTo: defaultFilters.monthTo,
-          };
-        });
+        if (metaResult.status === "fulfilled") {
+          const payload = metaResult.value;
+
+          setAnalyticsMeta(payload);
+          setCrimeFilters((current) => {
+            const defaultFilters = createDefaultFiltersFromMeta(payload?.months);
+            setAppliedCrimeFilters(defaultFilters);
+            return {
+              ...current,
+              monthFrom: defaultFilters.monthFrom,
+              monthTo: defaultFilters.monthTo,
+            };
+          });
+        }
+
+        if (lsoaResult.status === "fulfilled") {
+          setLsoaCategories(normalizeLsoaCategories(lsoaResult.value));
+        } else {
+          setLsoaCategories([]);
+        }
       } catch (error) {
         if (error?.name === "AbortError") {
           return;
@@ -126,6 +141,16 @@ function CrimePage({ docsUrl }) {
     return items.map((item) => ({ value: item, label: item }));
   }, [analyticsMeta?.crime_types]);
 
+  const lsoaOptions = useMemo(
+    () => toSearchOptions(lsoaCategories.map((item) => item.lsoaName), crimeFilters.lsoaName),
+    [crimeFilters.lsoaName, lsoaCategories],
+  );
+
+  const selectedLsoaCategory = useMemo(
+    () => findLsoaCategory(lsoaCategories, appliedCrimeFilters.lsoaName),
+    [appliedCrimeFilters.lsoaName, lsoaCategories],
+  );
+
   const effectiveDateRange = useMemo(
     () => ({
       from:
@@ -149,7 +174,7 @@ function CrimePage({ docsUrl }) {
     () => ({
       from: effectiveDateRange.from,
       to: effectiveDateRange.to,
-      bbox: WEST_YORKSHIRE_BBOX,
+      bbox: selectedLsoaCategory?.bbox || WEST_YORKSHIRE_BBOX,
       crimeTypes: appliedCrimeFilters.crimeType ? [appliedCrimeFilters.crimeType] : undefined,
       lastOutcomeCategories: appliedCrimeFilters.outcomeCategory
         ? [appliedCrimeFilters.outcomeCategory]
@@ -162,6 +187,7 @@ function CrimePage({ docsUrl }) {
       appliedCrimeFilters.outcomeCategory,
       effectiveDateRange.from,
       effectiveDateRange.to,
+      selectedLsoaCategory?.bbox,
     ],
   );
 
@@ -208,16 +234,12 @@ function CrimePage({ docsUrl }) {
         }
 
         if (incidentsResult.status === "fulfilled") {
-          const normalizedCrimes = incidentsResult.value.items.map((item) => normalizeCrimeFeature(item));
+          const normalizedCrimes = incidentsResult.value.items.map((item) =>
+            normalizeCrimeFeature(item),
+          );
 
           setCrimeRows(normalizedCrimes);
           setIncidentsMeta(incidentsResult.value.meta);
-          setLsoaOptions(
-            toSearchOptions(
-              normalizedCrimes.map((crime) => crime.lsoaName),
-              appliedCrimeFilters.lsoaName,
-            ),
-          );
           setSelectedCrime((current) => {
             if (!current?.recordId) {
               return null;
@@ -243,7 +265,6 @@ function CrimePage({ docsUrl }) {
         } else {
           setCrimeRows([]);
           setIncidentsMeta(null);
-          setLsoaOptions([]);
           setSelectedCrime(null);
           setCrimeErrorMessage(
             incidentsResult.reason?.message || "Failed to fetch crime incidents",
@@ -1121,6 +1142,7 @@ function upsertCrimeMapFeature(map, feature) {
 }
 
 function TimeSeriesChart({ series }) {
+  const [hoveredIndex, setHoveredIndex] = useState(null);
   const width = 720;
   const height = 260;
   const padding = 20;
@@ -1138,8 +1160,10 @@ function TimeSeriesChart({ series }) {
     .join(" ");
   const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
 
+  const hovered = hoveredIndex !== null ? points[hoveredIndex] : null;
+
   return (
-    <div>
+    <div className="relative">
       <svg viewBox={`0 0 ${width} ${height}`} className="h-[260px] w-full">
         {[0, 1, 2, 3].map((step) => {
           const y = padding + (step / 3) * (height - padding * 2);
@@ -1160,10 +1184,37 @@ function TimeSeriesChart({ series }) {
         <path d={areaPath} fill="rgba(34, 211, 238, 0.14)" />
         <path d={linePath} fill="none" stroke="#22d3ee" strokeWidth="3" strokeLinecap="round" />
 
-        {points.map((point) => (
-          <circle key={point.month} cx={point.x} cy={point.y} r="4" fill="#39ef7d" />
+        {points.map((point, index) => (
+          <g
+            key={point.month}
+            onMouseEnter={() => setHoveredIndex(index)}
+            onMouseLeave={() => setHoveredIndex(null)}
+            className="cursor-pointer"
+          >
+            <circle cx={point.x} cy={point.y} r="14" fill="transparent" />
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r={hoveredIndex === index ? 6 : 4}
+              fill="#39ef7d"
+              className="transition-all duration-150"
+            />
+          </g>
         ))}
       </svg>
+
+      {hovered && (
+        <div
+          className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full rounded-xl border border-cyan-100/15 bg-[#030b0e]/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm"
+          style={{
+            left: `${(hovered.x / width) * 100}%`,
+            top: `${(hovered.y / height) * 100}%`,
+          }}
+        >
+          <p className="font-semibold text-cyan-50">{formatMonthLabel(hovered.month)}</p>
+          <p className="mt-0.5 text-cyan-100/60">{formatCount(hovered.count)} incidents</p>
+        </div>
+      )}
 
       <div className="mt-3 grid gap-2 text-xs text-cyan-100/60 md:grid-cols-4">
         {series.map((item) => (

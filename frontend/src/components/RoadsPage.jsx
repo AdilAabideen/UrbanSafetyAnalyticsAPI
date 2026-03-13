@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import mapboxgl from "mapbox-gl";
 import FilterComponent from "./FilterComponent";
 import TopBar from "./TopBar";
 import {
@@ -9,8 +10,13 @@ import {
   toMonthValue,
 } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
-import { roadsService } from "../services";
-import { WEST_YORKSHIRE_BBOX, toSearchOptions } from "../utils/crimeUtils";
+import { generalService, roadsService } from "../services";
+import {
+  WEST_YORKSHIRE_BBOX,
+  findLsoaCategory,
+  normalizeLsoaCategories,
+  toSearchOptions,
+} from "../utils/crimeUtils";
 
 const DEFAULT_ROAD_FILTERS = {
   monthFrom: toMonthValue(new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1)),
@@ -40,13 +46,15 @@ function RoadsPage({ docsUrl }) {
   const [highwayData, setHighwayData] = useState({ items: [], otherCount: 0 });
   const [riskRows, setRiskRows] = useState([]);
   const [anomalyData, setAnomalyData] = useState(null);
-  const [lsoaOptions, setLsoaOptions] = useState([]);
+  const [lsoaCategories, setLsoaCategories] = useState([]);
   const [selectedRoad, setSelectedRoad] = useState(null);
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [loadingRiskFeed, setLoadingRiskFeed] = useState(true);
   const [loadingAnalytics, setLoadingAnalytics] = useState(true);
+  const [loadingRoadGeometry, setLoadingRoadGeometry] = useState(false);
   const [riskErrorMessage, setRiskErrorMessage] = useState("");
   const [analyticsErrorMessage, setAnalyticsErrorMessage] = useState("");
+  const [roadDetailErrorMessage, setRoadDetailErrorMessage] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -55,23 +63,36 @@ function RoadsPage({ docsUrl }) {
       setLoadingMeta(true);
 
       try {
-        const payload = await roadsService.getRoadAnalyticsMeta({ signal: controller.signal });
+        const [metaResult, lsoaResult] = await Promise.allSettled([
+          roadsService.getRoadAnalyticsMeta({ signal: controller.signal }),
+          generalService.getLsoaCategories({ signal: controller.signal }),
+        ]);
 
         if (controller.signal.aborted) {
           return;
         }
 
-        setAnalyticsMeta(payload);
-        setRoadFilters((current) => {
-          const defaultFilters = createDefaultFiltersFromMeta(payload?.months);
-          setAppliedRoadFilters(defaultFilters);
+        if (metaResult.status === "fulfilled") {
+          const payload = metaResult.value;
 
-          return {
-            ...current,
-            monthFrom: defaultFilters.monthFrom,
-            monthTo: defaultFilters.monthTo,
-          };
-        });
+          setAnalyticsMeta(payload);
+          setRoadFilters((current) => {
+            const defaultFilters = createDefaultFiltersFromMeta(payload?.months);
+            setAppliedRoadFilters(defaultFilters);
+
+            return {
+              ...current,
+              monthFrom: defaultFilters.monthFrom,
+              monthTo: defaultFilters.monthTo,
+            };
+          });
+        }
+
+        if (lsoaResult.status === "fulfilled") {
+          setLsoaCategories(normalizeLsoaCategories(lsoaResult.value));
+        } else {
+          setLsoaCategories([]);
+        }
       } catch (error) {
         if (error?.name === "AbortError") {
           return;
@@ -126,6 +147,16 @@ function RoadsPage({ docsUrl }) {
     return items.map((item) => ({ value: item, label: item }));
   }, [analyticsMeta?.crimeTypes, analyticsMeta?.crime_types, analyticsMeta?.filters?.crime_types]);
 
+  const lsoaOptions = useMemo(
+    () => toSearchOptions(lsoaCategories.map((item) => item.lsoaName), roadFilters.lsoaName),
+    [lsoaCategories, roadFilters.lsoaName],
+  );
+
+  const selectedLsoaCategory = useMemo(
+    () => findLsoaCategory(lsoaCategories, appliedRoadFilters.lsoaName),
+    [appliedRoadFilters.lsoaName, lsoaCategories],
+  );
+
   const effectiveDateRange = useMemo(
     () => ({
       from:
@@ -144,7 +175,7 @@ function RoadsPage({ docsUrl }) {
     () => ({
       from: effectiveDateRange.from,
       to: effectiveDateRange.to,
-      bbox: WEST_YORKSHIRE_BBOX,
+      bbox: selectedLsoaCategory?.bbox || WEST_YORKSHIRE_BBOX,
       crimeTypes: appliedRoadFilters.crimeType ? [appliedRoadFilters.crimeType] : undefined,
       lastOutcomeCategories: appliedRoadFilters.outcomeCategory
         ? [appliedRoadFilters.outcomeCategory]
@@ -157,6 +188,7 @@ function RoadsPage({ docsUrl }) {
       appliedRoadFilters.outcomeCategory,
       effectiveDateRange.from,
       effectiveDateRange.to,
+      selectedLsoaCategory?.bbox,
     ],
   );
 
@@ -253,22 +285,17 @@ function RoadsPage({ docsUrl }) {
           analyticsErrors.push(anomalyResult.reason?.message || "Road anomaly unavailable");
         }
 
-        const nextLsoaOptions = toSearchOptions(
-          [...nextRiskRows, ...nextHighwayItems].map((item) => item.lsoaName),
-          appliedRoadFilters.lsoaName,
-        );
-
-        setLsoaOptions(nextLsoaOptions);
         setSelectedRoad((current) => {
           if (!current?.selectionKey) {
             return null;
           }
 
-          return (
+          const matchedRoad =
             [...nextRiskRows, ...nextHighwayItems].find(
               (item) => item.selectionKey === current.selectionKey,
-            ) || null
-          );
+            ) || null;
+
+          return matchedRoad ? mergeRoadSelection(current, matchedRoad) : null;
         });
         setAnalyticsErrorMessage(analyticsErrors.join(" | "));
       } finally {
@@ -285,6 +312,76 @@ function RoadsPage({ docsUrl }) {
       controller.abort();
     };
   }, [appliedRoadFilters.lsoaName, effectiveDateRange.to, loadingMeta, sharedRoadQuery]);
+
+  useEffect(() => {
+    const selectedRoadId = selectedRoad?.roadId;
+    const hasGeometry = Boolean(selectedRoad?.geometry);
+
+    if (!selectedRoad) {
+      setLoadingRoadGeometry(false);
+      setRoadDetailErrorMessage("");
+      return undefined;
+    }
+
+    if (!selectedRoadId) {
+      setLoadingRoadGeometry(false);
+      setRoadDetailErrorMessage(
+        selectedRoad?.sourceType === "highways"
+          ? "This selection is an aggregate highway group, so there is no single road GeoJSON to render."
+          : "No road segment id is available for this selection.",
+      );
+      return undefined;
+    }
+
+    if (hasGeometry) {
+      setLoadingRoadGeometry(false);
+      setRoadDetailErrorMessage("");
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    const loadRoadGeometry = async () => {
+      setLoadingRoadGeometry(true);
+      setRoadDetailErrorMessage("");
+
+      try {
+        const roadFeature = await roadsService.getRoadByIdGeoJson(selectedRoadId, {
+          signal: controller.signal,
+        });
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const normalizedDetail = toRoadRecord(roadFeature);
+
+        setSelectedRoad((current) => {
+          if (!current || current.roadId !== selectedRoadId) {
+            return current;
+          }
+
+          return mergeRoadDetail(current, normalizedDetail);
+        });
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        setRoadDetailErrorMessage(error?.message || "Failed to fetch road GeoJSON");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingRoadGeometry(false);
+        }
+      }
+    };
+
+    void loadRoadGeometry();
+
+    return () => {
+      controller.abort();
+    };
+  }, [selectedRoad]);
 
   const summaryCards = useMemo(() => {
     const totalIncidents =
@@ -473,11 +570,10 @@ function RoadsPage({ docsUrl }) {
                     key={tab.id}
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
-                    className={`rounded-full px-3 py-2 text-sm transition-colors ${
-                      activeTab === tab.id
+                    className={`rounded-full px-3 py-2 text-sm transition-colors ${activeTab === tab.id
                         ? "bg-cyan-100/10 text-cyan-50"
                         : "bg-transparent text-cyan-100/55 hover:bg-cyan-100/5 hover:text-cyan-50"
-                    }`}
+                      }`}
                   >
                     {tab.label}
                   </button>
@@ -536,7 +632,12 @@ function RoadsPage({ docsUrl }) {
         </div>
       </div>
 
-      <SlidingRoadDrawer road={selectedRoad} onClose={() => setSelectedRoad(null)} />
+      <SlidingRoadDrawer
+        road={selectedRoad}
+        isLoadingGeometry={loadingRoadGeometry}
+        detailErrorMessage={roadDetailErrorMessage}
+        onClose={() => setSelectedRoad(null)}
+      />
     </div>
   );
 }
@@ -658,11 +759,10 @@ function RoadHighwaysTab({
               key={item.selectionKey}
               type="button"
               onClick={() => onSelectRoad(item)}
-              className={`w-full rounded-[18px] border px-4 py-4 text-left transition-colors ${
-                item.selectionKey === selectedRoad?.selectionKey
+              className={`w-full rounded-[18px] border px-4 py-4 text-left transition-colors ${item.selectionKey === selectedRoad?.selectionKey
                   ? "border-cyan-200/20 bg-cyan-100/10"
                   : "border-white/5 bg-[#030b0e]/55 hover:bg-white/[0.03]"
-              }`}
+                }`}
             >
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
@@ -808,9 +908,8 @@ function RoadRiskRow({ road, isSelected, onSelect }) {
     <button
       type="button"
       onClick={onSelect}
-      className={`grid w-full gap-4 px-4 py-4 text-left transition-colors lg:grid-cols-[minmax(0,1.2fr),minmax(0,1fr),minmax(0,0.9fr),minmax(0,0.85fr)] ${
-        isSelected ? "bg-cyan-100/10" : "bg-transparent hover:bg-white/[0.03]"
-      }`}
+      className={`grid w-full gap-4 px-4 py-4 text-left transition-colors lg:grid-cols-[minmax(0,1.2fr),minmax(0,1fr),minmax(0,0.9fr),minmax(0,0.85fr)] ${isSelected ? "bg-cyan-100/10" : "bg-transparent hover:bg-white/[0.03]"
+        }`}
     >
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.25em] text-cyan-100/45">Road</p>
@@ -850,100 +949,108 @@ function RoadRiskRow({ road, isSelected, onSelect }) {
   );
 }
 
-function SlidingRoadDrawer({ road, onClose }) {
+function SlidingRoadDrawer({ road, isLoadingGeometry, detailErrorMessage, onClose }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
       <button
         type="button"
         aria-label="Close roads drawer"
         onClick={onClose}
-        className={`absolute inset-0 bg-black/45 transition-opacity duration-300 ${
-          road ? "pointer-events-auto opacity-100" : "opacity-0"
-        }`}
+        className={`absolute inset-0 bg-black/45 transition-opacity duration-300 ${road ? "pointer-events-auto opacity-100" : "opacity-0"
+          }`}
       />
 
       <div
-        className={`absolute inset-y-0 right-0 w-full border-l border-white/10 bg-[#030b0e] shadow-2xl transition-transform duration-300 sm:w-[46vw] sm:max-w-[46vw] ${
-          road ? "translate-x-0" : "translate-x-full"
-        }`}
+        className={`absolute inset-y-0 right-0 w-full border-l border-white/10 bg-[#030b0e] shadow-2xl transition-transform duration-300 sm:w-[46vw] sm:max-w-[46vw] ${road ? "translate-x-0" : "translate-x-full"
+          }`}
       >
         <div className="h-full overflow-y-auto p-4">
           {road ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
-                    Road Details
-                  </p>
-                  <h2 className="mt-2 text-2xl font-semibold text-cyan-50">
-                    {road.name || road.highway}
-                  </h2>
-                  <p className="mt-1 text-sm text-cyan-100/60">
-                    Selected from `{road.sourceType === "highways" ? "/roads/analytics/highways" : "/roads/analytics/risk"}`
-                  </p>
+            <div className="grid gap-4 grid-cols-1 grid-rows-2">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
+                      Road Details
+                    </p>
+                    <h2 className="mt-2 text-2xl font-semibold text-cyan-50">
+                      {road.name || road.highway}
+                    </h2>
+                    <p className="mt-1 text-sm text-cyan-100/60">
+                      Selected from `{road.sourceType === "highways" ? "/roads/analytics/highways" : "/roads/analytics/risk"}`
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-100/10 text-cyan-100/60 transition-colors hover:bg-cyan-100/10 hover:text-cyan-50"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-4 w-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-100/10 text-cyan-100/60 transition-colors hover:bg-cyan-100/10 hover:text-cyan-50"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
+                <div className="flex w-full justify-between p-2 gap-6">
+                  <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4 w-full">
+                    <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
+                      Segment Identity
+                    </p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <RoadDetailField label="Road name" value={road.name || "Not supplied"} />
+                      <RoadDetailField label="Highway" value={road.highway || "Unclassified"} />
+                      <RoadDetailField label="Segment ID" value={road.roadId} subtle />
+                      <RoadDetailField label="LSOA Name" value={road.lsoaName || "Not supplied"} />
+                      <RoadDetailField label="Location" value={road.location || "Not supplied"} />
+                      <RoadDetailField
+                        label="Geometry"
+                        value={road.geometry?.type || "Not supplied"}
+                        subtle
+                      />
+                    </div>
+                  </section>
+
+                  <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4 w-full">
+                    <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
+                      Risk Metrics
+                    </p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <RoadDetailField
+                        label="Incidents"
+                        value={formatCount(road.incidents)}
+                      />
+                      <RoadDetailField
+                        label="Incidents per km"
+                        value={formatMetricValue(road.incidentsPerKm)}
+                      />
+                      <RoadDetailField label="Length" value={formatDistanceKm(road.lengthKm)} />
+                      <RoadDetailField label="Risk band" value={road.riskBand || "Observed"} />
+                      <RoadDetailField label="Score" value={formatMetricValue(road.score)} />
+                      <RoadDetailField
+                        label="Count"
+                        value={formatCount(road.count || road.incidents)}
+                      />
+                    </div>
+                  </section>
+                </div>
               </div>
 
-              <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
-                <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
-                  Segment Identity
-                </p>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <RoadDetailField label="Road name" value={road.name || "Not supplied"} />
-                  <RoadDetailField label="Highway" value={road.highway || "Unclassified"} />
-                  <RoadDetailField label="Segment ID" value={road.roadId} subtle />
-                  <RoadDetailField label="LSOA Name" value={road.lsoaName || "Not supplied"} />
-                  <RoadDetailField label="Location" value={road.location || "Not supplied"} />
-                  <RoadDetailField
-                    label="Geometry"
-                    value={road.geometry?.type || "Not supplied"}
-                    subtle
-                  />
-                </div>
-              </section>
-
-              <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
-                <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
-                  Risk Metrics
-                </p>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <RoadDetailField
-                    label="Incidents"
-                    value={formatCount(road.incidents)}
-                  />
-                  <RoadDetailField
-                    label="Incidents per km"
-                    value={formatMetricValue(road.incidentsPerKm)}
-                  />
-                  <RoadDetailField label="Length" value={formatDistanceKm(road.lengthKm)} />
-                  <RoadDetailField label="Risk band" value={road.riskBand || "Observed"} />
-                  <RoadDetailField label="Score" value={formatMetricValue(road.score)} />
-                  <RoadDetailField
-                    label="Count"
-                    value={formatCount(road.count || road.incidents)}
-                  />
-                </div>
-              </section>
+              <RoadGeometryMap
+                road={road}
+                isLoadingGeometry={isLoadingGeometry}
+                detailErrorMessage={detailErrorMessage}
+              />
             </div>
           ) : null}
         </div>
@@ -965,7 +1072,161 @@ function RoadDetailField({ label, value, subtle = false }) {
   );
 }
 
+const DRAWER_ROAD_MAP_SOURCE_ID = "drawer-road-source";
+const DRAWER_ROAD_MAP_LINE_LAYER_ID = "drawer-road-line";
+const DRAWER_ROAD_MAP_LINE_HALO_LAYER_ID = "drawer-road-line-halo";
+const DRAWER_ROAD_MAP_POINT_LAYER_ID = "drawer-road-point";
+const DRAWER_ROAD_MAP_STYLE = {
+  version: 8,
+  sources: {
+    darkBase: {
+      type: "raster",
+      tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      attribution: "By Adil Aabideen",
+    },
+  },
+  layers: [
+    {
+      id: "dark-base-layer",
+      type: "raster",
+      source: "darkBase",
+      minzoom: 0,
+      maxzoom: 22,
+    },
+  ],
+};
+
+function RoadGeometryMap({ road, isLoadingGeometry, detailErrorMessage }) {
+  console.log("road", road);
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const [mapRuntimeErrorMessage, setMapRuntimeErrorMessage] = useState("");
+  const roadFeature = useMemo(() => toRoadGeoJsonFeature(road), [road]);
+  const mapErrorMessage = !config.mapboxAccessToken
+    ? "Set VITE_MAPBOX_ACCESS_TOKEN to render the road geometry map."
+    : !mapboxgl.supported()
+      ? "Mapbox GL JS is not supported in this browser."
+      : mapRuntimeErrorMessage;
+
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) {
+      return undefined;
+    }
+
+    if (!config.mapboxAccessToken || !mapboxgl.supported()) {
+      return undefined;
+    }
+
+    mapboxgl.accessToken = config.mapboxAccessToken;
+
+    const map = new mapboxgl.Map({
+      container: mapContainerRef.current,
+      style: DRAWER_ROAD_MAP_STYLE,
+      center: getRoadFeatureCenter(roadFeature),
+      zoom: 14,
+      attributionControl: false,
+    });
+
+    mapRef.current = map;
+    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: false }), "bottom-right");
+
+    map.on("load", () => {
+      if (roadFeature) {
+        upsertRoadMapFeature(map, roadFeature);
+        fitRoadFeature(map, roadFeature, 0);
+      }
+
+      setTimeout(() => {
+        map.resize();
+        if (roadFeature) {
+          fitRoadFeature(map, roadFeature, 300);
+        }
+      }, 350);
+    });
+
+    map.on("error", (event) => {
+      const message = event?.error?.message;
+
+      if (message) {
+        setMapRuntimeErrorMessage(message);
+      }
+    });
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [roadFeature]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map || !roadFeature) {
+      return;
+    }
+
+    const updateFeature = () => {
+      upsertRoadMapFeature(map, roadFeature);
+      fitRoadFeature(map, roadFeature, 300);
+    };
+
+    if (map.isStyleLoaded()) {
+      updateFeature();
+      return;
+    }
+
+    map.once("load", updateFeature);
+  }, [roadFeature]);
+
+  return (
+    <section className="flex min-h-[360px] flex-col rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/45">
+            Road Geometry
+          </p>
+          <p className="mt-1 text-sm text-cyan-100/60">
+            Segment rendered from GeoJSON coordinates
+          </p>
+        </div>
+
+        {roadFeature ? (
+          <span className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-cyan-100/60">
+            {roadFeature.geometry.type}
+          </span>
+        ) : null}
+      </div>
+
+      {detailErrorMessage ? (
+        <div className="mb-3 rounded-xl border border-red-300/30 bg-[#480000b8] px-3 py-3 text-sm text-red-100">
+          {detailErrorMessage}
+        </div>
+      ) : null}
+
+      {mapErrorMessage ? (
+        <div className="mb-3 rounded-xl border border-red-300/30 bg-[#480000b8] px-3 py-3 text-sm text-red-100">
+          {mapErrorMessage}
+        </div>
+      ) : null}
+
+      {!roadFeature && isLoadingGeometry ? (
+        <div className="flex h-full min-h-[280px] items-center justify-center rounded-[16px] border border-cyan-100/10 bg-cyan-100/5 text-sm text-cyan-100/70">
+          Loading road GeoJSON...
+        </div>
+      ) : !roadFeature ? (
+        <div className="flex h-full min-h-[280px] items-center justify-center rounded-[16px] border border-cyan-100/10 bg-cyan-100/5 px-4 text-center text-sm text-cyan-100/70">
+          No GeoJSON road geometry is available for this selection.
+        </div>
+      ) : (
+        <div ref={mapContainerRef} className="min-h-[300px] flex-1 overflow-hidden rounded-[16px]" />
+      )}
+    </section>
+  );
+}
+
 function TimeSeriesChart({ series }) {
+  const [hoveredIndex, setHoveredIndex] = useState(null);
   const width = 720;
   const height = 260;
   const padding = 20;
@@ -983,8 +1244,10 @@ function TimeSeriesChart({ series }) {
     .join(" ");
   const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
 
+  const hovered = hoveredIndex !== null ? points[hoveredIndex] : null;
+
   return (
-    <div>
+    <div className="relative">
       <svg viewBox={`0 0 ${width} ${height}`} className="h-[260px] w-full">
         {[0, 1, 2, 3].map((step) => {
           const y = padding + (step / 3) * (height - padding * 2);
@@ -1005,10 +1268,37 @@ function TimeSeriesChart({ series }) {
         <path d={areaPath} fill="rgba(34, 211, 238, 0.14)" />
         <path d={linePath} fill="none" stroke="#22d3ee" strokeWidth="3" strokeLinecap="round" />
 
-        {points.map((point) => (
-          <circle key={point.month} cx={point.x} cy={point.y} r="4" fill="#39ef7d" />
+        {points.map((point, index) => (
+          <g
+            key={point.month}
+            onMouseEnter={() => setHoveredIndex(index)}
+            onMouseLeave={() => setHoveredIndex(null)}
+            className="cursor-pointer"
+          >
+            <circle cx={point.x} cy={point.y} r="14" fill="transparent" />
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r={hoveredIndex === index ? 6 : 4}
+              fill="#39ef7d"
+              className="transition-all duration-150"
+            />
+          </g>
         ))}
       </svg>
+
+      {hovered && (
+        <div
+          className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full rounded-xl border border-cyan-100/15 bg-[#030b0e]/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm"
+          style={{
+            left: `${(hovered.x / width) * 100}%`,
+            top: `${(hovered.y / height) * 100}%`,
+          }}
+        >
+          <p className="font-semibold text-cyan-50">{formatMonthLabel(hovered.month)}</p>
+          <p className="mt-0.5 text-cyan-100/60">{formatCount(hovered.count)} incidents</p>
+        </div>
+      )}
 
       <div className="mt-3 grid gap-2 text-xs text-cyan-100/60 md:grid-cols-4">
         {series.map((item) => (
@@ -1173,6 +1463,169 @@ function toRoadRecord(item) {
       deriveRiskBand(incidentsPerKm),
     score: getRoadNumber(properties, "score", "risk_score", "riskScore", "index"),
   };
+}
+
+function mergeRoadSelection(current, next) {
+  return {
+    ...next,
+    geometry: current?.geometry || next?.geometry || null,
+    incidents: Number(next?.incidents) > 0 ? next.incidents : current?.incidents,
+    incidentsPerKm:
+      Number(next?.incidentsPerKm) > 0 ? next.incidentsPerKm : current?.incidentsPerKm,
+    riskBand: next?.riskBand || current?.riskBand || null,
+    score: Number(next?.score) > 0 ? next.score : current?.score,
+    count: Number(next?.count) > 0 ? next.count : current?.count,
+    lengthKm: Number(next?.lengthKm) > 0 ? next.lengthKm : current?.lengthKm,
+    lsoaName: next?.lsoaName || current?.lsoaName || null,
+    location: next?.location || current?.location || null,
+    selectionKey: next?.selectionKey || current?.selectionKey,
+    sourceType: next?.sourceType || current?.sourceType,
+  };
+}
+
+function mergeRoadDetail(current, detail) {
+  return {
+    ...detail,
+    ...current,
+    geometry: detail?.geometry || current?.geometry || null,
+    roadId: current?.roadId || detail?.roadId || null,
+    name: current?.name || detail?.name || null,
+    highway: current?.highway || detail?.highway || null,
+    lengthKm: Number(detail?.lengthKm) > 0 ? detail.lengthKm : current?.lengthKm,
+  };
+}
+
+function toRoadGeoJsonFeature(road) {
+  if (!road?.geometry) {
+    return null;
+  }
+
+  return {
+    type: "Feature",
+    geometry: road.geometry,
+    properties: {
+      id: road.roadId,
+      name: road.name,
+      highway: road.highway,
+      length_m: Number(road.lengthKm) > 0 ? road.lengthKm * 1000 : null,
+    },
+  };
+}
+
+function getRoadFeatureCenter(feature) {
+  const coordinates = extractGeometryCoordinates(feature?.geometry);
+
+  if (!coordinates.length) {
+    return [
+      WEST_YORKSHIRE_BBOX.minLon + ((WEST_YORKSHIRE_BBOX.maxLon - WEST_YORKSHIRE_BBOX.minLon) / 2),
+      WEST_YORKSHIRE_BBOX.minLat + ((WEST_YORKSHIRE_BBOX.maxLat - WEST_YORKSHIRE_BBOX.minLat) / 2),
+    ];
+  }
+
+  const [lonSum, latSum] = coordinates.reduce(
+    (totals, coordinate) => [totals[0] + coordinate[0], totals[1] + coordinate[1]],
+    [0, 0],
+  );
+
+  return [lonSum / coordinates.length, latSum / coordinates.length];
+}
+
+function fitRoadFeature(map, feature, duration = 300) {
+  const coordinates = extractGeometryCoordinates(feature?.geometry);
+
+  if (!coordinates.length) {
+    return;
+  }
+
+  const bounds = coordinates.reduce(
+    (accumulator, coordinate) => accumulator.extend(coordinate),
+    new mapboxgl.LngLatBounds(coordinates[0], coordinates[0]),
+  );
+
+  map.fitBounds(bounds, {
+    padding: 60,
+    duration,
+    maxZoom: feature?.geometry?.type === "Point" ? 17 : 19,
+  });
+}
+
+function extractGeometryCoordinates(geometry) {
+  if (!geometry) {
+    return [];
+  }
+
+  if (geometry.type === "Point") {
+    return [geometry.coordinates];
+  }
+
+  if (geometry.type === "LineString" || geometry.type === "MultiPoint") {
+    return geometry.coordinates;
+  }
+
+  if (geometry.type === "MultiLineString" || geometry.type === "Polygon") {
+    return geometry.coordinates.flat();
+  }
+
+  if (geometry.type === "MultiPolygon") {
+    return geometry.coordinates.flat(2);
+  }
+
+  return [];
+}
+
+function upsertRoadMapFeature(map, feature) {
+  const sourceData = {
+    type: "FeatureCollection",
+    features: [feature],
+  };
+
+  const existingSource = map.getSource(DRAWER_ROAD_MAP_SOURCE_ID);
+
+  if (existingSource) {
+    existingSource.setData(sourceData);
+    return;
+  }
+
+  map.addSource(DRAWER_ROAD_MAP_SOURCE_ID, {
+    type: "geojson",
+    data: sourceData,
+  });
+
+  map.addLayer({
+    id: DRAWER_ROAD_MAP_LINE_HALO_LAYER_ID,
+    type: "line",
+    source: DRAWER_ROAD_MAP_SOURCE_ID,
+    filter: ["any", ["==", ["geometry-type"], "LineString"], ["==", ["geometry-type"], "MultiLineString"]],
+    paint: {
+      "line-color": "rgba(34, 197, 94, 0.25)",
+      "line-width": 14,
+    },
+  });
+
+  map.addLayer({
+    id: DRAWER_ROAD_MAP_LINE_LAYER_ID,
+    type: "line",
+    source: DRAWER_ROAD_MAP_SOURCE_ID,
+    filter: ["any", ["==", ["geometry-type"], "LineString"], ["==", ["geometry-type"], "MultiLineString"]],
+    paint: {
+      "line-color": "#22c55e",
+      "line-width": 6,
+      "line-opacity": 1,
+    },
+  });
+
+  map.addLayer({
+    id: DRAWER_ROAD_MAP_POINT_LAYER_ID,
+    type: "circle",
+    source: DRAWER_ROAD_MAP_SOURCE_ID,
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-radius": 6,
+      "circle-color": "#3b82f6",
+      "circle-stroke-color": "#071316",
+      "circle-stroke-width": 2,
+    },
+  });
 }
 
 function resolveItems(payload) {

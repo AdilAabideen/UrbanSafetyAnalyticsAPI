@@ -1,7 +1,7 @@
 from collections import Counter
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,6 @@ from .crime_utils import (
     _resolve_from_to_filter,
     _resolve_mode,
     _resolve_month_filter,
-    _shift_month,
     _where_sql,
 )
 from ..db import get_db
@@ -892,7 +891,6 @@ def get_collision_incidents(
     }
 
 
-@router.get("/collisions")
 @router.get("/collisions/map")
 def get_collisions_map(
     minLon: float = Query(..., ge=-180, le=180),
@@ -963,64 +961,6 @@ def get_collisions_map(
     )
 
 
-@router.get("/collisions/stats")
-def get_collision_stats(
-    month: Optional[str] = Query(None),
-    minLon: Optional[float] = Query(None, ge=-180, le=180),
-    minLat: Optional[float] = Query(None, ge=-90, le=90),
-    maxLon: Optional[float] = Query(None, ge=-180, le=180),
-    maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    db: Session = Depends(get_db),
-):
-    month_date = _parse_month(month)
-    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
-
-    where_clauses = []
-    query_params = {}
-
-    if month_date is not None:
-        where_clauses.append("ce.month = :month_date")
-        query_params["month_date"] = month_date
-
-    if bbox:
-        where_clauses.extend(
-            [
-                "ce.longitude BETWEEN :min_lon AND :max_lon",
-                "ce.latitude BETWEEN :min_lat AND :max_lat",
-                "ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)",
-            ]
-        )
-        query_params.update(bbox)
-
-    query = text(
-        f"""
-        SELECT
-            COALESCE(NULLIF(ce.collision_severity_label, ''), 'unknown') AS collision_severity,
-            COUNT(*)::bigint AS count,
-            COALESCE(SUM(ce.number_of_casualties), 0)::bigint AS casualty_count
-        FROM collision_events ce
-        {_where_sql(where_clauses)}
-        GROUP BY COALESCE(NULLIF(ce.collision_severity_label, ''), 'unknown')
-        ORDER BY count DESC, collision_severity ASC
-        """
-    )
-    rows = _execute(db, query, query_params).mappings().all()
-    severity_counts = {row["collision_severity"]: row["count"] for row in rows}
-    total_casualties = sum(row["casualty_count"] for row in rows)
-
-    filters = {"month": month_date.strftime("%Y-%m") if month_date else None}
-    if bbox:
-        filters["bbox"] = _bbox_meta(minLon, minLat, maxLon, maxLat)
-
-    return {
-        "filters": filters,
-        "total": sum(severity_counts.values()),
-        "total_casualties": total_casualties,
-        "collision_severity_counts": severity_counts,
-    }
-
-
-@router.get("/collision/analytics/summary")
 @router.get("/collisions/analytics/summary")
 def get_collision_analytics_summary(
     from_month: str = Query(..., alias="from"),
@@ -1095,7 +1035,6 @@ def get_collision_analytics_summary(
     }
 
 
-@router.get("/collision/analytics/timeseries")
 @router.get("/collisions/analytics/timeseries")
 def get_collision_analytics_timeseries(
     from_month: str = Query(..., alias="from"),
@@ -1135,276 +1074,3 @@ def get_collision_analytics_timeseries(
         "series": rows,
         "total": sum(row["count"] for row in rows),
     }
-
-
-@router.get("/collision/analytics/types")
-@router.get("/collisions/analytics/types")
-@router.get("/collision/analytics")
-@router.get("/collisions/analytics")
-def get_collision_type_analytics(
-    from_month: Optional[str] = Query(None, alias="from"),
-    to_month: Optional[str] = Query(None, alias="to"),
-    minLon: Optional[float] = Query(None, ge=-180, le=180),
-    minLat: Optional[float] = Query(None, ge=-90, le=90),
-    maxLon: Optional[float] = Query(None, ge=-180, le=180),
-    maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    collisionSeverity: Optional[List[str]] = Query(None),
-    roadType: Optional[List[str]] = Query(None),
-    lsoaCode: Optional[List[str]] = Query(None),
-    weatherCondition: Optional[List[str]] = Query(None),
-    lightCondition: Optional[List[str]] = Query(None),
-    roadSurfaceCondition: Optional[List[str]] = Query(None),
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db),
-):
-    snapshot = _collision_snapshot(
-        *_collision_analytics_request_filters(
-            from_month,
-            to_month,
-            minLon,
-            minLat,
-            maxLon,
-            maxLat,
-            collisionSeverity,
-            roadType,
-            lsoaCode,
-            weatherCondition,
-            lightCondition,
-            roadSurfaceCondition,
-            False,
-        ),
-        db,
-    )
-    rows = _sorted_count_items(snapshot["severity_counts"], "collision_severity")
-    return {
-        "items": rows[:limit],
-        "other_count": sum(row["count"] for row in rows[limit:]),
-    }
-
-
-@router.get("/collision/analytics/outcomes")
-@router.get("/collisions/analytics/outcomes")
-@router.get("/collision/analytics/outcome")
-@router.get("/collisions/analytics/outcome")
-def get_collision_outcome_analytics(
-    from_month: Optional[str] = Query(None, alias="from"),
-    to_month: Optional[str] = Query(None, alias="to"),
-    minLon: Optional[float] = Query(None, ge=-180, le=180),
-    minLat: Optional[float] = Query(None, ge=-90, le=90),
-    maxLon: Optional[float] = Query(None, ge=-180, le=180),
-    maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    collisionSeverity: Optional[List[str]] = Query(None),
-    roadType: Optional[List[str]] = Query(None),
-    lsoaCode: Optional[List[str]] = Query(None),
-    weatherCondition: Optional[List[str]] = Query(None),
-    lightCondition: Optional[List[str]] = Query(None),
-    roadSurfaceCondition: Optional[List[str]] = Query(None),
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db),
-):
-    snapshot = _collision_snapshot(
-        *_collision_analytics_request_filters(
-            from_month,
-            to_month,
-            minLon,
-            minLat,
-            maxLon,
-            maxLat,
-            collisionSeverity,
-            roadType,
-            lsoaCode,
-            weatherCondition,
-            lightCondition,
-            roadSurfaceCondition,
-            False,
-        ),
-        db,
-    )
-    rows = _sorted_count_items(snapshot["casualty_severity_counts"], "outcome")
-    return {
-        "items": rows[:limit],
-        "other_count": sum(row["count"] for row in rows[limit:]),
-    }
-
-
-@router.get("/collision/analytics/anomoly")
-@router.get("/collision/analytics/anomaly")
-@router.get("/collisions/analytics/anomaly")
-def get_collision_analytics_anomaly(
-    target: str = Query(...),
-    baselineMonths: int = Query(6, ge=1, le=24),
-    minLon: Optional[float] = Query(None, ge=-180, le=180),
-    minLat: Optional[float] = Query(None, ge=-90, le=90),
-    maxLon: Optional[float] = Query(None, ge=-180, le=180),
-    maxLat: Optional[float] = Query(None, ge=-90, le=90),
-    collisionSeverity: Optional[List[str]] = Query(None),
-    roadType: Optional[List[str]] = Query(None),
-    lsoaCode: Optional[List[str]] = Query(None),
-    weatherCondition: Optional[List[str]] = Query(None),
-    lightCondition: Optional[List[str]] = Query(None),
-    roadSurfaceCondition: Optional[List[str]] = Query(None),
-    db: Session = Depends(get_db),
-):
-    target_month_date = _parse_month(target)
-    (
-        _range_filter,
-        bbox,
-        severities,
-        road_types,
-        lsoa_codes,
-        weather_conditions,
-        light_conditions,
-        road_surface_conditions,
-    ) = _collision_analytics_request_filters(
-        None,
-        None,
-        minLon,
-        minLat,
-        maxLon,
-        maxLat,
-        collisionSeverity,
-        roadType,
-        lsoaCode,
-        weatherCondition,
-        lightCondition,
-        roadSurfaceCondition,
-        False,
-    )
-
-    base_filter = {"clause": None, "params": {}, "from": None, "to": None}
-    where_clauses, query_params = _collision_analytics_filters(
-        base_filter,
-        bbox,
-        severities,
-        road_types,
-        lsoa_codes,
-        weather_conditions,
-        light_conditions,
-        road_surface_conditions,
-    )
-
-    target_where = list(where_clauses) + ["ce.month = :target_month_date"]
-    target_params = dict(query_params)
-    target_params["target_month_date"] = target_month_date
-
-    baseline_end_date = _shift_month(target_month_date, -1)
-    baseline_start_date = _shift_month(target_month_date, -baselineMonths)
-    baseline_where = list(where_clauses) + ["ce.month BETWEEN :baseline_start_date AND :baseline_end_date"]
-    baseline_params = dict(query_params)
-    baseline_params["baseline_start_date"] = baseline_start_date
-    baseline_params["baseline_end_date"] = baseline_end_date
-
-    target_query = text(
-        f"""
-        SELECT COUNT(*)::bigint AS target_count
-        FROM collision_events ce
-        {_where_sql(target_where)}
-        """
-    )
-    baseline_query = text(
-        f"""
-        WITH months AS (
-            SELECT generate_series(
-                CAST(:baseline_start_date AS date),
-                CAST(:baseline_end_date AS date),
-                interval '1 month'
-            )::date AS month
-        ),
-        counts AS (
-            SELECT
-                ce.month,
-                COUNT(*)::bigint AS count
-            FROM collision_events ce
-            {_where_sql(baseline_where)}
-            GROUP BY ce.month
-        )
-        SELECT COALESCE(AVG(COALESCE(counts.count, 0)), 0)::float AS baseline_mean
-        FROM months
-        LEFT JOIN counts ON counts.month = months.month
-        """
-    )
-    target_query = _bind_collision_filter_params(
-        target_query,
-        severities,
-        road_types,
-        lsoa_codes,
-        weather_conditions,
-        light_conditions,
-        road_surface_conditions,
-    )
-    baseline_query = _bind_collision_filter_params(
-        baseline_query,
-        severities,
-        road_types,
-        lsoa_codes,
-        weather_conditions,
-        light_conditions,
-        road_surface_conditions,
-    )
-
-    target_row = _execute(db, target_query, target_params).mappings().first() or {}
-    baseline_row = _execute(db, baseline_query, baseline_params).mappings().first() or {}
-
-    target_count = target_row.get("target_count", 0)
-    baseline_mean = baseline_row.get("baseline_mean", 0) or 0
-    ratio = None if baseline_mean == 0 else target_count / baseline_mean
-
-    return {
-        "target": target_month_date.strftime("%Y-%m"),
-        "target_count": target_count,
-        "baseline_mean": baseline_mean,
-        "ratio": ratio,
-        "flag": ratio is not None and ratio >= 1.5,
-    }
-
-
-@router.get("/collisions/{collision_index}")
-def get_collision_by_id(
-    collision_index: str = Path(..., min_length=1),
-    db: Session = Depends(get_db),
-):
-    query = text(
-        """
-        SELECT json_build_object(
-            'type', 'Feature',
-            'geometry', ST_AsGeoJSON(ce.geom)::json,
-            'properties', json_build_object(
-                'collision_index', ce.collision_index,
-                'month', to_char(ce.month, 'YYYY-MM'),
-                'date', to_char(ce.collision_date, 'YYYY-MM-DD'),
-                'time', to_char(ce.collision_time, 'HH24:MI'),
-                'collision_severity', ce.collision_severity_label,
-                'number_of_vehicles', ce.number_of_vehicles,
-                'number_of_casualties', ce.number_of_casualties,
-                'road_type', ce.road_type_label,
-                'speed_limit', ce.speed_limit_label,
-                'light_conditions', ce.light_conditions_label,
-                'weather_conditions', ce.weather_conditions_label,
-                'road_surface_conditions', ce.road_surface_conditions_label,
-                'vehicle_count', ce.vehicle_count,
-                'vehicle_type_counts', ce.vehicle_type_counts,
-                'avg_driver_age', ce.avg_driver_age,
-                'driver_sex_counts', ce.driver_sex_counts,
-                'casualty_count', ce.casualty_count,
-                'casualty_severity_counts', ce.casualty_severity_counts,
-                'casualty_type_counts', ce.casualty_type_counts,
-                'fatal_casualty_count', ce.fatal_casualty_count,
-                'serious_casualty_count', ce.serious_casualty_count,
-                'slight_casualty_count', ce.slight_casualty_count,
-                'lsoa_code', ce.lsoa_of_accident_location,
-                'longitude', ce.longitude,
-                'latitude', ce.latitude,
-                'created_at', ce.created_at
-            )
-        ) AS feature
-        FROM collision_events ce
-        WHERE ce.collision_index = :collision_index
-        LIMIT 1
-        """
-    )
-    result = _execute(db, query, {"collision_index": collision_index}).scalar_one_or_none()
-
-    if not result:
-        raise HTTPException(status_code=404, detail="Collision event not found")
-
-    return _parse_json(result)

@@ -99,18 +99,6 @@ def _override_incidents_db():
     yield InMemoryDB(handlers)
 
 
-def _override_anomaly_db():
-    handlers = {
-        "SELECT COUNT(*)::bigint AS target_count": {
-            "rows": [{"target_count": 12}]
-        },
-        "AVG(COALESCE(counts.count, 0))": {
-            "rows": [{"baseline_mean": 8.0}]
-        },
-    }
-    yield InMemoryDB(handlers)
-
-
 def test_collision_analytics_summary_returns_region_summary():
     app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
@@ -195,7 +183,7 @@ def test_collision_analytics_timeseries_returns_series_and_total():
     app.dependency_overrides[get_db] = _override_analytics_scan_db
     try:
         response = client.get(
-            "/collision/analytics/timeseries",
+            "/collisions/analytics/timeseries",
             params={"from": "2025-02", "to": "2025-03", "roadType": "Single carriageway"},
         )
     finally:
@@ -208,24 +196,4 @@ def test_collision_analytics_timeseries_returns_series_and_total():
             {"month": "2025-03", "count": 2},
         ],
         "total": 3,
-    }
-
-
-def test_collision_analytics_anomaly_returns_ratio():
-    app.dependency_overrides[get_db] = _override_anomaly_db
-    try:
-        response = client.get(
-            "/collisions/analytics/anomaly",
-            params={"target": "2025-03", "baselineMonths": 6},
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "target": "2025-03",
-        "target_count": 12,
-        "baseline_mean": 8.0,
-        "ratio": 1.5,
-        "flag": True,
     }

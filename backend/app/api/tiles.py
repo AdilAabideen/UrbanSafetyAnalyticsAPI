@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import InternalError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -107,11 +107,11 @@ def _resolve_month_filter(month, startMonth, endMonth, includeRisk):
 def _execute(db, query, params):
     try:
         return db.execute(query, params)
-    except OperationalError as exc:
-        print(exc)
+    except (InternalError, OperationalError) as exc:
+        db.rollback()
         raise HTTPException(
             status_code=503,
-            detail="Database unavailable. Check BACKEND_DATABASE_URL or DATABASE_URL and Postgres connectivity.",
+            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
         ) from exc
 
 

@@ -1,276 +1,37 @@
-import json
-from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import bindparam, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from .crime_utils import (
+    _analytics_snapshot,
+    _analytics_filters,
+    _bbox_meta,
+    _bind_analytics_filter_params,
+    _cluster_feature,
+    _cluster_grid_size,
+    _crime_filters_meta,
+    _crime_map_feature,
+    _default_limit,
+    _execute,
+    _map_filters,
+    _normalize_filter_values,
+    _optional_bbox,
+    _parse_cursor,
+    _parse_json,
+    _required_bbox,
+    _resolve_from_to_filter,
+    _resolve_mode,
+    _resolve_month_filter,
+    _where_sql,
+)
 from ..db import get_db
 
 
 router = APIRouter(tags=["crimes"])
 
-VALID_MAP_MODES = {"auto", "points", "clusters"}
 MAX_CRIME_LIMIT = 10000
-
-
-def _parse_json(value):
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
-
-
-def _parse_month(month):
-    if month is None:
-        return None
-
-    try:
-        return datetime.strptime(month, "%Y-%m").date()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="month must be in YYYY-MM format") from exc
-
-
-def _resolve_month_filter(month, startMonth, endMonth):
-    if month and (startMonth or endMonth):
-        raise HTTPException(
-            status_code=400,
-            detail="Use either month or startMonth/endMonth, not both",
-        )
-
-    if startMonth or endMonth:
-        if not (startMonth and endMonth):
-            raise HTTPException(
-                status_code=400,
-                detail="startMonth and endMonth must be provided together",
-            )
-
-        start_month_date = _parse_month(startMonth)
-        end_month_date = _parse_month(endMonth)
-        if start_month_date > end_month_date:
-            raise HTTPException(
-                status_code=400,
-                detail="startMonth must be less than or equal to endMonth",
-            )
-
-        return {
-            "clause": "ce.month BETWEEN :start_month_date AND :end_month_date",
-            "params": {
-                "start_month_date": start_month_date,
-                "end_month_date": end_month_date,
-            },
-            "month": None,
-            "startMonth": start_month_date.strftime("%Y-%m"),
-            "endMonth": end_month_date.strftime("%Y-%m"),
-        }
-
-    month_date = _parse_month(month)
-    if month_date is None:
-        return {
-            "clause": None,
-            "params": {},
-            "month": None,
-            "startMonth": None,
-            "endMonth": None,
-        }
-
-    return {
-        "clause": "ce.month = :month_date",
-        "params": {"month_date": month_date},
-        "month": month_date.strftime("%Y-%m"),
-        "startMonth": None,
-        "endMonth": None,
-    }
-
-
-def _parse_cursor(cursor):
-    if cursor is None:
-        return None
-
-    try:
-        month_key, row_id = cursor.split("|", 1)
-        return {
-            "cursor_month": datetime.strptime(month_key, "%Y-%m").date(),
-            "cursor_id": int(row_id),
-        }
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail="cursor must be in YYYY-MM|id format") from exc
-
-
-def _normalize_filter_values(values, parameter_name):
-    if not values:
-        return None
-
-    normalized = []
-    for item in values:
-        for token in item.split(","):
-            value = token.strip()
-            if value:
-                normalized.append(value)
-
-    if not normalized:
-        raise HTTPException(status_code=400, detail=f"{parameter_name} must contain at least one value")
-
-    return normalized
-
-
-def _validate_bbox(min_lon, min_lat, max_lon, max_lat):
-    if min_lon >= max_lon:
-        raise HTTPException(status_code=400, detail="minLon must be less than maxLon")
-    if min_lat >= max_lat:
-        raise HTTPException(status_code=400, detail="minLat must be less than maxLat")
-
-
-def _required_bbox(min_lon, min_lat, max_lon, max_lat):
-    _validate_bbox(min_lon, min_lat, max_lon, max_lat)
-    return {
-        "min_lon": min_lon,
-        "min_lat": min_lat,
-        "max_lon": max_lon,
-        "max_lat": max_lat,
-    }
-
-
-def _optional_bbox(min_lon, min_lat, max_lon, max_lat):
-    values = [min_lon, min_lat, max_lon, max_lat]
-    if not any(value is not None for value in values):
-        return None
-
-    if not all(value is not None for value in values):
-        raise HTTPException(
-            status_code=400,
-            detail="minLon, minLat, maxLon, and maxLat must all be provided together",
-        )
-
-    return _required_bbox(min_lon, min_lat, max_lon, max_lat)
-
-
-def _resolve_mode(mode, zoom):
-    if mode not in VALID_MAP_MODES:
-        raise HTTPException(status_code=400, detail="mode must be one of auto, points, or clusters")
-
-    if mode == "auto":
-        return "clusters" if zoom <= 11 else "points"
-    return mode
-
-
-def _default_limit(zoom, mode):
-    if mode == "clusters":
-        return 1500 if zoom <= 8 else 2500
-
-    if zoom >= 16:
-        return 5000
-    if zoom >= 14:
-        return 3000
-    return 2000
-
-
-def _cluster_grid_size(bbox, zoom):
-    if zoom <= 8:
-        divisions = 12
-    elif zoom <= 10:
-        divisions = 16
-    else:
-        divisions = 20
-
-    cell_width = max((bbox["max_lon"] - bbox["min_lon"]) / divisions, 0.0001)
-    cell_height = max((bbox["max_lat"] - bbox["min_lat"]) / divisions, 0.0001)
-    return cell_width, cell_height
-
-
-def _execute(db, query, params):
-    try:
-        return db.execute(query, params)
-    except OperationalError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Check BACKEND_DATABASE_URL or DATABASE_URL and Postgres connectivity.",
-        ) from exc
-
-
-def _map_filters(month_filter, bbox, crime_types, last_outcome_categories, lsoa_names):
-    where_clauses = [
-        "ce.geom IS NOT NULL",
-        "ce.lon IS NOT NULL",
-        "ce.lat IS NOT NULL",
-        "ce.lon BETWEEN :min_lon AND :max_lon",
-        "ce.lat BETWEEN :min_lat AND :max_lat",
-        "ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)",
-    ]
-    query_params = dict(bbox)
-
-    if month_filter["clause"] is not None:
-        where_clauses.append(month_filter["clause"])
-        query_params.update(month_filter["params"])
-
-    if crime_types:
-        where_clauses.append("COALESCE(NULLIF(ce.crime_type, ''), 'unknown') IN :crime_types")
-        query_params["crime_types"] = crime_types
-
-    if last_outcome_categories:
-        where_clauses.append(
-            "COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') IN :last_outcome_categories"
-        )
-        query_params["last_outcome_categories"] = last_outcome_categories
-
-    if lsoa_names:
-        where_clauses.append("COALESCE(NULLIF(ce.lsoa_name, ''), 'unknown') IN :lsoa_names")
-        query_params["lsoa_names"] = lsoa_names
-
-    return where_clauses, query_params
-
-
-def _crime_map_feature(row):
-    return {
-        "type": "Feature",
-        "geometry": _parse_json(row["geometry"]),
-        "properties": {
-            "id": row["id"],
-            "crime_id": row["crime_id"],
-            "month": row["month_label"],
-            "crime_type": row["crime_type"],
-            "last_outcome_category": row["last_outcome_category"],
-            "location_text": row["location_text"],
-            "reported_by": row["reported_by"],
-            "falls_within": row["falls_within"],
-            "lsoa_code": row["lsoa_code"],
-            "lsoa_name": row["lsoa_name"],
-        },
-    }
-
-
-def _cluster_feature(row):
-    return {
-        "type": "Feature",
-        "geometry": _parse_json(row["geometry"]),
-        "properties": {
-            "cluster": True,
-            "cluster_id": row["cluster_id"],
-            "count": row["count"],
-            "top_crime_types": _parse_json(row["top_crime_types"]) or {},
-        },
-    }
-
-
-def _crime_filters_meta(month, start_month, end_month, crime_types, last_outcome_categories, lsoa_names):
-    return {
-        "month": month,
-        "startMonth": start_month,
-        "endMonth": end_month,
-        "crimeType": crime_types,
-        "lastOutcomeCategory": last_outcome_categories,
-        "lsoaName": lsoa_names,
-    }
-
-
-def _bbox_meta(min_lon, min_lat, max_lon, max_lat):
-    return {
-        "minLon": min_lon,
-        "minLat": min_lat,
-        "maxLon": max_lon,
-        "maxLat": max_lat,
-    }
 
 
 def _point_next_cursor(rows, limit):
@@ -279,6 +40,68 @@ def _point_next_cursor(rows, limit):
 
     last_row = rows[limit - 1]
     return f"{last_row['month_label']}|{last_row['id']}"
+
+
+def _incident_item(row):
+    return {
+        "id": row["id"],
+        "crime_id": row["crime_id"],
+        "month": row["month_label"],
+        "crime_type": row["crime_type"],
+        "last_outcome_category": row["last_outcome_category"],
+        "location_text": row["location_text"],
+        "reported_by": row["reported_by"],
+        "falls_within": row["falls_within"],
+        "lsoa_code": row["lsoa_code"],
+        "lsoa_name": row["lsoa_name"],
+        "lon": row["lon"],
+        "lat": row["lat"],
+    }
+
+
+def _sorted_count_items(counts, field_name):
+    return [
+        {field_name: label, "count": count}
+        for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _analytics_request_filters(
+    from_month,
+    to_month,
+    min_lon,
+    min_lat,
+    max_lon,
+    max_lat,
+    crime_type,
+    last_outcome_category,
+    lsoa_name,
+    required_range,
+):
+    range_filter = _resolve_from_to_filter(from_month, to_month, required=required_range)
+    bbox = _optional_bbox(min_lon, min_lat, max_lon, max_lat)
+    crime_types = _normalize_filter_values(crime_type, "crimeType")
+    last_outcome_categories = _normalize_filter_values(last_outcome_category, "lastOutcomeCategory")
+    lsoa_names = _normalize_filter_values(lsoa_name, "lsoaName")
+    return range_filter, bbox, crime_types, last_outcome_categories, lsoa_names
+
+
+def _analytics_response_filters(range_filter, bbox, crime_types, last_outcome_categories, lsoa_names):
+    return {
+        "from": range_filter["from"],
+        "to": range_filter["to"],
+        "crimeType": crime_types,
+        "lastOutcomeCategory": last_outcome_categories,
+        "lsoaName": lsoa_names,
+        "bbox": None
+        if not bbox
+        else _bbox_meta(
+            bbox["min_lon"],
+            bbox["min_lat"],
+            bbox["max_lon"],
+            bbox["max_lat"],
+        ),
+    }
 
 
 def _crime_points_payload(
@@ -518,7 +341,100 @@ def _crime_clusters_payload(
     }
 
 
-@router.get("/crimes")
+@router.get("/crimes/incidents")
+def get_crime_incidents(
+    from_month: str = Query(..., alias="from"),
+    to_month: str = Query(..., alias="to"),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    limit: int = Query(250, ge=1, le=1000),
+    cursor: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    range_filter, bbox, crime_types, last_outcome_categories, lsoa_names = _analytics_request_filters(
+        from_month,
+        to_month,
+        minLon,
+        minLat,
+        maxLon,
+        maxLat,
+        crimeType,
+        lastOutcomeCategory,
+        lsoaName,
+        True,
+    )
+    cursor_data = _parse_cursor(cursor)
+
+    where_clauses, query_params = _analytics_filters(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+    )
+    query_params["row_limit"] = limit + 1
+
+    cursor_clause = ""
+    if cursor_data:
+        cursor_clause = """
+        AND (
+            ce.month < :cursor_month
+            OR (ce.month = :cursor_month AND ce.id < :cursor_id)
+        )
+        """
+        query_params.update(cursor_data)
+
+    query = text(
+        f"""
+        SELECT
+            ce.id,
+            ce.crime_id,
+            to_char(ce.month, 'YYYY-MM') AS month_label,
+            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
+            COALESCE(NULLIF(ce.last_outcome_category, ''), 'unknown') AS last_outcome_category,
+            ce.location_text,
+            ce.reported_by,
+            ce.falls_within,
+            ce.lsoa_code,
+            ce.lsoa_name,
+            ce.lon,
+            ce.lat
+        FROM crime_events ce
+        {_where_sql(where_clauses)}
+        {cursor_clause}
+        ORDER BY ce.month DESC, ce.id DESC
+        LIMIT :row_limit
+        """
+    )
+    query = _bind_analytics_filter_params(query, crime_types, last_outcome_categories, lsoa_names)
+
+    rows = _execute(db, query, query_params).mappings().all()
+    truncated = len(rows) > limit
+    page_rows = rows[:limit]
+
+    return {
+        "items": [_incident_item(row) for row in page_rows],
+        "meta": {
+            "returned": len(page_rows),
+            "limit": limit,
+            "truncated": truncated,
+            "nextCursor": _point_next_cursor(rows, limit),
+            "filters": _analytics_response_filters(
+                range_filter,
+                bbox,
+                crime_types,
+                last_outcome_categories,
+                lsoa_names,
+            ),
+        },
+    }
+
+
 @router.get("/crimes/map")
 def get_crimes_map(
     minLon: float = Query(..., ge=-180, le=180),
@@ -577,60 +493,101 @@ def get_crimes_map(
         cursor_data=cursor_data,
     )
 
-
-@router.get("/crimes/stats")
-def get_crime_stats(
-    month: Optional[str] = Query(None),
+@router.get("/crimes/analytics/summary")
+def get_crime_analytics_summary(
+    from_month: str = Query(..., alias="from"),
+    to_month: str = Query(..., alias="to"),
     minLon: Optional[float] = Query(None, ge=-180, le=180),
     minLat: Optional[float] = Query(None, ge=-90, le=90),
     maxLon: Optional[float] = Query(None, ge=-180, le=180),
     maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
     db: Session = Depends(get_db),
 ):
-    month_date = _parse_month(month)
-    bbox = _optional_bbox(minLon, minLat, maxLon, maxLat)
-
-    where_clauses = []
-    query_params = {}
-
-    if month_date is not None:
-        where_clauses.append("ce.month = :month_date")
-        query_params["month_date"] = month_date
-
-    if bbox:
-        where_clauses.append("ce.lon BETWEEN :min_lon AND :max_lon")
-        where_clauses.append("ce.lat BETWEEN :min_lat AND :max_lat")
-        where_clauses.append("ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)")
-        query_params.update(bbox)
-
-    where_clause = ""
-    if where_clauses:
-        where_clause = "WHERE " + " AND ".join(where_clauses)
-
-    query = text(
-        f"""
-        SELECT
-            COALESCE(NULLIF(ce.crime_type, ''), 'unknown') AS crime_type,
-            COUNT(*) AS count
-        FROM crime_events ce
-        {where_clause}
-        GROUP BY COALESCE(NULLIF(ce.crime_type, ''), 'unknown')
-        ORDER BY count DESC, crime_type ASC
-        """
+    range_filter, bbox, crime_types, last_outcome_categories, lsoa_names = _analytics_request_filters(
+        from_month,
+        to_month,
+        minLon,
+        minLat,
+        maxLon,
+        maxLat,
+        crimeType,
+        lastOutcomeCategory,
+        lsoaName,
+        True,
     )
-    rows = _execute(db, query, query_params).mappings()
-    crime_type_counts = {row["crime_type"]: row["count"] for row in rows}
-
-    filters = {"month": month_date.strftime("%Y-%m") if month_date else None}
-    if bbox:
-        filters["bbox"] = _bbox_meta(minLon, minLat, maxLon, maxLat)
+    snapshot = _analytics_snapshot(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+        db,
+    )
+    type_rows = _sorted_count_items(snapshot["crime_type_counts"], "crime_type")[:10]
+    outcome_rows = _sorted_count_items(snapshot["outcome_counts"], "outcome")[:10]
 
     return {
-        "filters": filters,
-        "total": sum(crime_type_counts.values()),
-        "crime_type_counts": crime_type_counts,
+        "from": range_filter["from"],
+        "to": range_filter["to"],
+        "total_crimes": snapshot["total_crimes"],
+        "unique_lsoas": snapshot["unique_lsoas"],
+        "unique_crime_types": snapshot["unique_crime_types"],
+        "top_crime_type": None
+        if not type_rows
+        else {
+            "crime_type": type_rows[0]["crime_type"],
+            "count": type_rows[0]["count"],
+        },
+        "crimes_with_outcomes": snapshot["crimes_with_outcomes"],
+        "top_crime_types": type_rows,
+        "top_outcomes": outcome_rows,
     }
 
+@router.get("/crimes/analytics/timeseries")
+def get_crime_analytics_timeseries(
+    from_month: str = Query(..., alias="from"),
+    to_month: str = Query(..., alias="to"),
+    minLon: Optional[float] = Query(None, ge=-180, le=180),
+    minLat: Optional[float] = Query(None, ge=-90, le=90),
+    maxLon: Optional[float] = Query(None, ge=-180, le=180),
+    maxLat: Optional[float] = Query(None, ge=-90, le=90),
+    crimeType: Optional[List[str]] = Query(None),
+    lastOutcomeCategory: Optional[List[str]] = Query(None),
+    lsoaName: Optional[List[str]] = Query(None),
+    db: Session = Depends(get_db),
+):
+    range_filter, bbox, crime_types, last_outcome_categories, lsoa_names = _analytics_request_filters(
+        from_month,
+        to_month,
+        minLon,
+        minLat,
+        maxLon,
+        maxLat,
+        crimeType,
+        lastOutcomeCategory,
+        lsoaName,
+        True,
+    )
+    snapshot = _analytics_snapshot(
+        range_filter,
+        bbox,
+        crime_types,
+        last_outcome_categories,
+        lsoa_names,
+        db,
+    )
+    rows = [
+        {"month": month, "count": count}
+        for month, count in snapshot["monthly_counts"].items()
+    ]
+
+    return {
+        "series": rows,
+        "total": sum(row["count"] for row in rows),
+    }
 
 @router.get("/crimes/{crime_id}")
 def get_crime_by_id(

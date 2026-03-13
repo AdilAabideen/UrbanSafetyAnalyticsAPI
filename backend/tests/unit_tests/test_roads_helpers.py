@@ -1,41 +1,30 @@
-import pytest
-from fastapi import HTTPException
-
-from app.api import roads
+from app.api import roads_utils
 
 
-def test_validate_bbox_accepts_valid_bounds():
-    roads._validate_bbox(-1.6, 53.78, -1.5, 53.82)
+def test_safe_pct_change_handles_zero_and_non_zero_baselines():
+    assert roads_utils._safe_pct_change(120, 100) == 20.0
+    assert roads_utils._safe_pct_change(120, 0) is None
 
 
-def test_validate_bbox_rejects_reversed_longitudes():
-    with pytest.raises(HTTPException) as exc:
-        roads._validate_bbox(-1.5, 53.78, -1.6, 53.82)
+def test_highway_message_flags_over_indexed_groups():
+    message = roads_utils._highway_message(
+        {"highway": "residential", "incident_count": 90, "length_m": 1000},
+        total_incidents=100,
+        total_length_m=10000,
+    )
 
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "minLon must be less than maxLon"
-
-
-def test_validate_tile_coordinates_rejects_out_of_range_values():
-    with pytest.raises(HTTPException) as exc:
-        roads._validate_tile_coordinates(9, 512, 0)
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "Tile coordinates out of range for zoom level"
+    assert "over-indexing" in message
 
 
-def test_tile_profile_changes_across_zoom_bands():
-    low_zoom_highways, low_zoom_tolerance = roads._tile_profile(8)
-    high_zoom_highways, high_zoom_tolerance = roads._tile_profile(14)
+def test_risk_item_message_includes_crime_type_and_period_change():
+    message = roads_utils._risk_item_message(
+        {
+            "incident_count": 12,
+            "dominant_crime_type": "Shoplifting",
+            "previous_period_change_pct": 25.0,
+        }
+    )
 
-    assert "primary" in low_zoom_highways
-    assert low_zoom_tolerance == 80
-    assert high_zoom_highways is None
-    assert high_zoom_tolerance == 0
-
-
-def test_parse_json_handles_string_and_dict_values():
-    payload = {"ok": True}
-
-    assert roads._parse_json('{"ok": true}') == payload
-    assert roads._parse_json(payload) == payload
+    assert "12 incidents" in message
+    assert "Shoplifting" in message
+    assert "25.0% up" in message

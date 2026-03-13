@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import InternalError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -107,11 +107,11 @@ def _resolve_month_filter(month, startMonth, endMonth, includeRisk):
 def _execute(db, query, params):
     try:
         return db.execute(query, params)
-    except OperationalError as exc:
-        print(exc)
+    except (InternalError, OperationalError) as exc:
+        db.rollback()
         raise HTTPException(
             status_code=503,
-            detail="Database unavailable. Check BACKEND_DATABASE_URL or DATABASE_URL and Postgres connectivity.",
+            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
         ) from exc
 
 
@@ -201,7 +201,7 @@ def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filte
                 ranked_scores.pct,
                 CASE
                     WHEN ranked_scores.pct >= 0.95 THEN 'red'
-                    WHEN ranked_scores.pct >= 0.80 THEN 'orange'
+                    WHEN ranked_scores.pct >= 0.60 THEN 'orange'
                     ELSE 'green'
                 END AS band,
                 ST_AsMVTGeom({geom_expression}, bounds.geom, :extent, :buffer, true) AS geom

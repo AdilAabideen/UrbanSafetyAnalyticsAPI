@@ -1,0 +1,168 @@
+from typing import Optional
+
+from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
+
+from ..auth_utils import create_access_token, get_current_user, hash_password, verify_password
+from ..db import get_db
+
+
+router = APIRouter(tags=["auth"])
+
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str = Field(..., min_length=8)
+
+
+class ProfileUpdateRequest(BaseModel):
+    email: Optional[str] = None
+    password: Optional[str] = Field(default=None, min_length=8)
+
+
+def _execute(db, query, params):
+    try:
+        return db.execute(query, params)
+    except OperationalError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable. Postgres query execution failed; inspect the database container and server logs.",
+        ) from exc
+
+
+@router.post("/auth/register")
+def register(payload: AuthRequest, db: Session = Depends(get_db)):
+    existing_query = text(
+        """
+        SELECT u.id
+        FROM users u
+        WHERE u.email = :email
+        LIMIT 1
+        """
+    )
+    existing = _execute(db, existing_query, {"email": payload.email}).mappings().first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    insert_query = text(
+        """
+        INSERT INTO users (email, password_hash, is_admin)
+        VALUES (:email, :password_hash, FALSE)
+        RETURNING id, email, is_admin, created_at
+        """
+    )
+    try:
+        user = _execute(
+            db,
+            insert_query,
+            {
+                "email": payload.email,
+                "password_hash": hash_password(payload.password),
+            },
+        ).mappings().first()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered") from exc
+
+    return {
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "is_admin": user["is_admin"],
+            "created_at": user["created_at"],
+        }
+    }
+
+
+@router.post("/auth/login")
+def login(payload: AuthRequest, db: Session = Depends(get_db)):
+    query = text(
+        """
+        SELECT
+            u.id,
+            u.email,
+            u.password_hash,
+            u.is_admin,
+            u.created_at
+        FROM users u
+        WHERE u.email = :email
+        LIMIT 1
+        """
+    )
+    user = _execute(db, query, {"email": payload.email}).mappings().first()
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    access_token = create_access_token(user["id"])
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "is_admin": user["is_admin"],
+            "created_at": user["created_at"],
+        },
+    }
+
+
+@router.get("/me")
+def me(current_user=Depends(get_current_user)):
+    return {"user": current_user}
+
+
+@router.patch("/me")
+def update_me(
+    payload: ProfileUpdateRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.email is None and payload.password is None:
+        raise HTTPException(status_code=400, detail="Provide email or password to update")
+
+    update_fields = []
+    query_params = {"user_id": current_user["id"]}
+
+    if payload.email is not None:
+        update_fields.append("email = :email")
+        query_params["email"] = payload.email
+
+    if payload.password is not None:
+        update_fields.append("password_hash = :password_hash")
+        query_params["password_hash"] = hash_password(payload.password)
+
+    update_query = text(
+        f"""
+        UPDATE users
+        SET {", ".join(update_fields)}
+        WHERE id = :user_id
+        RETURNING id, email, is_admin, created_at
+        """
+    )
+
+    try:
+        user = _execute(db, update_query, query_params).mappings().first()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered") from exc
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "is_admin": user["is_admin"],
+            "created_at": user["created_at"],
+        }
+    }

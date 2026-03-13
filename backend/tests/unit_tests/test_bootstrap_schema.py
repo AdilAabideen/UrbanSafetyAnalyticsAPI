@@ -42,6 +42,9 @@ def test_initialize_database_creates_tables_indexes_and_admin_seed(monkeypatch):
     assert any("CREATE TABLE IF NOT EXISTS users" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS watchlists" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS watchlist_preferences" in sql for sql in statements)
+    assert any("crime_types TEXT[] NOT NULL" in sql for sql in statements)
+    assert any("travel_mode TEXT NOT NULL" in sql for sql in statements)
+    assert any("RENAME COLUMN banding_mode TO travel_mode" in sql for sql in statements)
     assert any("CREATE INDEX IF NOT EXISTS watchlists_user_id_idx" in sql for sql in statements)
     assert any("CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx" in sql for sql in statements)
     assert insert_params["email"] == bootstrap.DEFAULT_ADMIN_EMAIL

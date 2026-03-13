@@ -14,10 +14,9 @@ router = APIRouter(tags=["watchlists"])
 
 
 class WatchlistPreferencePayload(BaseModel):
-    id: Optional[int] = None
     window_months: int = Field(..., ge=1)
-    crime_type: Optional[str] = None
-    banding_mode: str = Field(..., min_length=1)
+    crime_types: List[str] = Field(default_factory=list)
+    travel_mode: str = Field(..., min_length=1)
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -26,7 +25,7 @@ class WatchlistCreateRequest(BaseModel):
     min_lat: float
     max_lon: float
     max_lat: float
-    preferences: List[WatchlistPreferencePayload] = Field(default_factory=list)
+    preference: Optional[WatchlistPreferencePayload] = None
 
 
 class WatchlistUpdateRequest(BaseModel):
@@ -35,7 +34,7 @@ class WatchlistUpdateRequest(BaseModel):
     min_lat: Optional[float] = None
     max_lon: Optional[float] = None
     max_lat: Optional[float] = None
-    preferences: Optional[List[WatchlistPreferencePayload]] = None
+    preference: Optional[WatchlistPreferencePayload] = None
 
 
 def _execute(db, query, params):
@@ -80,7 +79,7 @@ def _watchlist_to_dict(row, preferences):
         "max_lon": row["max_lon"],
         "max_lat": row["max_lat"],
         "created_at": row["created_at"],
-        "preferences": preferences,
+        "preference": preferences,
     }
 
 
@@ -89,8 +88,8 @@ def _preference_to_dict(row):
         "id": row["id"],
         "watchlist_id": row["watchlist_id"],
         "window_months": row["window_months"],
-        "crime_type": row["crime_type"],
-        "banding_mode": row["banding_mode"],
+        "crime_types": list(row["crime_types"] or []),
+        "travel_mode": row["travel_mode"],
         "created_at": row["created_at"],
     }
 
@@ -118,43 +117,72 @@ def _get_watchlist_row(db, watchlist_id, user_id):
     return row
 
 
-def _get_watchlist_preferences(db, watchlist_id):
+def _normalize_crime_types(values):
+    normalized = []
+    seen = set()
+    for value in values or []:
+        token = (value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
+
+
+def _get_watchlist_preference(db, watchlist_id):
     query = text(
         """
         SELECT
             wp.id,
             wp.watchlist_id,
             wp.window_months,
-            NULLIF(wp.crime_type, '') AS crime_type,
-            wp.banding_mode,
+            wp.crime_types,
+            wp.travel_mode,
             wp.created_at
         FROM watchlist_preferences wp
         WHERE wp.watchlist_id = :watchlist_id
-        ORDER BY wp.created_at ASC, wp.id ASC
+        ORDER BY wp.created_at DESC, wp.id DESC
+        LIMIT 1
         """
     )
-    rows = _execute(db, query, {"watchlist_id": watchlist_id}).mappings().all()
-    return [_preference_to_dict(row) for row in rows]
+    row = _execute(db, query, {"watchlist_id": watchlist_id}).mappings().first()
+    if not row:
+        return None
+    return _preference_to_dict(row)
 
 
-def _insert_preference_row(db, watchlist_id, user_id, preference):
-    banding_mode = _normalize_required_text(preference.banding_mode, "banding_mode")
+def _replace_watchlist_preference(db, watchlist_id, user_id, preference):
+    _execute(
+        db,
+        text(
+            """
+            DELETE FROM watchlist_preferences wp
+            USING watchlists w
+            WHERE wp.watchlist_id = :watchlist_id
+              AND w.id = wp.watchlist_id
+              AND w.user_id = :user_id
+            """
+        ),
+        {"watchlist_id": watchlist_id, "user_id": user_id},
+    )
+
+    travel_mode = _normalize_required_text(preference.travel_mode, "travel_mode")
     query = text(
         """
-        INSERT INTO watchlist_preferences (watchlist_id, window_months, crime_type, banding_mode)
+        INSERT INTO watchlist_preferences (watchlist_id, window_months, crime_types, travel_mode)
         SELECT
             w.id,
             :window_months,
-            :crime_type,
-            :banding_mode
+            :crime_types,
+            :travel_mode
         FROM watchlists w
         WHERE w.id = :watchlist_id AND w.user_id = :user_id
         RETURNING
             id,
             watchlist_id,
             window_months,
-            crime_type,
-            banding_mode,
+            crime_types,
+            travel_mode,
             created_at
         """
     )
@@ -165,8 +193,8 @@ def _insert_preference_row(db, watchlist_id, user_id, preference):
             "watchlist_id": watchlist_id,
             "user_id": user_id,
             "window_months": preference.window_months,
-            "crime_type": _normalize_optional_text(preference.crime_type),
-            "banding_mode": banding_mode,
+            "crime_types": _normalize_crime_types(preference.crime_types),
+            "travel_mode": travel_mode,
         },
     ).mappings().first()
     if not row:
@@ -174,54 +202,10 @@ def _insert_preference_row(db, watchlist_id, user_id, preference):
     return row
 
 
-def _update_preference_row(db, watchlist_id, user_id, preference):
-    query = text(
-        """
-        UPDATE watchlist_preferences wp
-        SET
-            window_months = :window_months,
-            crime_type = :crime_type,
-            banding_mode = :banding_mode
-        FROM watchlists w
-        WHERE wp.id = :preference_id
-          AND wp.watchlist_id = :watchlist_id
-          AND w.id = wp.watchlist_id
-          AND w.user_id = :user_id
-        RETURNING
-            wp.id,
-            wp.watchlist_id,
-            wp.window_months,
-            wp.crime_type,
-            wp.banding_mode,
-            wp.created_at
-        """
-    )
-    row = _execute(
-        db,
-        query,
-        {
-            "preference_id": preference.id,
-            "watchlist_id": watchlist_id,
-            "user_id": user_id,
-            "window_months": preference.window_months,
-            "crime_type": _normalize_optional_text(preference.crime_type),
-            "banding_mode": _normalize_required_text(preference.banding_mode, "banding_mode"),
-        },
-    ).mappings().first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Watchlist preference not found")
-    return row
-
-
-def _apply_preference_upserts(db, watchlist_id, user_id, preferences):
-    if preferences is None:
+def _apply_preference(db, watchlist_id, user_id, preference):
+    if preference is None:
         return
-
-    for preference in preferences:
-        if preference.id is None:
-            _insert_preference_row(db, watchlist_id, user_id, preference)
-        else:
-            _update_preference_row(db, watchlist_id, user_id, preference)
+    _replace_watchlist_preference(db, watchlist_id, user_id, preference)
 
 
 @router.get("/watchlists")
@@ -232,7 +216,7 @@ def read_watchlists(
 ):
     if watchlist_id is not None:
         row = _get_watchlist_row(db, watchlist_id, current_user["id"])
-        return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preferences(db, watchlist_id))}
+        return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, watchlist_id))}
 
     query = text(
         """
@@ -253,7 +237,7 @@ def read_watchlists(
     rows = _execute(db, query, {"user_id": current_user["id"]}).mappings().all()
     return {
         "items": [
-            _watchlist_to_dict(row, _get_watchlist_preferences(db, row["id"]))
+            _watchlist_to_dict(row, _get_watchlist_preference(db, row["id"]))
             for row in rows
         ]
     }
@@ -296,13 +280,13 @@ def create_watchlist(
                 "max_lat": payload.max_lat,
             },
         ).mappings().first()
-        _apply_preference_upserts(db, row["id"], current_user["id"], payload.preferences)
+        _apply_preference(db, row["id"], current_user["id"], payload.preference)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail="Unable to create watchlist") from exc
 
-    return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preferences(db, row["id"]))}
+    return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, row["id"]))}
 
 
 @router.patch("/watchlists/{watchlist_id}")
@@ -348,8 +332,8 @@ def update_watchlist(
             }
         )
 
-    if not update_fields and payload.preferences is None:
-        raise HTTPException(status_code=400, detail="Provide watchlist fields or preferences to update")
+    if not update_fields and payload.preference is None:
+        raise HTTPException(status_code=400, detail="Provide watchlist fields or preference to update")
 
     try:
         if update_fields:
@@ -376,13 +360,13 @@ def update_watchlist(
         else:
             row = _get_watchlist_row(db, watchlist_id, current_user["id"])
 
-        _apply_preference_upserts(db, watchlist_id, current_user["id"], payload.preferences)
+        _apply_preference(db, watchlist_id, current_user["id"], payload.preference)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail="Unable to update watchlist") from exc
 
-    return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preferences(db, watchlist_id))}
+    return {"watchlist": _watchlist_to_dict(row, _get_watchlist_preference(db, watchlist_id))}
 
 
 @router.delete("/watchlists/{watchlist_id}")

@@ -33,10 +33,55 @@ DDL_STATEMENTS = [
         id BIGSERIAL PRIMARY KEY,
         watchlist_id BIGINT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
         window_months INTEGER NOT NULL,
-        crime_type TEXT,
-        banding_mode TEXT NOT NULL,
+        crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+        travel_mode TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+    """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'watchlist_preferences'
+              AND column_name = 'banding_mode'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'watchlist_preferences'
+              AND column_name = 'travel_mode'
+        ) THEN
+            ALTER TABLE watchlist_preferences RENAME COLUMN banding_mode TO travel_mode;
+        END IF;
+    END $$;
+    """,
+    """
+    ALTER TABLE watchlist_preferences
+    ADD COLUMN IF NOT EXISTS crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]
+    """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'watchlist_preferences'
+              AND column_name = 'crime_type'
+        ) THEN
+            UPDATE watchlist_preferences
+            SET crime_types = CASE
+                WHEN crime_type IS NULL OR BTRIM(crime_type) = '' THEN ARRAY[]::TEXT[]
+                ELSE ARRAY[crime_type]
+            END
+            WHERE crime_types = ARRAY[]::TEXT[];
+
+            ALTER TABLE watchlist_preferences DROP COLUMN crime_type;
+        END IF;
+    END $$;
     """,
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
     "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",

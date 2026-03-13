@@ -58,29 +58,24 @@ class _WatchlistMemoryDB:
                 "id": self.next_preference_id,
                 "watchlist_id": watchlist["id"],
                 "window_months": params["window_months"],
-                "crime_type": params["crime_type"],
-                "banding_mode": params["banding_mode"],
+                "crime_types": list(params["crime_types"]),
+                "travel_mode": params["travel_mode"],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             self.preferences[preference["id"]] = preference
             self.next_preference_id += 1
             return _RowsResult([preference])
 
-        if "UPDATE watchlist_preferences wp" in sql:
-            preference = self.preferences.get(params["preference_id"])
+        if "DELETE FROM watchlist_preferences wp" in sql and "USING watchlists w" in sql:
             watchlist = self.watchlists.get(params["watchlist_id"])
-            if (
-                not preference
-                or not watchlist
-                or preference["watchlist_id"] != watchlist["id"]
-                or watchlist["user_id"] != params["user_id"]
-            ):
+            if not watchlist or watchlist["user_id"] != params["user_id"]:
                 return _RowsResult([])
-
-            for field in ("window_months", "crime_type", "banding_mode"):
-                if field in params:
-                    preference[field] = params[field]
-            return _RowsResult([preference])
+            self.preferences = {
+                preference_id: preference
+                for preference_id, preference in self.preferences.items()
+                if preference["watchlist_id"] != params["watchlist_id"]
+            }
+            return _RowsResult([])
 
         if "FROM watchlists w" in sql and "WHERE w.user_id = :user_id" in sql and "LIMIT 1" not in sql:
             rows = [
@@ -120,14 +115,14 @@ class _WatchlistMemoryDB:
             }
             return _RowsResult([{"id": watchlist["id"]}])
 
-        if "FROM watchlist_preferences wp" in sql and "ORDER BY wp.created_at ASC, wp.id ASC" in sql:
+        if "FROM watchlist_preferences wp" in sql and "ORDER BY wp.created_at DESC, wp.id DESC" in sql:
             rows = [
                 preference
                 for preference in self.preferences.values()
                 if preference["watchlist_id"] == params["watchlist_id"]
             ]
-            rows.sort(key=lambda row: (row["created_at"], row["id"]))
-            return _RowsResult(rows)
+            rows.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
+            return _RowsResult(rows[:1])
 
         raise AssertionError(f"Unexpected watchlist query: {sql}")
 
@@ -163,22 +158,22 @@ def test_watchlist_crud_and_preference_crud_flow():
                 "min_lat": 53.75,
                 "max_lon": -1.45,
                 "max_lat": 53.88,
-                "preferences": [
-                    {
-                        "window_months": 6,
-                        "crime_type": "burglary",
-                        "banding_mode": "quantile",
-                    }
-                ],
+                "preference": {
+                    "window_months": 6,
+                    "crime_types": ["burglary", "vehicle crime"],
+                    "travel_mode": "driving",
+                },
             },
         )
         assert create_watchlist.status_code == 201
         watchlist = create_watchlist.json()["watchlist"]
         assert watchlist["id"] == 1
-        assert len(watchlist["preferences"]) == 1
-        preference = watchlist["preferences"][0]
+        preference = watchlist["preference"]
+        assert preference is not None
         assert preference["id"] == 1
         assert preference["watchlist_id"] == watchlist["id"]
+        assert preference["crime_types"] == ["burglary", "vehicle crime"]
+        assert preference["travel_mode"] == "driving"
 
         list_watchlists = client.get("/watchlists")
         assert list_watchlists.status_code == 200
@@ -187,8 +182,7 @@ def test_watchlist_crud_and_preference_crud_flow():
 
         get_watchlist = client.get("/watchlists", params={"watchlist_id": watchlist["id"]})
         assert get_watchlist.status_code == 200
-        assert len(get_watchlist.json()["watchlist"]["preferences"]) == 1
-        assert get_watchlist.json()["watchlist"]["preferences"][0]["banding_mode"] == "quantile"
+        assert get_watchlist.json()["watchlist"]["preference"]["travel_mode"] == "driving"
 
         update_watchlist = client.patch(
             f"/watchlists/{watchlist['id']}",
@@ -198,25 +192,21 @@ def test_watchlist_crud_and_preference_crud_flow():
                 "min_lat": 53.76,
                 "max_lon": -1.43,
                 "max_lat": 53.9,
-                "preferences": [
-                    {
-                        "id": preference["id"],
-                        "window_months": 12,
-                        "crime_type": "vehicle crime",
-                        "banding_mode": "equal_interval",
-                    }
-                ],
+                "preference": {
+                    "window_months": 12,
+                    "crime_types": ["vehicle crime"],
+                    "travel_mode": "walking",
+                },
             },
         )
         assert update_watchlist.status_code == 200
         updated_watchlist = update_watchlist.json()["watchlist"]
         assert updated_watchlist["name"] == "Leeds Inner Ring"
         assert updated_watchlist["min_lon"] == -1.68
-        assert len(updated_watchlist["preferences"]) == 1
-        updated_preference = updated_watchlist["preferences"][0]
+        updated_preference = updated_watchlist["preference"]
         assert updated_preference["window_months"] == 12
-        assert updated_preference["crime_type"] == "vehicle crime"
-        assert updated_preference["banding_mode"] == "equal_interval"
+        assert updated_preference["crime_types"] == ["vehicle crime"]
+        assert updated_preference["travel_mode"] == "walking"
 
         delete_watchlist = client.delete(f"/watchlists/{watchlist['id']}")
         assert delete_watchlist.status_code == 200

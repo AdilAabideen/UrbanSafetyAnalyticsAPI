@@ -14,10 +14,11 @@ This document covers the current frontend-facing analytics surface:
 - `GET /analytics/patterns/hotspot-stability`
 
 Important implementation note:
-- each of the 3 analytics endpoints now stores a snapshot row in Postgres
-- every successful response includes:
-  - `snapshot_id`
-  - `stored_at`
+- the 3 generic analytics endpoints are compute-only and do not persist results
+- watchlist-triggered persistence now happens through:
+  - `POST /watchlists/{watchlist_id}/risk-score/run`
+  - `POST /watchlists/{watchlist_id}/risk-forecast/run`
+  - `POST /watchlists/{watchlist_id}/hotspot-stability/run`
 
 ## Shared Conventions
 
@@ -144,8 +145,6 @@ Response:
     "includeCollisions": true
   },
   "generated_at": "2026-03-13T10:00:00Z",
-  "snapshot_id": 11,
-  "stored_at": "2026-03-13T10:00:00Z",
   "score_basis": "crime+collision",
   "risk_score": 92,
   "score": 92,
@@ -242,8 +241,6 @@ Response:
     "includeCollisions": true
   },
   "generated_at": "2026-03-13T10:00:00Z",
-  "snapshot_id": 21,
-  "stored_at": "2026-03-13T10:00:00Z",
   "score_basis": "crime+collision",
   "history": [
     {
@@ -352,8 +349,6 @@ Response:
     "k": 20
   },
   "generated_at": "2026-03-13T10:00:00Z",
-  "snapshot_id": 31,
-  "stored_at": "2026-03-13T10:00:00Z",
   "stability_series": [
     {
       "month": "2025-02",
@@ -428,8 +423,6 @@ export type AnalyticsScope = {
 export type RiskScoreResponse = {
   scope: AnalyticsScope;
   generated_at: string;
-  snapshot_id: number;
-  stored_at: string;
   score_basis: "crime" | "crime+collision";
   risk_score: number;
   score: number;
@@ -445,8 +438,6 @@ export type RiskScoreResponse = {
 export type RiskForecastResponse = {
   scope: AnalyticsScope;
   generated_at: string;
-  snapshot_id: number;
-  stored_at: string;
   score_basis: "crime" | "crime+collision";
   history: Array<Record<string, unknown>>;
   forecast: Record<string, unknown>;
@@ -460,8 +451,6 @@ export type RiskForecastResponse = {
 export type HotspotStabilityResponse = {
   scope: AnalyticsScope;
   generated_at: string;
-  snapshot_id: number;
-  stored_at: string;
   stability_series: Array<{
     month: string;
     jaccard_vs_prev: number;

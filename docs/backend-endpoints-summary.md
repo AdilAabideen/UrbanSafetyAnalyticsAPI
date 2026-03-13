@@ -41,13 +41,13 @@ This file summarizes the current live backend endpoint surface.
 ## Advanced Analytics
 
 - `POST /analytics/risk/score`
-  Area risk score for a bbox and time window. Stores a snapshot row and returns `snapshot_id`.
+  Area risk score for a bbox and time window. Compute only; does not persist.
 
 - `POST /analytics/risk/forecast`
-  Baseline-window forecast for a bbox and target month. Stores a snapshot row and returns `snapshot_id`.
+  Baseline-window forecast for a bbox and target month. Compute only; does not persist.
 
 - `GET /analytics/patterns/hotspot-stability`
-  Month-to-month hotspot persistence for a bbox/time window. Stores a snapshot row and returns `snapshot_id`.
+  Month-to-month hotspot persistence for a bbox/time window. Compute only; does not persist.
 
 ## Crimes
 
@@ -125,6 +125,18 @@ This file summarizes the current live backend endpoint surface.
   Delete a watchlist.
   Protected: yes.
 
+- `POST /watchlists/{watchlist_id}/risk-score/run`
+  Run risk score for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
+- `POST /watchlists/{watchlist_id}/risk-forecast/run`
+  Run forecast for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
+- `POST /watchlists/{watchlist_id}/hotspot-stability/run`
+  Run hotspot stability for a watchlist, return the result, and store it against that watchlist.
+  Protected: yes.
+
 ## Current Route Count
 
 - Core: `2`
@@ -136,6 +148,6 @@ This file summarizes the current live backend endpoint surface.
 - Roads analytics: `4`
 - Road tiles: `2`
 - LSOA: `1`
-- Watchlists: `4`
+- Watchlists: `7`
 
-Total current endpoints: `30`
+Total current endpoints: `33`

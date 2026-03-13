@@ -50,55 +50,24 @@ DDL_STATEMENTS = [
     DROP TABLE IF EXISTS watchlist_reports CASCADE
     """,
     """
-    CREATE TABLE IF NOT EXISTS analytics_risk_score_snapshots (
-        id BIGSERIAL PRIMARY KEY,
-        from_month DATE NOT NULL,
-        to_month DATE NOT NULL,
-        min_lon DOUBLE PRECISION NOT NULL,
-        min_lat DOUBLE PRECISION NOT NULL,
-        max_lon DOUBLE PRECISION NOT NULL,
-        max_lat DOUBLE PRECISION NOT NULL,
-        crime_type TEXT,
-        mode TEXT NOT NULL,
-        include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
-        weights JSONB NOT NULL DEFAULT '{}'::JSONB,
-        payload_json JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
+    DROP TABLE IF EXISTS analytics_risk_score_snapshots CASCADE
     """,
     """
-    CREATE TABLE IF NOT EXISTS analytics_risk_forecast_snapshots (
-        id BIGSERIAL PRIMARY KEY,
-        target_month DATE NOT NULL,
-        baseline_months INTEGER NOT NULL,
-        min_lon DOUBLE PRECISION NOT NULL,
-        min_lat DOUBLE PRECISION NOT NULL,
-        max_lon DOUBLE PRECISION NOT NULL,
-        max_lat DOUBLE PRECISION NOT NULL,
-        crime_type TEXT,
-        mode TEXT NOT NULL,
-        method TEXT NOT NULL,
-        include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
-        return_risk_projection BOOLEAN NOT NULL DEFAULT FALSE,
-        weights JSONB NOT NULL DEFAULT '{}'::JSONB,
-        payload_json JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
+    DROP TABLE IF EXISTS analytics_risk_forecast_snapshots CASCADE
     """,
     """
-    CREATE TABLE IF NOT EXISTS analytics_hotspot_stability_snapshots (
+    DROP TABLE IF EXISTS analytics_hotspot_stability_snapshots CASCADE
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS watchlist_analytics_runs (
         id BIGSERIAL PRIMARY KEY,
-        from_month DATE NOT NULL,
-        to_month DATE NOT NULL,
-        min_lon DOUBLE PRECISION,
-        min_lat DOUBLE PRECISION,
-        max_lon DOUBLE PRECISION,
-        max_lat DOUBLE PRECISION,
-        crime_type TEXT,
-        k INTEGER NOT NULL,
-        include_lists BOOLEAN NOT NULL DEFAULT FALSE,
+        watchlist_id BIGINT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
+        report_type TEXT NOT NULL,
+        request_params_json JSONB NOT NULL DEFAULT '{}'::JSONB,
         payload_json JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT watchlist_analytics_runs_report_type_chk
+            CHECK (report_type IN ('risk_score', 'risk_forecast', 'hotspot_stability'))
     )
     """,
     """
@@ -283,12 +252,8 @@ DDL_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
     "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",
-    "CREATE INDEX IF NOT EXISTS analytics_risk_score_snapshots_created_idx ON analytics_risk_score_snapshots(created_at DESC)",
-    "CREATE INDEX IF NOT EXISTS analytics_risk_score_snapshots_range_idx ON analytics_risk_score_snapshots(from_month, to_month)",
-    "CREATE INDEX IF NOT EXISTS analytics_risk_forecast_snapshots_created_idx ON analytics_risk_forecast_snapshots(created_at DESC)",
-    "CREATE INDEX IF NOT EXISTS analytics_risk_forecast_snapshots_target_idx ON analytics_risk_forecast_snapshots(target_month)",
-    "CREATE INDEX IF NOT EXISTS analytics_hotspot_stability_snapshots_created_idx ON analytics_hotspot_stability_snapshots(created_at DESC)",
-    "CREATE INDEX IF NOT EXISTS analytics_hotspot_stability_snapshots_range_idx ON analytics_hotspot_stability_snapshots(from_month, to_month)",
+    "CREATE INDEX IF NOT EXISTS watchlist_analytics_runs_watchlist_created_idx ON watchlist_analytics_runs(watchlist_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS watchlist_analytics_runs_watchlist_type_created_idx ON watchlist_analytics_runs(watchlist_id, report_type, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_geom_gix ON user_reported_events USING GIST (geom)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_month_idx ON user_reported_events(month)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_segment_idx ON user_reported_events(segment_id)",

@@ -158,6 +158,7 @@ def get_road_analytics_overview(
     summary_query = text(
         base_cte
         + """
+        /* roads_overview_summary */
         ,
         incident_counts AS (
             SELECT
@@ -188,6 +189,7 @@ def get_road_analytics_overview(
     top_highway_query = text(
         base_cte
         + """
+        /* roads_overview_top_highway */
         ,
         incident_counts AS (
             SELECT
@@ -212,6 +214,7 @@ def get_road_analytics_overview(
     top_crime_type_query = text(
         base_cte
         + """
+        /* roads_overview_top_crime_type */
         SELECT
             crime_type,
             COUNT(*)::bigint AS count
@@ -224,6 +227,7 @@ def get_road_analytics_overview(
     top_outcome_query = text(
         base_cte
         + """
+        /* roads_overview_top_outcome */
         SELECT
             outcome,
             COUNT(*)::bigint AS count
@@ -236,6 +240,7 @@ def get_road_analytics_overview(
     top_road_query = text(
         base_cte
         + f"""
+        /* roads_overview_top_road */
         ,
         incident_counts AS (
             SELECT
@@ -286,6 +291,7 @@ def get_road_analytics_overview(
     band_breakdown_query = text(
         base_cte
         + f"""
+        /* roads_overview_band_breakdown */
         ,
         incident_counts AS (
             SELECT
@@ -346,6 +352,7 @@ def get_road_analytics_overview(
     )
     previous_query = text(
         f"""
+        /* roads_overview_previous */
         WITH roads_scope AS (
             SELECT rs.id
             FROM road_segments rs
@@ -484,6 +491,7 @@ def get_road_analytics_charts(
         timeseries_query = text(
             base_cte
             + """
+            /* roads_charts_timeseries_overall */
             ,
             months AS (
                 SELECT generate_series(
@@ -519,6 +527,7 @@ def get_road_analytics_charts(
         timeseries_query = text(
             base_cte
             + f"""
+            /* roads_charts_timeseries_grouped */
             ,
             months AS (
                 SELECT generate_series(
@@ -576,6 +585,7 @@ def get_road_analytics_charts(
     highway_query = text(
         base_cte
         + """
+        /* roads_charts_highway */
         ,
         incident_counts AS (
             SELECT
@@ -599,6 +609,7 @@ def get_road_analytics_charts(
     crime_type_query = text(
         base_cte
         + """
+        /* roads_charts_crime_type */
         SELECT
             crime_type,
             COUNT(*)::bigint AS count
@@ -610,6 +621,7 @@ def get_road_analytics_charts(
     outcome_query = text(
         base_cte
         + """
+        /* roads_charts_outcome */
         SELECT
             outcome,
             COUNT(*)::bigint AS count
@@ -618,10 +630,11 @@ def get_road_analytics_charts(
         ORDER BY count DESC, outcome ASC
         """
     )
-    total_query = text(base_cte + "SELECT COUNT(*)::bigint AS total_incidents FROM events_scope")
+    total_query = text(base_cte + "/* roads_charts_total */ SELECT COUNT(*)::bigint AS total_incidents FROM events_scope")
     band_breakdown_query = text(
         base_cte
         + f"""
+        /* roads_charts_band_breakdown */
         ,
         incident_counts AS (
             SELECT
@@ -734,6 +747,7 @@ def get_road_analytics_charts(
     )
     previous_query = text(
         f"""
+        /* roads_charts_previous */
         WITH roads_scope AS (
             SELECT rs.id
             FROM road_segments rs
@@ -851,6 +865,7 @@ def get_road_analytics_risk(
     query = text(
         base_cte
         + f"""
+        /* roads_risk_main */
         ,
         incident_counts AS (
             SELECT

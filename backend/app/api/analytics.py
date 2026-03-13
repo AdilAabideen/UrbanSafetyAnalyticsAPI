@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
@@ -275,192 +274,6 @@ def _execute(db: Session, query, params: Optional[Dict[str, Any]] = None):
             "DB_UNAVAILABLE",
             "Database unavailable while computing analytics",
         ) from exc
-
-
-def _store_risk_score_snapshot(
-    db: Session,
-    request: RiskScoreRequest,
-    payload: Dict[str, Any],
-) -> Dict[str, Any]:
-    query = text(
-        """
-        INSERT INTO analytics_risk_score_snapshots (
-            from_month,
-            to_month,
-            min_lon,
-            min_lat,
-            max_lon,
-            max_lat,
-            crime_type,
-            mode,
-            include_collisions,
-            weights,
-            payload_json
-        )
-        VALUES (
-            :from_month,
-            :to_month,
-            :min_lon,
-            :min_lat,
-            :max_lon,
-            :max_lat,
-            :crime_type,
-            :mode,
-            :include_collisions,
-            CAST(:weights AS JSONB),
-            CAST(:payload_json AS JSONB)
-        )
-        RETURNING id, created_at
-        """
-    )
-    row = _execute(
-        db,
-        query,
-        {
-            "from_month": _parse_month(request.from_, "from"),
-            "to_month": _parse_month(request.to, "to"),
-            "min_lon": request.minLon,
-            "min_lat": request.minLat,
-            "max_lon": request.maxLon,
-            "max_lat": request.maxLat,
-            "crime_type": _normalize_string(request.crimeType),
-            "mode": _normalize_string(request.mode) or "walk",
-            "include_collisions": bool(request.includeCollisions),
-            "weights": json.dumps(jsonable_encoder(request.weights.model_dump())),
-            "payload_json": json.dumps(jsonable_encoder(payload)),
-        },
-    ).mappings().first()
-    if hasattr(db, "commit"):
-        db.commit()
-    return {"id": row["id"], "created_at": row["created_at"]}
-
-
-def _store_risk_forecast_snapshot(
-    db: Session,
-    request: ForecastRequest,
-    payload: Dict[str, Any],
-) -> Dict[str, Any]:
-    query = text(
-        """
-        INSERT INTO analytics_risk_forecast_snapshots (
-            target_month,
-            baseline_months,
-            min_lon,
-            min_lat,
-            max_lon,
-            max_lat,
-            crime_type,
-            mode,
-            method,
-            include_collisions,
-            return_risk_projection,
-            weights,
-            payload_json
-        )
-        VALUES (
-            :target_month,
-            :baseline_months,
-            :min_lon,
-            :min_lat,
-            :max_lon,
-            :max_lat,
-            :crime_type,
-            :mode,
-            :method,
-            :include_collisions,
-            :return_risk_projection,
-            CAST(:weights AS JSONB),
-            CAST(:payload_json AS JSONB)
-        )
-        RETURNING id, created_at
-        """
-    )
-    row = _execute(
-        db,
-        query,
-        {
-            "target_month": _parse_month(request.target, "target"),
-            "baseline_months": int(request.baselineMonths),
-            "min_lon": request.minLon,
-            "min_lat": request.minLat,
-            "max_lon": request.maxLon,
-            "max_lat": request.maxLat,
-            "crime_type": _normalize_string(request.crimeType),
-            "mode": _normalize_string(request.mode) or "walk",
-            "method": _normalize_string(request.method) or "poisson_mean",
-            "include_collisions": bool(request.includeCollisions),
-            "return_risk_projection": bool(request.returnRiskProjection),
-            "weights": json.dumps(jsonable_encoder(request.weights.model_dump())),
-            "payload_json": json.dumps(jsonable_encoder(payload)),
-        },
-    ).mappings().first()
-    if hasattr(db, "commit"):
-        db.commit()
-    return {"id": row["id"], "created_at": row["created_at"]}
-
-
-def _store_hotspot_stability_snapshot(
-    db: Session,
-    *,
-    from_value: str,
-    to_value: str,
-    k: int,
-    include_lists: bool,
-    min_lon: Optional[float],
-    min_lat: Optional[float],
-    max_lon: Optional[float],
-    max_lat: Optional[float],
-    crime_type: Optional[str],
-    payload: Dict[str, Any],
-) -> Dict[str, Any]:
-    query = text(
-        """
-        INSERT INTO analytics_hotspot_stability_snapshots (
-            from_month,
-            to_month,
-            min_lon,
-            min_lat,
-            max_lon,
-            max_lat,
-            crime_type,
-            k,
-            include_lists,
-            payload_json
-        )
-        VALUES (
-            :from_month,
-            :to_month,
-            :min_lon,
-            :min_lat,
-            :max_lon,
-            :max_lat,
-            :crime_type,
-            :k,
-            :include_lists,
-            CAST(:payload_json AS JSONB)
-        )
-        RETURNING id, created_at
-        """
-    )
-    row = _execute(
-        db,
-        query,
-        {
-            "from_month": _parse_month(from_value, "from"),
-            "to_month": _parse_month(to_value, "to"),
-            "min_lon": min_lon,
-            "min_lat": min_lat,
-            "max_lon": max_lon,
-            "max_lat": max_lat,
-            "crime_type": _normalize_string(crime_type),
-            "k": int(k),
-            "include_lists": bool(include_lists),
-            "payload_json": json.dumps(jsonable_encoder(payload)),
-        },
-    ).mappings().first()
-    if hasattr(db, "commit"):
-        db.commit()
-    return {"id": row["id"], "created_at": row["created_at"]}
 
 
 def _band_from_pct(pct: float) -> str:
@@ -2033,7 +1846,7 @@ def analytics_meta(db: Session = Depends(get_db)):
 @router.post("/risk/score")
 def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db)):
     try:
-        payload = build_risk_score_payload(
+        return build_risk_score_payload(
             db,
             from_value=request.from_,
             to_value=request.to,
@@ -2047,10 +1860,6 @@ def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db
             w_crime=request.weights.w_crime,
             w_collision=request.weights.w_collision,
         )
-        snapshot = _store_risk_score_snapshot(db, request, payload)
-        payload["snapshot_id"] = snapshot["id"]
-        payload["stored_at"] = snapshot["created_at"]
-        return payload
     except AnalyticsAPIError as exc:
         return _error_response(exc)
 
@@ -2058,7 +1867,7 @@ def analytics_risk_score(request: RiskScoreRequest, db: Session = Depends(get_db
 @router.post("/risk/forecast")
 def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_db)):
     try:
-        payload = build_risk_forecast_payload(
+        return build_risk_forecast_payload(
             db,
             target=request.target,
             min_lon=request.minLon,
@@ -2074,10 +1883,6 @@ def analytics_risk_forecast(request: ForecastRequest, db: Session = Depends(get_
             w_crime=request.weights.w_crime,
             w_collision=request.weights.w_collision,
         )
-        snapshot = _store_risk_forecast_snapshot(db, request, payload)
-        payload["snapshot_id"] = snapshot["id"]
-        payload["stored_at"] = snapshot["created_at"]
-        return payload
     except AnalyticsAPIError as exc:
         return _error_response(exc)
 
@@ -2096,7 +1901,7 @@ def analytics_hotspot_stability(
     db: Session = Depends(get_db),
 ):
     try:
-        payload = build_hotspot_stability_payload(
+        return build_hotspot_stability_payload(
             db,
             from_value=from_,
             to_value=to,
@@ -2108,21 +1913,5 @@ def analytics_hotspot_stability(
             max_lat=maxLat,
             crime_type=crimeType,
         )
-        snapshot = _store_hotspot_stability_snapshot(
-            db,
-            from_value=from_,
-            to_value=to,
-            k=k,
-            include_lists=includeLists,
-            min_lon=minLon,
-            min_lat=minLat,
-            max_lon=maxLon,
-            max_lat=maxLat,
-            crime_type=crimeType,
-            payload=payload,
-        )
-        payload["snapshot_id"] = snapshot["id"]
-        payload["stored_at"] = snapshot["created_at"]
-        return payload
     except AnalyticsAPIError as exc:
         return _error_response(exc)

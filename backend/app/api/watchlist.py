@@ -1,11 +1,21 @@
-from typing import List, Optional
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, InternalError, OperationalError
 from sqlalchemy.orm import Session
 
+from .analytics import (
+    AnalyticsAPIError,
+    build_hotspot_stability_payload,
+    build_risk_forecast_payload,
+    build_risk_score_payload,
+)
 from ..auth_utils import get_current_user
 from ..db import get_db
 
@@ -256,6 +266,261 @@ def _apply_preference(db, watchlist_id, user_id, preference):
     _replace_watchlist_preference(db, watchlist_id, user_id, preference)
 
 
+def _month_label(month_date):
+    return month_date.strftime("%Y-%m")
+
+
+def _shift_month(month_date, offset: int):
+    month_index = (month_date.year * 12 + month_date.month - 1) + offset
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return month_date.replace(year=year, month=month, day=1)
+
+
+def _latest_complete_month():
+    current_month = datetime.now(timezone.utc).date().replace(day=1)
+    return _shift_month(current_month, -1)
+
+
+def _watchlist_bbox(row):
+    return {
+        "min_lon": row["min_lon"],
+        "min_lat": row["min_lat"],
+        "max_lon": row["max_lon"],
+        "max_lat": row["max_lat"],
+    }
+
+
+def _require_watchlist_preference(db, watchlist_id):
+    preference = _get_watchlist_preference(db, watchlist_id)
+    if preference is None:
+        raise HTTPException(status_code=400, detail="Watchlist preference is required to run analytics")
+    return preference
+
+
+def _crime_type_inputs(preference):
+    crime_types = _normalize_crime_types(preference.get("crime_types") or [])
+    return crime_types or [None]
+
+
+def _analytics_error_response(exc: AnalyticsAPIError) -> JSONResponse:
+    payload = {"error": exc.error, "message": exc.message}
+    if exc.details is not None:
+        payload["details"] = exc.details
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+def _store_watchlist_run(
+    db: Session,
+    *,
+    watchlist_id: int,
+    report_type: str,
+    request_params: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    query = text(
+        """
+        INSERT INTO watchlist_analytics_runs (
+            watchlist_id,
+            report_type,
+            request_params_json,
+            payload_json
+        )
+        VALUES (
+            :watchlist_id,
+            :report_type,
+            CAST(:request_params_json AS JSONB),
+            CAST(:payload_json AS JSONB)
+        )
+        RETURNING id, created_at
+        """
+    )
+    row = _execute(
+        db,
+        query,
+        {
+            "watchlist_id": watchlist_id,
+            "report_type": report_type,
+            "request_params_json": json.dumps(jsonable_encoder(request_params)),
+            "payload_json": json.dumps(jsonable_encoder(payload)),
+        },
+    ).mappings().first()
+    if hasattr(db, "commit"):
+        db.commit()
+    return {"id": row["id"], "created_at": row["created_at"]}
+
+
+def _wrap_watchlist_run_response(
+    *,
+    watchlist_id: int,
+    report_type: str,
+    request_params: Dict[str, Any],
+    result: Dict[str, Any],
+    stored: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "watchlist_id": watchlist_id,
+        "report_type": report_type,
+        "watchlist_run_id": stored["id"],
+        "stored_at": stored["created_at"],
+        "request": request_params,
+        "result": result,
+    }
+
+
+def _run_watchlist_risk_score(db: Session, watchlist_id: int, watchlist_row, preference):
+    latest_complete_month = _latest_complete_month()
+    from_date = _shift_month(latest_complete_month, -(int(preference["window_months"]) - 1))
+    request_params = {
+        "from": _month_label(from_date),
+        "to": _month_label(latest_complete_month),
+        "bbox": _watchlist_bbox(watchlist_row),
+        "crime_types": _normalize_crime_types(preference.get("crime_types") or []),
+        "mode": preference["travel_mode"],
+        "includeCollisions": bool(preference["include_collisions"]),
+        "weights": {
+            "w_crime": float(preference["weight_crime"]),
+            "w_collision": float(preference["weight_collision"]),
+        },
+    }
+    results_by_crime_type = {}
+    for crime_type in _crime_type_inputs(preference):
+        key = crime_type or "all"
+        results_by_crime_type[key] = build_risk_score_payload(
+            db,
+            from_value=request_params["from"],
+            to_value=request_params["to"],
+            min_lon=watchlist_row["min_lon"],
+            min_lat=watchlist_row["min_lat"],
+            max_lon=watchlist_row["max_lon"],
+            max_lat=watchlist_row["max_lat"],
+            crime_type=crime_type,
+            include_collisions=bool(preference["include_collisions"]),
+            mode=preference["travel_mode"],
+            w_crime=float(preference["weight_crime"]),
+            w_collision=float(preference["weight_collision"]),
+        )
+
+    result = {"results_by_crime_type": results_by_crime_type}
+    stored = _store_watchlist_run(
+        db,
+        watchlist_id=watchlist_id,
+        report_type="risk_score",
+        request_params=request_params,
+        payload=result,
+    )
+    return _wrap_watchlist_run_response(
+        watchlist_id=watchlist_id,
+        report_type="risk_score",
+        request_params=request_params,
+        result=result,
+        stored=stored,
+    )
+
+
+def _run_watchlist_risk_forecast(db: Session, watchlist_id: int, watchlist_row, preference):
+    if not preference["include_forecast"]:
+        raise HTTPException(status_code=400, detail="Forecast runs are disabled for this watchlist")
+
+    latest_complete_month = _latest_complete_month()
+    target_month = _shift_month(latest_complete_month, 1)
+    request_params = {
+        "target": _month_label(target_month),
+        "baselineMonths": int(preference["baseline_months"]),
+        "bbox": _watchlist_bbox(watchlist_row),
+        "crime_types": _normalize_crime_types(preference.get("crime_types") or []),
+        "mode": preference["travel_mode"],
+        "includeCollisions": bool(preference["include_collisions"]),
+        "returnRiskProjection": True,
+        "weights": {
+            "w_crime": float(preference["weight_crime"]),
+            "w_collision": float(preference["weight_collision"]),
+        },
+    }
+    results_by_crime_type = {}
+    for crime_type in _crime_type_inputs(preference):
+        key = crime_type or "all"
+        results_by_crime_type[key] = build_risk_forecast_payload(
+            db,
+            target=request_params["target"],
+            min_lon=watchlist_row["min_lon"],
+            min_lat=watchlist_row["min_lat"],
+            max_lon=watchlist_row["max_lon"],
+            max_lat=watchlist_row["max_lat"],
+            crime_type=crime_type,
+            baseline_months=int(preference["baseline_months"]),
+            method="poisson_mean",
+            return_risk_projection=True,
+            include_collisions=bool(preference["include_collisions"]),
+            mode=preference["travel_mode"],
+            w_crime=float(preference["weight_crime"]),
+            w_collision=float(preference["weight_collision"]),
+        )
+
+    result = {"results_by_crime_type": results_by_crime_type}
+    stored = _store_watchlist_run(
+        db,
+        watchlist_id=watchlist_id,
+        report_type="risk_forecast",
+        request_params=request_params,
+        payload=result,
+    )
+    return _wrap_watchlist_run_response(
+        watchlist_id=watchlist_id,
+        report_type="risk_forecast",
+        request_params=request_params,
+        result=result,
+        stored=stored,
+    )
+
+
+def _run_watchlist_hotspot_stability(db: Session, watchlist_id: int, watchlist_row, preference):
+    if not preference["include_hotspot_stability"]:
+        raise HTTPException(status_code=400, detail="Hotspot stability runs are disabled for this watchlist")
+
+    latest_complete_month = _latest_complete_month()
+    from_date = _shift_month(latest_complete_month, -(int(preference["window_months"]) - 1))
+    request_params = {
+        "from": _month_label(from_date),
+        "to": _month_label(latest_complete_month),
+        "bbox": _watchlist_bbox(watchlist_row),
+        "crime_types": _normalize_crime_types(preference.get("crime_types") or []),
+        "k": int(preference["hotspot_k"]),
+        "includeLists": True,
+    }
+    results_by_crime_type = {}
+    for crime_type in _crime_type_inputs(preference):
+        key = crime_type or "all"
+        results_by_crime_type[key] = build_hotspot_stability_payload(
+            db,
+            from_value=request_params["from"],
+            to_value=request_params["to"],
+            k=int(preference["hotspot_k"]),
+            include_lists=True,
+            min_lon=watchlist_row["min_lon"],
+            min_lat=watchlist_row["min_lat"],
+            max_lon=watchlist_row["max_lon"],
+            max_lat=watchlist_row["max_lat"],
+            crime_type=crime_type,
+        )
+
+    result = {"results_by_crime_type": results_by_crime_type}
+    stored = _store_watchlist_run(
+        db,
+        watchlist_id=watchlist_id,
+        report_type="hotspot_stability",
+        request_params=request_params,
+        payload=result,
+    )
+    return _wrap_watchlist_run_response(
+        watchlist_id=watchlist_id,
+        report_type="hotspot_stability",
+        request_params=request_params,
+        result=result,
+        stored=stored,
+    )
+
+
 @router.get("/watchlists")
 def read_watchlists(
     watchlist_id: Optional[int] = Query(default=None),
@@ -451,3 +716,45 @@ def delete_watchlist(
     if hasattr(db, "commit"):
         db.commit()
     return {"deleted": True, "watchlist_id": row["id"]}
+
+
+@router.post("/watchlists/{watchlist_id}/risk-score/run")
+def run_watchlist_risk_score(
+    watchlist_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    watchlist_row = _get_watchlist_row(db, watchlist_id, current_user["id"])
+    preference = _require_watchlist_preference(db, watchlist_id)
+    try:
+        return _run_watchlist_risk_score(db, watchlist_id, watchlist_row, preference)
+    except AnalyticsAPIError as exc:
+        return _analytics_error_response(exc)
+
+
+@router.post("/watchlists/{watchlist_id}/risk-forecast/run")
+def run_watchlist_risk_forecast(
+    watchlist_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    watchlist_row = _get_watchlist_row(db, watchlist_id, current_user["id"])
+    preference = _require_watchlist_preference(db, watchlist_id)
+    try:
+        return _run_watchlist_risk_forecast(db, watchlist_id, watchlist_row, preference)
+    except AnalyticsAPIError as exc:
+        return _analytics_error_response(exc)
+
+
+@router.post("/watchlists/{watchlist_id}/hotspot-stability/run")
+def run_watchlist_hotspot_stability(
+    watchlist_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    watchlist_row = _get_watchlist_row(db, watchlist_id, current_user["id"])
+    preference = _require_watchlist_preference(db, watchlist_id)
+    try:
+        return _run_watchlist_hotspot_stability(db, watchlist_id, watchlist_row, preference)
+    except AnalyticsAPIError as exc:
+        return _analytics_error_response(exc)

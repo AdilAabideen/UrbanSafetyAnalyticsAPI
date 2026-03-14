@@ -16,7 +16,7 @@ from .analytics import (
     build_risk_forecast_payload,
     build_risk_score_payload,
 )
-from ..api_utils.auth_utils import get_current_user
+from ..services.auth_service import get_current_user
 from ..db import get_db
 from ..errors import ConflictError, DependencyError, NotFoundError, ValidationError
 from ..schemas.watchlist_schemas import (

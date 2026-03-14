@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from ..api_utils.auth_utils import get_current_user
+from ..services.auth_service import get_current_user
 from ..api_utils.report_event_utils import (
     event_kind_query,
     reporter_type_query,

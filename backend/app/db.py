@@ -4,7 +4,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
-
+from sqlalchemy.exc import InternalError, OperationalError
+from sqlalchemy.orm import Session
+from .errors import DependencyError
 
 load_dotenv()
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -49,10 +51,22 @@ def _configure_postgres_session(dbapi_connection, _connection_record):
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
+# Gets a database session, Perfect for FastAPI dependencies.
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+# Execute a SQL query and translate database failures into a DependencyError.
+def execute(db: Session, query: str, params: dict):
+    """Execute SQL and translate database failures into a DependencyError."""
+    try:
+        return db.execute(query, params)
+    except (InternalError, OperationalError) as exc:
+        db.rollback()
+        raise DependencyError(
+            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
+        ) from exc

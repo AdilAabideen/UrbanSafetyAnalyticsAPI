@@ -54,3 +54,9 @@ class InMemoryDB:
             )
 
         raise AssertionError(f"Unexpected query in InMemoryDB: {sql}")
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None

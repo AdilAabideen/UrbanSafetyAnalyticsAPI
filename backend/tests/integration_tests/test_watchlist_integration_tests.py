@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.db import get_db
 from app.main import app
 from app.services.auth_service import create_access_token
+from app.services import watchlist_analytics_service
 from tests.inmemory_db import InMemoryDB
 
 
@@ -187,7 +188,7 @@ def test_create_watchlist_with_preference_saves_preference_fields():
                 "start_month": "2026-01-01",
                 "end_month": "2026-03-01",
                 "crime_types": ["Burglary", "Robbery"],
-                "travel_mode": "car",
+                "travel_mode": "drive",
                 "include_collisions": True,
                 "baseline_months": 9,
             },
@@ -411,7 +412,7 @@ def test_update_watchlist_preference_updates_preference_fields():
     )
 
     def _assert_preference_write(params):
-        assert params["travel_mode"] == "drive"  # from input alias "car"
+        assert params["travel_mode"] == "drive"
         assert params["include_collisions"] is True
         return {"rows": [{"id": 901}]}
 
@@ -434,7 +435,7 @@ def test_update_watchlist_preference_updates_preference_fields():
                 "start_month": "2026-01-01",
                 "end_month": "2026-02-01",
                 "crime_types": ["Burglary"],
-                "travel_mode": "car",
+                "travel_mode": "drive",
                 "include_collisions": True,
                 "baseline_months": 8,
             }
@@ -495,3 +496,459 @@ def test_delete_watchlist_removes_watchlist():
 
     assert read_response.status_code == 404
     assert read_response.json()["error"] == "WATCHLIST_NOT_FOUND"
+
+
+def test_compute_watchlist_risk_score_returns_404_for_missing_watchlist():
+    """
+    Integration: risk-score endpoint returns 404 when watchlist is missing/unowned.
+    """
+    user_id = 201
+    token = create_access_token(user_id)
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": []},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/999/analytics/risk-score",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "WATCHLIST_NOT_FOUND"
+
+
+def test_compute_watchlist_risk_score_rejects_missing_month_window():
+    """
+    Integration: risk-score endpoint rejects watchlists with missing month window.
+    """
+    user_id = 202
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1201,
+        user_id=user_id,
+        name="Missing Months",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+        start_month=None,
+        end_month=None,
+        crime_types=[],
+        travel_mode="walk",
+    )
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1201/analytics/risk-score",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "MISSING_MONTH_WINDOW"
+
+
+def test_compute_watchlist_risk_score_rejects_invalid_month_range():
+    """
+    Integration: risk-score endpoint rejects start_month > end_month.
+    """
+    user_id = 203
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1202,
+        user_id=user_id,
+        name="Invalid Month Range",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+        start_month=date(2026, 4, 1),
+        end_month=date(2026, 1, 1),
+        crime_types=[],
+        travel_mode="walk",
+    )
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1202/analytics/risk-score",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "INVALID_MONTH_RANGE"
+
+
+def test_compute_watchlist_risk_score_persists_and_returns_historical_comparison(monkeypatch):
+    """
+    Integration: risk-score service uses historical_same_signature branch when cohort is sufficient.
+    """
+    user_id = 204
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1203,
+        user_id=user_id,
+        name="Historical Branch",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+        start_month=date(2026, 1, 1),
+        end_month=date(2026, 3, 1),
+        crime_types=["Burglary"],
+        travel_mode="walk",
+    )
+
+    inserted_rows = []
+
+    monkeypatch.setattr(
+        watchlist_analytics_service,
+        "_compute_risk_result",
+        lambda *args, **kwargs: {
+            "risk_score": 63,
+            "raw_score": 1.5,
+            "components": {"crime_component": 4.0, "collision_density": 0.2, "user_support": 0.1},
+        },
+    )
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "load_historical_rows",
+        lambda *args, **kwargs: [{"id": 1, "risk_score": 50}, {"id": 2, "risk_score": 80}],
+    )
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "insert_risk_score_run",
+        lambda *args, **kwargs: inserted_rows.append(kwargs) or {"id": 7001},
+    )
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1203/analytics/risk-score",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["comparison"]["cohort_type"] == "historical_same_signature"
+    assert payload["comparison"]["cohort_size"] == 2
+    assert payload["comparison"]["rank"] is not None
+    assert payload["comparison"]["percentile"] is not None
+    assert len(inserted_rows) == 1
+    assert inserted_rows[0]["watchlist_id"] == 1203
+
+
+def test_compute_watchlist_risk_score_falls_back_to_reference_bboxes_when_history_insufficient(monkeypatch):
+    """
+    Integration: risk-score service falls back to reference_bboxes when historical cohort is too small.
+    """
+    user_id = 205
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1204,
+        user_id=user_id,
+        name="Reference Fallback",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+        start_month=date(2026, 1, 1),
+        end_month=date(2026, 3, 1),
+        crime_types=["Robbery"],
+        travel_mode="drive",
+    )
+
+    monkeypatch.setattr(
+        watchlist_analytics_service,
+        "_compute_risk_result",
+        lambda *args, **kwargs: {
+            "risk_score": 64,
+            "raw_score": 1.8,
+            "components": {"crime_component": 4.5, "collision_density": 0.4, "user_support": 0.1},
+        },
+    )
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "load_historical_rows",
+        lambda *args, **kwargs: [{"id": 1, "risk_score": 58}],
+    )
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "nearest_reference_bboxes",
+        lambda *args, **kwargs: [
+            {"id": 91, "min_lon": -1.61, "min_lat": 53.69, "max_lon": -1.51, "max_lat": 53.79},
+            {"id": 92, "min_lon": -1.62, "min_lat": 53.68, "max_lon": -1.50, "max_lat": 53.80},
+        ],
+    )
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "latest_reference_score",
+        lambda *args, **kwargs: {"id": kwargs["reference_bbox_id"], "risk_score": 70},
+    )
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "insert_risk_score_run",
+        lambda *args, **kwargs: {"id": 7010},
+    )
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1204/analytics/risk-score",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["comparison"]["cohort_type"] == "reference_bboxes"
+    assert payload["comparison"]["cohort_size"] == 2
+    assert payload["comparison"]["reference_ids"] == [91, 92]
+
+
+def test_list_watchlist_risk_runs_returns_runs_for_owned_watchlist():
+    """
+    Integration: /risk-score/runs returns persisted runs for an owned watchlist.
+    """
+    user_id = 206
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1205,
+        user_id=user_id,
+        name="Runs List",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+    )
+
+    run_rows = [
+        {
+            "id": 2002,
+            "watchlist_id": 1205,
+            "start_month": date(2026, 1, 1),
+            "end_month": date(2026, 3, 1),
+            "crime_types": ["Burglary"],
+            "travel_mode": "walk",
+            "risk_score": 72,
+            "raw_score": 2.1,
+            "band": "high",
+            "crime_component": 4.3,
+            "collision_component": 0.2,
+            "user_component": 0.1,
+            "comparison_basis": "historical_same_signature",
+            "comparison_sample_size": 4,
+            "comparison_percentile": 75.0,
+            "execution_time_ms": 55.0,
+            "created_at": datetime(2026, 3, 14, 10, 0, 0),
+        },
+        {
+            "id": 2001,
+            "watchlist_id": 1205,
+            "start_month": date(2025, 10, 1),
+            "end_month": date(2025, 12, 1),
+            "crime_types": [],
+            "travel_mode": "drive",
+            "risk_score": 60,
+            "raw_score": 1.2,
+            "band": "medium",
+            "crime_component": 3.0,
+            "collision_component": 0.8,
+            "user_component": 0.0,
+            "comparison_basis": "reference_bboxes",
+            "comparison_sample_size": 2,
+            "comparison_percentile": 50.0,
+            "execution_time_ms": 42.5,
+            "created_at": datetime(2026, 3, 13, 10, 0, 0),
+        },
+    ]
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+        "FROM risk_score_runs r": {"rows": run_rows},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "GET",
+        "/watchlists/1205/analytics/risk-score/runs?limit=50",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["watchlist_id"] == 1205
+    assert len(payload["items"]) == 2
+    assert payload["items"][0]["run_id"] == 2002
+    assert "risk_result" in payload["items"][0]
+    assert "components" in payload["items"][0]["risk_result"]
+
+
+def test_list_watchlist_risk_runs_returns_404_for_unowned_watchlist():
+    """
+    Integration: /risk-score/runs returns 404 when the watchlist is not owned by current user.
+    """
+    user_id = 207
+    token = create_access_token(user_id)
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": []},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "GET",
+        "/watchlists/5555/analytics/risk-score/runs",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "WATCHLIST_NOT_FOUND"
+
+
+def test_forecast_watchlist_next_month_returns_forecast_successfully(monkeypatch):
+    """
+    Integration: forecast endpoint returns a correctly shaped response for valid input.
+    """
+    user_id = 208
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1206,
+        user_id=user_id,
+        name="Forecast Happy Path",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+    )
+
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "fetch_forecast_baseline_rows",
+        lambda *args, **kwargs: [
+            {"month": "2025-11", "crime_count": 40.0, "collision_count": 2, "collision_points": 4.0},
+            {"month": "2025-12", "crime_count": 50.0, "collision_count": 1, "collision_points": 2.0},
+            {"month": "2026-01", "crime_count": 60.0, "collision_count": 1, "collision_points": 3.0},
+        ],
+    )
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1206/analytics/forecast",
+        json={
+            "start_month": "2025-06",
+            "mode": "walk",
+            "crime_types": ["Burglary", "Robbery"],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "generated_at" in payload
+    assert "forecast" in payload
+    assert "score" in payload["forecast"]
+    assert "band" in payload["forecast"]
+    assert "intervals" in payload["forecast"]
+    assert "components" in payload["forecast"]
+
+
+def test_forecast_watchlist_next_month_rejects_future_start_month():
+    """
+    Integration: forecast endpoint rejects start month later than last complete month.
+    """
+    user_id = 209
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1207,
+        user_id=user_id,
+        name="Forecast Future Start",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+    )
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1207/analytics/forecast",
+        json={"start_month": "2100-01", "mode": "walk", "crime_types": []},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "INVALID_DATE_RANGE"
+
+
+def test_forecast_watchlist_next_month_rejects_when_baseline_history_missing(monkeypatch):
+    """
+    Integration: forecast endpoint rejects when baseline history query returns no rows.
+    """
+    user_id = 210
+    token = create_access_token(user_id)
+    watchlist_row = _watchlist_row(
+        watchlist_id=1208,
+        user_id=user_id,
+        name="Forecast Missing Baseline",
+        min_lon=-1.6,
+        min_lat=53.7,
+        max_lon=-1.5,
+        max_lat=53.8,
+    )
+
+    monkeypatch.setattr(
+        watchlist_analytics_service.watchlist_analytics_repository,
+        "fetch_forecast_baseline_rows",
+        lambda *args, **kwargs: [],
+    )
+
+    handlers = {
+        "WHERE u.id = :user_id": {"rows": [_user_row(user_id)]},
+        "FROM watchlists w": {"rows": [watchlist_row]},
+    }
+
+    response = _run_with_db(
+        handlers,
+        "POST",
+        "/watchlists/1208/analytics/forecast",
+        json={"start_month": "2025-06", "mode": "walk", "crime_types": []},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "BASELINE_HISTORY_INSUFFICIENT"

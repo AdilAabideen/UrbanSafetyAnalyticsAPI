@@ -3,7 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .api.analytics import router as analytics_router
+
 from .api.auth import router as auth_router
 from .api.report_events import router as report_events_router
 from .api.tiles import router as tiles_router
@@ -22,7 +22,7 @@ from .errors import (
 app = FastAPI(title="Urban Risk Analytics API")
 
 app.include_router(tiles_router)
-app.include_router(analytics_router)
+
 app.include_router(auth_router)
 app.include_router(report_events_router)
 app.include_router(watchlist_router)

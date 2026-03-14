@@ -87,19 +87,13 @@ def build_geom_expression(simplify_tolerance: int) -> str:
 # Builds the SQL query for road tiles enriched with risk and safety metrics.
 def roads_with_risk_tile_query(
     z: int,
-    include_crime_type_filter: bool,
 ):
     """Build SQL for road tiles enriched with risk and safety metrics."""
 
+    # Build the profile for the tile.
     profile = tile_profile(z)
     highway_filter_clause = build_highway_filter_clause(profile["highways"])
     geom_expression = build_geom_expression(profile["simplify_tolerance"])
-    crime_type_clause = ""
-    user_report_crime_type_clause = ""
-
-    if include_crime_type_filter:
-        crime_type_clause = "AND c.crime_type = :crime_type"
-        user_report_crime_type_clause = "AND urc.crime_type = :crime_type"
 
     return text(
         f"""
@@ -147,7 +141,6 @@ def roads_with_risk_tile_query(
             WHERE :include_crime
               AND c.month BETWEEN sw.start_month_date AND sw.end_month_date
               AND c.segment_id IS NOT NULL
-              {crime_type_clause}
             GROUP BY c.segment_id, c.month
         ),
         crime_component AS (
@@ -220,8 +213,8 @@ def roads_with_risk_tile_query(
                                     FROM road_segments rj
                                     WHERE rj.id <> rs.id
                                       AND (
-                                            ST_DWithin(ST_StartPoint(rs.geom)::geography, rj.geom::geography, :junction_distance_m)
-                                         OR ST_DWithin(ST_EndPoint(rs.geom)::geography, rj.geom::geography, :junction_distance_m)
+                                            ST_DWithin(ST_StartPoint(rs.geom), rj.geom, :junction_distance_m)
+                                         OR ST_DWithin(ST_EndPoint(rs.geom), rj.geom, :junction_distance_m)
                                       )
                                 ),
                                 0
@@ -236,9 +229,9 @@ def roads_with_risk_tile_query(
                             GREATEST(
                                 (
                                     CASE
-                                        WHEN ST_Distance(ST_StartPoint(rs.geom)::geography, ST_EndPoint(rs.geom)::geography) > 0
-                                            THEN ST_Length(rs.geom::geography) /
-                                                ST_Distance(ST_StartPoint(rs.geom)::geography, ST_EndPoint(rs.geom)::geography)
+                                        WHEN ST_Distance(ST_StartPoint(rs.geom), ST_EndPoint(rs.geom)) > 0
+                                            THEN ST_Length(rs.geom) /
+                                                ST_Distance(ST_StartPoint(rs.geom), ST_EndPoint(rs.geom))
                                         ELSE 1.0
                                     END
                                 ) - 1.0,
@@ -301,7 +294,6 @@ def roads_with_risk_tile_query(
               AND ure.admin_approved = TRUE
               AND ure.segment_id IS NOT NULL
               AND ure.month BETWEEN sw.start_month_date AND sw.end_month_date
-              {user_report_crime_type_clause}
         ),
         user_report_targets AS (
             SELECT
@@ -318,7 +310,7 @@ def roads_with_risk_tile_query(
                 SELECT DISTINCT rn.id AS target_segment_id
                 FROM road_segments rn
                 WHERE rn.id = ur.segment_id
-                   OR ST_DWithin(rn.geom::geography, rs_base.geom::geography, :adjacent_segment_distance_m)
+                   OR ST_DWithin(rn.geom, rs_base.geom, :adjacent_segment_distance_m)
             ) targets ON TRUE
         ),
         user_report_clusters AS (
@@ -425,36 +417,22 @@ def roads_with_risk_tile_query(
                     + (CASE WHEN :include_collisions THEN :collision_component_weight ELSE 0 END)
                     + (CASE WHEN :include_user_reports THEN :user_report_component_weight ELSE 0 END),
                     0
-                ) AS pct,
-                ROUND(
-                    (
-                        (
-                            (
-                                COALESCE(crime_pct, 0) * CASE WHEN :include_crime THEN :crime_component_weight ELSE 0 END
-                            )
-                            + (
-                                COALESCE(collision_pct, 0) * CASE WHEN :include_collisions THEN :collision_component_weight ELSE 0 END
-                            )
-                            + (
-                                COALESCE(user_report_pct, 0) * CASE WHEN :include_user_reports THEN :user_report_component_weight ELSE 0 END
-                            )
-                        ) / NULLIF(
-                            (CASE WHEN :include_crime THEN :crime_component_weight ELSE 0 END)
-                            + (CASE WHEN :include_collisions THEN :collision_component_weight ELSE 0 END)
-                            + (CASE WHEN :include_user_reports THEN :user_report_component_weight ELSE 0 END),
-                            0
-                        )
-                    ) * 100.0,
-                    2
-                ) AS raw_safety_score
+                ) AS pct
             FROM ranked_scores
+        ),
+        scored_combined AS (
+            SELECT
+                segment_id,
+                pct,
+                ROUND((pct * 100.0)::numeric, 2) AS raw_safety_score
+            FROM combined_scores
         ),
         normalized_scores AS (
             SELECT
                 segment_id,
                 percent_rank() OVER (ORDER BY raw_safety_score) AS pct,
                 ROUND((percent_rank() OVER (ORDER BY raw_safety_score) * 100.0)::numeric, 2) AS risk_score
-            FROM combined_scores
+            FROM scored_combined
         )
         SELECT COALESCE(ST_AsMVT(mvt, 'roads', :extent, 'geom'), ''::bytea) AS tile
         FROM (
@@ -464,8 +442,8 @@ def roads_with_risk_tile_query(
                 rs.name,
                 COALESCE(normalized_scores.risk_score, 0) AS risk_score,
                 CASE
-                    WHEN COALESCE(normalized_scores.risk_score, 0) >= 50 THEN 'red'
-                    WHEN COALESCE(normalized_scores.risk_score, 0) >= 30 THEN 'orange'
+                    WHEN COALESCE(normalized_scores.risk_score, 0) >= :risk_band_red_threshold THEN 'red'
+                    WHEN COALESCE(normalized_scores.risk_score, 0) >= :risk_band_orange_threshold THEN 'orange'
                     ELSE 'green'
                 END AS band,
                 ST_AsMVTGeom({geom_expression}, bounds.geom, :extent, :buffer, true) AS geom

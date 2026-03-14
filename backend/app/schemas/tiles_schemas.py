@@ -37,6 +37,8 @@ USER_REPORT_CLUSTER_CAP = 3.0
 ROAD_CLASS_HIGH_FACTOR = 1.20
 ROAD_CLASS_MEDIUM_FACTOR = 1.10
 ROAD_CLASS_DEFAULT_FACTOR = 1.00
+RISK_BAND_ORANGE_THRESHOLD = 0.50
+RISK_BAND_RED_THRESHOLD = 1.00
 
 CRIME_HARM_WEIGHTS: Dict[str, float] = {
     "Anti-social behaviour": 0.35,
@@ -80,7 +82,6 @@ class TileQueryParams(TypedDict, total=False):
     month_date: date
     start_month_date: date
     end_month_date: date
-    crime_type: str
     include_crime: bool
     include_collisions: bool
     include_user_reports: bool
@@ -119,6 +120,8 @@ class TileQueryParams(TypedDict, total=False):
     harm_vehicle_crime: float
     harm_violence_and_sexual_offences: float
     harm_default: float
+    risk_band_orange_threshold: float
+    risk_band_red_threshold: float
 
 
 @dataclass(frozen=True)

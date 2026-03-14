@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..errors import ValidationError
-from ..schemas.enums import CrimeType
 from ..schemas.tiles_schemas import MVT_MEDIA_TYPE, TILE_CACHE_CONTROL
 from ..services.tile_service import get_road_tiles_mvt as get_road_tiles_mvt_service
 
@@ -21,7 +20,6 @@ def get_road_tiles_mvt(
     y: int = Path(..., ge=0),
     startMonth: Optional[str] = Query(None),
     endMonth: Optional[str] = Query(None),
-    crimeType: Optional[CrimeType] = Query(None),
     crime: Optional[bool] = Query(None),
     collisions: Optional[bool] = Query(None),
     userReportedEvents: Optional[bool] = Query(None),
@@ -33,6 +31,12 @@ def get_road_tiles_mvt(
             message="month has been removed; use startMonth and endMonth instead",
             details={"field": "month"},
         )
+    if "crimeType" in request.query_params:
+        raise ValidationError(
+            error="CRIME_TYPE_PARAMETER_REMOVED",
+            message="crimeType has been removed from tiles risk input",
+            details={"field": "crimeType"},
+        )
 
     tiles_bytes = get_road_tiles_mvt_service(
         z=z,
@@ -40,7 +44,6 @@ def get_road_tiles_mvt(
         y=y,
         startMonth=startMonth,
         endMonth=endMonth,
-        crimeType=crimeType,
         crime=crime,
         collisions=collisions,
         userReportedEvents=userReportedEvents,

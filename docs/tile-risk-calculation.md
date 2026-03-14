@@ -7,7 +7,6 @@ This document describes how `GET /tiles/roads/{z}/{x}/{y}.mvt` computes risk aft
 Query parameters:
 - `startMonth` (optional, `YYYY-MM`)
 - `endMonth` (optional, `YYYY-MM`)
-- `crimeType` (optional)
 - `crime` (optional boolean)
 - `collisions` (optional boolean)
 - `userReportedEvents` (optional boolean)
@@ -15,10 +14,12 @@ Query parameters:
 Removed parameters:
 - `month` is removed. If provided, API returns `400`.
 - `includeRisk` is removed.
+- `crimeType` is removed from tiles risk input.
 
 Risk-mode rules:
 - If all toggles are omitted/false, the endpoint returns roads-only tiles.
 - If any toggle is `true`, both `startMonth` and `endMonth` are required.
+- `crimeType` filtering is not supported in tiles risk mode; all crime types are included.
 
 ## Scoring Backbone (Retained from v1)
 
@@ -27,10 +28,10 @@ The final score still follows the original method:
 2. Convert each enabled component to percentile via `percent_rank()`.
 3. Weighted combine enabled component percentiles.
 4. Normalize again with `percent_rank()` to get final `risk_score` (0-100).
-5. Banding:
-   - `green`: `< 30`
-   - `orange`: `>= 30` and `< 50`
-   - `red`: `>= 50`
+5. Banding (current fixed-number thresholds):
+   - `green`: `< 0.50`
+   - `orange`: `>= 0.50` and `< 1.00`
+   - `red`: `>= 1.00`
 
 ## Component Metrics
 
@@ -96,6 +97,8 @@ This keeps results comparable while respecting user-selected toggles.
 Risk output is intentionally minimal:
 - `risk_score`
 - `band`
+
+When all three toggles are off, the endpoint returns roads-only tiles (no risk computation).
 
 Road identity fields remain for rendering:
 - `segment_id`

@@ -8,6 +8,7 @@ from .api.auth import router as auth_router
 from .api.report_events import router as report_events_router
 from .api.tiles import router as tiles_router
 from .api.watchlist import router as watchlist_router
+from .api.watchlist_analytics import router as watchlist_analytics_router
 from .bootstrap import initialize_database
 from .errors import (
     AppError,
@@ -25,6 +26,7 @@ app.include_router(analytics_router)
 app.include_router(auth_router)
 app.include_router(report_events_router)
 app.include_router(watchlist_router)
+app.include_router(watchlist_analytics_router)
 
 app.add_middleware(
     CORSMiddleware,

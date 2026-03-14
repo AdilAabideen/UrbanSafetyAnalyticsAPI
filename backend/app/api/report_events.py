@@ -3,21 +3,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from ..services.auth_service import get_current_user
-from ..api_utils.report_event_utils import (
-    event_kind_query,
-    reporter_type_query,
-    require_admin,
-    status_query,
-)
-from ..api_utils.report_events_db_utils import (
-    create_report_record,
-    get_optional_current_user,
-    list_admin_reports,
-    list_own_reports,
-    list_user_event_features,
-    moderate_report,
-)
 from ..db import get_db
 from ..schemas.report_event_schemas import (
     AdminReportedEventsResponse,
@@ -27,9 +12,36 @@ from ..schemas.report_event_schemas import (
     SingleReportedEventResponse,
     UserEventsResponse,
 )
+from ..services.auth_service import get_current_user
+from ..services.report_events_service import (
+    create_report,
+    get_optional_current_user,
+    list_my_reports,
+    list_reports_for_admin,
+    list_user_events_geojson,
+    moderate_existing_report,
+    validate_event_kind_filter,
+    validate_reporter_type_filter,
+    validate_status_filter,
+)
 
 
 router = APIRouter(tags=["reported-events"])
+
+
+def status_query(status_value: Optional[str] = Query(default=None, alias="status")) -> Optional[str]:
+    """Parse and validate moderation status query filter."""
+    return validate_status_filter(status_value)
+
+
+def event_kind_query(event_kind: Optional[str] = Query(default=None)) -> Optional[str]:
+    """Parse and validate event-kind query filter."""
+    return validate_event_kind_filter(event_kind)
+
+
+def reporter_type_query(reporter_type: Optional[str] = Query(default=None)) -> Optional[str]:
+    """Parse and validate reporter-type query filter."""
+    return validate_reporter_type_filter(reporter_type)
 
 
 @router.post("/reported-events", status_code=status.HTTP_201_CREATED, response_model=SingleReportedEventResponse)
@@ -38,7 +50,7 @@ def create_reported_event(
     current_user=Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    return {"report": create_report_record(db, payload, current_user)}
+    return {"report": create_report(db=db, payload=payload, current_user=current_user)}
 
 
 @router.get("/reported-events/mine", response_model=MyReportedEventsResponse)
@@ -50,7 +62,14 @@ def read_my_reported_events(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return list_own_reports(db, current_user["id"], status_value, event_kind, limit, cursor)
+    return list_my_reports(
+        db=db,
+        user_id=current_user["id"],
+        status_value=status_value,
+        event_kind=event_kind,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @router.get("/admin/reported-events", response_model=AdminReportedEventsResponse)
@@ -65,16 +84,16 @@ def read_admin_reported_events(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_admin(current_user)
-    return list_admin_reports(
-        db,
-        status_value,
-        event_kind,
-        reporter_type,
-        from_month,
-        to_month,
-        limit,
-        cursor,
+    return list_reports_for_admin(
+        db=db,
+        current_user=current_user,
+        status_value=status_value,
+        event_kind=event_kind,
+        reporter_type=reporter_type,
+        from_month=from_month,
+        to_month=to_month,
+        limit=limit,
+        cursor=cursor,
     )
 
 
@@ -88,8 +107,14 @@ def moderate_reported_event(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_admin(current_user)
-    return {"report": moderate_report(db, report_id, current_user["id"], payload)}
+    return {
+        "report": moderate_existing_report(
+            db=db,
+            current_user=current_user,
+            report_id=report_id,
+            payload=payload,
+        )
+    }
 
 
 @router.get("/user-events", response_model=UserEventsResponse)
@@ -107,17 +132,17 @@ def read_user_event_features(
     limit: int = Query(500, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
-    return list_user_event_features(
-        db,
-        status_value,
-        event_kind,
-        reporter_type,
-        from_month,
-        to_month,
-        admin_approved,
-        min_lon,
-        min_lat,
-        max_lon,
-        max_lat,
-        limit,
+    return list_user_events_geojson(
+        db=db,
+        status_value=status_value,
+        event_kind=event_kind,
+        reporter_type=reporter_type,
+        from_month=from_month,
+        to_month=to_month,
+        admin_approved=admin_approved,
+        min_lon=min_lon,
+        min_lat=min_lat,
+        max_lon=max_lon,
+        max_lat=max_lat,
+        limit=limit,
     )

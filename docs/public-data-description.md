@@ -11,9 +11,8 @@ Excluded: `tiger`, `topology`, and system schemas/views.
 
 | Table | Primary Key | Purpose | Key Links |
 |---|---|---|---|
-| `collision_events` | `collision_index` | Collision event facts with location, severity, casualties, and derived aggregates. | Logical link: `segment_id` -> `road_segments.id`; logical link to `lsoa_boundaries` via LSOA code. |
-| `crime_events` | `id` | Crime events with location, type, and context. | Logical link: `segment_id` -> `road_segments.id`; logical link to `lsoa_boundaries` via LSOA code. |
-| `lsoa_boundaries` | `fid` | LSOA boundary polygons and identifiers. | Referenced logically by event LSOA code fields. |
+| `collision_events` | `collision_index` | Collision event facts with location, severity, casualties, and derived aggregates. | Logical link: `segment_id` -> `road_segments.id`. |
+| `crime_events` | `id` | Crime events with location, type, and context. | Logical link: `segment_id` -> `road_segments.id`. |
 | `road_segments` | `id` | Road network segments with both projected and geographic geometry (`geom`, `geom_4326`). | FK target for `segment_month_type_stats.segment_id`; logical target for event/stat `segment_id` columns. |
 | `segment_month_collision_stats` | (`segment_id`, `month`) | Monthly collision aggregates by road segment. | Logical link to `road_segments.id`; derived from `collision_events`. |
 | `segment_month_type_stats` | (`segment_id`, `month`, `crime_type`) | Monthly crime-type aggregates by road segment. | FK: `segment_id` -> `road_segments.id`; derived from `crime_events`. |
@@ -45,9 +44,6 @@ erDiagram
     road_segments ||--o{ collision_events : "segment_id (logical)"
     road_segments ||--o{ crime_events : "segment_id (logical)"
     road_segments ||--o{ user_reported_events : "segment_id (logical)"
-
-    lsoa_boundaries ||--o{ collision_events : "lsoa21cd = lsoa_of_accident_location (logical)"
-    lsoa_boundaries ||--o{ crime_events : "lsoa21cd = lsoa_code (logical)"
 ```
 
 ## Enforced Foreign Keys (Public Schema)

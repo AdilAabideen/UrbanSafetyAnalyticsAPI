@@ -24,21 +24,20 @@ DDL_STATEMENTS = [
         min_lat DOUBLE PRECISION NOT NULL,
         max_lon DOUBLE PRECISION NOT NULL,
         max_lat DOUBLE PRECISION NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT watchlists_bbox_lon_chk CHECK (min_lon < max_lon),
-        CONSTRAINT watchlists_bbox_lat_chk CHECK (min_lat < max_lat)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS watchlist_preferences (
-        id BIGSERIAL PRIMARY KEY,
-        watchlist_id BIGINT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
-        window_months INTEGER NOT NULL,
+        start_month DATE,
+        end_month DATE,
         crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-        travel_mode TEXT NOT NULL,
+        travel_mode TEXT,
         include_collisions BOOLEAN NOT NULL DEFAULT FALSE,
         baseline_months INTEGER NOT NULL DEFAULT 6,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT watchlists_bbox_lon_chk CHECK (min_lon < max_lon),
+        CONSTRAINT watchlists_bbox_lat_chk CHECK (min_lat < max_lat),
+        CONSTRAINT watchlists_month_range_chk CHECK (
+            start_month IS NULL
+            OR end_month IS NULL
+            OR start_month <= end_month
+        )
     )
     """,
     """
@@ -54,15 +53,54 @@ DDL_STATEMENTS = [
     DROP TABLE IF EXISTS analytics_hotspot_stability_snapshots CASCADE
     """,
     """
-    CREATE TABLE IF NOT EXISTS watchlist_analytics_runs (
+    DROP TABLE IF EXISTS watchlist_analytics_runs CASCADE
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS risk_score_reference_bboxes (
         id BIGSERIAL PRIMARY KEY,
-        watchlist_id BIGINT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
-        report_type TEXT NOT NULL,
-        request_params_json JSONB NOT NULL DEFAULT '{}'::JSONB,
-        payload_json JSONB NOT NULL,
+        label TEXT NOT NULL,
+        min_lon DOUBLE PRECISION NOT NULL,
+        min_lat DOUBLE PRECISION NOT NULL,
+        max_lon DOUBLE PRECISION NOT NULL,
+        max_lat DOUBLE PRECISION NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT watchlist_analytics_runs_report_type_chk
-            CHECK (report_type IN ('risk_score', 'risk_forecast', 'hotspot_stability'))
+        CONSTRAINT risk_score_reference_bboxes_lon_chk CHECK (min_lon < max_lon),
+        CONSTRAINT risk_score_reference_bboxes_lat_chk CHECK (min_lat < max_lat)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS risk_score_runs (
+        id BIGSERIAL PRIMARY KEY,
+        watchlist_id BIGINT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
+        reference_bbox_id BIGINT NULL REFERENCES risk_score_reference_bboxes(id) ON DELETE SET NULL,
+        min_lon DOUBLE PRECISION NOT NULL,
+        min_lat DOUBLE PRECISION NOT NULL,
+        max_lon DOUBLE PRECISION NOT NULL,
+        max_lat DOUBLE PRECISION NOT NULL,
+        start_month DATE NOT NULL,
+        end_month DATE NOT NULL,
+        crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+        travel_mode TEXT NOT NULL,
+        signature_key TEXT NOT NULL,
+        risk_score INTEGER NOT NULL,
+        band TEXT NOT NULL,
+        raw_score DOUBLE PRECISION NOT NULL,
+        crime_component DOUBLE PRECISION NOT NULL,
+        collision_component DOUBLE PRECISION NOT NULL,
+        user_component DOUBLE PRECISION NOT NULL,
+        execution_time_ms DOUBLE PRECISION NOT NULL,
+        comparison_basis TEXT,
+        comparison_sample_size INTEGER,
+        comparison_percentile DOUBLE PRECISION,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT risk_score_runs_bbox_lon_chk CHECK (min_lon < max_lon),
+        CONSTRAINT risk_score_runs_bbox_lat_chk CHECK (min_lat < max_lat),
+        CONSTRAINT risk_score_runs_month_range_chk CHECK (start_month <= end_month),
+        CONSTRAINT risk_score_runs_travel_mode_chk CHECK (travel_mode IN ('walk', 'drive')),
+        CONSTRAINT risk_score_runs_band_chk CHECK (band IN ('low', 'medium', 'high', 'very_high')),
+        CONSTRAINT risk_score_runs_comparison_basis_chk
+            CHECK (comparison_basis IN ('historical_same_signature', 'reference_bboxes', 'none'))
     )
     """,
     """
@@ -173,67 +211,53 @@ DDL_STATEMENTS = [
     )
     """,
     """
-    DO $$
-    BEGIN
-        IF EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'watchlist_preferences'
-              AND column_name = 'banding_mode'
-        ) AND NOT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'watchlist_preferences'
-              AND column_name = 'travel_mode'
-        ) THEN
-            ALTER TABLE watchlist_preferences RENAME COLUMN banding_mode TO travel_mode;
-        END IF;
-    END $$;
+    ALTER TABLE watchlists
+    ADD COLUMN IF NOT EXISTS start_month DATE
     """,
     """
-    ALTER TABLE watchlist_preferences
+    ALTER TABLE watchlists
+    ADD COLUMN IF NOT EXISTS end_month DATE
+    """,
+    """
+    ALTER TABLE watchlists
     ADD COLUMN IF NOT EXISTS crime_types TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]
     """,
     """
-    ALTER TABLE watchlist_preferences
+    ALTER TABLE watchlists
+    ADD COLUMN IF NOT EXISTS travel_mode TEXT
+    """,
+    """
+    ALTER TABLE watchlists
     ADD COLUMN IF NOT EXISTS include_collisions BOOLEAN NOT NULL DEFAULT FALSE
     """,
     """
-    ALTER TABLE watchlist_preferences
+    ALTER TABLE watchlists
     ADD COLUMN IF NOT EXISTS baseline_months INTEGER NOT NULL DEFAULT 6
     """,
-    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS hotspot_k",
-    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS include_hotspot_stability",
-    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS include_forecast",
-    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS weight_crime",
-    "ALTER TABLE watchlist_preferences DROP COLUMN IF EXISTS weight_collision",
     """
     DO $$
     BEGIN
-        IF EXISTS (
+        IF NOT EXISTS (
             SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'watchlist_preferences'
-              AND column_name = 'crime_type'
+            FROM pg_constraint
+            WHERE conname = 'watchlists_month_range_chk'
         ) THEN
-            UPDATE watchlist_preferences
-            SET crime_types = CASE
-                WHEN crime_type IS NULL OR BTRIM(crime_type) = '' THEN ARRAY[]::TEXT[]
-                ELSE ARRAY[crime_type]
-            END
-            WHERE crime_types = ARRAY[]::TEXT[];
-
-            ALTER TABLE watchlist_preferences DROP COLUMN crime_type;
+            ALTER TABLE watchlists
+            ADD CONSTRAINT watchlists_month_range_chk CHECK (
+                start_month IS NULL
+                OR end_month IS NULL
+                OR start_month <= end_month
+            );
         END IF;
     END $$;
     """,
+    "DROP TABLE IF EXISTS watchlist_preferences",
     "CREATE INDEX IF NOT EXISTS watchlists_user_id_idx ON watchlists(user_id)",
-    "CREATE INDEX IF NOT EXISTS watchlist_preferences_watchlist_id_idx ON watchlist_preferences(watchlist_id)",
-    "CREATE INDEX IF NOT EXISTS watchlist_analytics_runs_watchlist_created_idx ON watchlist_analytics_runs(watchlist_id, created_at DESC)",
-    "CREATE INDEX IF NOT EXISTS watchlist_analytics_runs_watchlist_type_created_idx ON watchlist_analytics_runs(watchlist_id, report_type, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS risk_score_runs_signature_created_idx ON risk_score_runs(signature_key, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS risk_score_runs_watchlist_created_idx ON risk_score_runs(watchlist_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS risk_score_runs_mode_window_created_idx ON risk_score_runs(travel_mode, start_month, end_month, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS risk_score_runs_reference_signature_created_idx ON risk_score_runs(reference_bbox_id, signature_key, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS risk_score_reference_bboxes_active_idx ON risk_score_reference_bboxes(active)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_geom_gix ON user_reported_events USING GIST (geom)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_month_idx ON user_reported_events(month)",
     "CREATE INDEX IF NOT EXISTS user_reported_events_segment_idx ON user_reported_events(segment_id)",

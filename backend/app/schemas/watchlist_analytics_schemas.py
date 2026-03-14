@@ -4,38 +4,181 @@ from pydantic import BaseModel, Field
 
 
 class WatchlistRiskComponents(BaseModel):
-    crime_component: float
-    collision_density: float
-    user_support: float
+    """Internal component breakdown used to build the final risk score."""
+
+    crime_component: float = Field(
+        ...,
+        description="Crime signal after harm weighting, recency decay, and persistence blending.",
+        example=4.0244,
+    )
+    collision_density: float = Field(
+        ...,
+        description="Collision signal normalized by effective road exposure for the selected area.",
+        example=0.35,
+    )
+    user_support: float = Field(
+        ...,
+        description="Combined lightweight user-reported support signal (crime + collision reports).",
+        example=0.12,
+    )
 
 
 class WatchlistRiskResult(BaseModel):
-    risk_score: int
-    raw_score: float
-    components: WatchlistRiskComponents
+    """Core risk result values for this watchlist execution."""
+
+    risk_score: int = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Final normalized risk score in the range 0 to 100.",
+        example=63,
+    )
+    raw_score: float = Field(
+        ...,
+        description="Pre-normalized algorithm score before conversion to the 0-100 risk scale.",
+        example=1.6098,
+    )
+    components: WatchlistRiskComponents = Field(
+        ...,
+        description="Algorithm component values used to build raw_score.",
+    )
 
 
 class WatchlistComparisonDistribution(BaseModel):
-    min: Optional[float] = None
-    median: Optional[float] = None
-    max: Optional[float] = None
+    """Distribution summary of compared cohort scores."""
+
+    min: Optional[float] = Field(
+        default=None,
+        description="Minimum risk score found in the comparison cohort.",
+        example=50.0,
+    )
+    median: Optional[float] = Field(
+        default=None,
+        description="Median risk score for the comparison cohort.",
+        example=67.5,
+    )
+    max: Optional[float] = Field(
+        default=None,
+        description="Maximum risk score found in the comparison cohort.",
+        example=92.0,
+    )
 
 
 class WatchlistComparisonSummary(BaseModel):
-    cohort_type: str
-    cohort_size: int
-    subject_score: int
-    rank: Optional[int] = None
-    rank_out_of: Optional[int] = None
-    percentile: Optional[float] = None
-    distribution: WatchlistComparisonDistribution
-    sample_size: int
-    historical_count: int
-    threshold: int
-    reference_ids: List[int] = Field(default_factory=list)
+    """Condensed proof that the score was compared against other runs."""
+
+    cohort_type: str = Field(
+        ...,
+        description="Comparison source used: historical_same_signature, reference_bboxes, or none.",
+        example="reference_bboxes",
+    )
+    cohort_size: int = Field(
+        ...,
+        ge=0,
+        description="Number of rows used for the final comparison.",
+        example=2,
+    )
+    subject_score: int = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="The current watchlist run's risk score being compared.",
+        example=63,
+    )
+    rank: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Rank of subject_score within cohort (1 = highest risk).",
+        example=3,
+    )
+    rank_out_of: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Total cohort size used for rank display.",
+        example=2,
+    )
+    percentile: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Percentile position of subject_score within the comparison cohort.",
+        example=0.0,
+    )
+    distribution: WatchlistComparisonDistribution = Field(
+        ...,
+        description="Simple distribution stats of the comparison cohort.",
+    )
+    sample_size: int = Field(
+        ...,
+        ge=0,
+        description="Alias of cohort_size retained for compatibility.",
+        example=2,
+    )
+    historical_count: int = Field(
+        ...,
+        ge=0,
+        description="Count of matching historical rows found before fallback decisions.",
+        example=1,
+    )
+    threshold: int = Field(
+        ...,
+        ge=1,
+        description="Minimum historical cohort size required before fallback to reference bboxes.",
+        example=2,
+    )
+    reference_ids: List[int] = Field(
+        default_factory=list,
+        description="Run IDs used when comparison cohort is built from reference bboxes.",
+        example=[9, 5],
+    )
 
 
 class WatchlistRiskScoreResponse(BaseModel):
-    watchlist_id: Optional[int] = None
-    risk_result: WatchlistRiskResult
-    comparison: WatchlistComparisonSummary
+    """API response for watchlist risk-score execution."""
+
+    watchlist_id: Optional[int] = Field(
+        default=None,
+        description="Watchlist identifier used for this analytics run.",
+        example=42,
+    )
+    risk_result: WatchlistRiskResult = Field(
+        ...,
+        description="Computed risk score and component breakdown.",
+    )
+    comparison: WatchlistComparisonSummary = Field(
+        ...,
+        description="Condensed comparison proof block.",
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "watchlist_id": 42,
+                "risk_result": {
+                    "risk_score": 63,
+                    "raw_score": 1.6097716609710755,
+                    "components": {
+                        "crime_component": 4.024429152427689,
+                        "collision_density": 0.0,
+                        "user_support": 0.0,
+                    },
+                },
+                "comparison": {
+                    "cohort_type": "reference_bboxes",
+                    "cohort_size": 2,
+                    "subject_score": 63,
+                    "rank": 3,
+                    "rank_out_of": 2,
+                    "percentile": 0.0,
+                    "distribution": {
+                        "min": 85.0,
+                        "median": 92.5,
+                        "max": 100.0,
+                    },
+                    "sample_size": 2,
+                    "historical_count": 1,
+                    "threshold": 2,
+                    "reference_ids": [9, 5],
+                },
+            }
+        }

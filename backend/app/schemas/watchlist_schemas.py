@@ -6,13 +6,10 @@ from pydantic import BaseModel, Field
 
 class WatchlistPreferencePayload(BaseModel):
     """Preference payload used when creating/updating watchlists."""
-
     start_month: date
     end_month: date
     crime_types: List[str] = Field(default_factory=list)
     travel_mode: str = Field(..., min_length=1)
-    include_collisions: bool = False
-    baseline_months: int = Field(default=6, ge=3, le=24)
 
 
 class WatchlistCreateRequest(BaseModel):

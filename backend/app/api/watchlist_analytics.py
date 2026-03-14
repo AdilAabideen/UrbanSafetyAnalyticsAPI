@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -13,9 +13,42 @@ router = APIRouter(tags=["watchlist-analytics"])
 @router.post(
     "/watchlists/{watchlist_id}/analytics/risk-score",
     response_model=WatchlistRiskScoreResponse,
+    summary="Compute Watchlist Risk Score",
+    description=(
+        "Runs the watchlist risk algorithm using the watchlist bbox and stored preference window "
+        "(start_month/end_month). The algorithm builds three core signals inside the bbox: "
+        "(1) a crime component using crime-type harm weights, monthly recency decay, area "
+        "normalization, and persistence across active months; "
+        "(2) a collision component using severity-weighted collision points with recency decay "
+        "normalized by effective road length; and "
+        "(3) a lightweight user-report support signal with cluster caps and faster recency decay. "
+        "Signals are blended with mode-specific weights (walk/drive) into a raw score, then "
+        "mapped to a normalized 0-100 risk score. "
+        "The run is persisted, then compared against prior runs with the same signature "
+        "(month window + crime types + mode). If historical cohort size is below threshold, "
+        "the service falls back to nearest reference bboxes and compares against cached or "
+        "recalculated reference runs. "
+        "Returns a condensed payload with risk result and comparison proof fields."
+    ),
+    responses={
+        200: {
+            "description": "Risk score computed and persisted successfully.",
+        },
+        400: {
+            "description": "Watchlist is missing required analytics preference fields or has invalid values.",
+        },
+        404: {
+            "description": "Watchlist not found for the authenticated user.",
+        },
+    },
 )
 def compute_watchlist_risk_score(
-    watchlist_id: int,
+    watchlist_id: int = Path(
+        ...,
+        gt=0,
+        description="Unique watchlist identifier owned by the authenticated user.",
+        example=42,
+    ),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WatchlistRiskScoreResponse:

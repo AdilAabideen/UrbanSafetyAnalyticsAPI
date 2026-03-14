@@ -115,19 +115,6 @@ def _serialize_watchlist_mode(value):
     return aliases.get(normalized, value)
 
 
-def _validate_watchlist_collision_mode(mode, include_collisions):
-    """Validate the watchlist collision mode."""
-
-    # Check if the include collisions is only supported when travel mode is drive.
-    if include_collisions and mode != "drive":
-
-        # Raise a validation error if the include collisions is only supported when travel mode is drive.
-        raise ValidationError(
-            error="INVALID_MODE_FOR_COLLISIONS",
-            message="include_collisions is only supported when travel_mode is drive",
-            details={"field": "travel_mode", "include_collisions": include_collisions},
-        )
-
 
 def _preference_to_dict(row):
     """Serialize the watchlist preference."""
@@ -164,6 +151,14 @@ def _watchlist_to_dict(row):
     }
 
 
+def baseline_months_from_start_month(start_month: date) -> int:
+    """Return the whole number of months from start_month until the current month (inclusive)."""
+    today = date.today()
+    months = (today.year - start_month.year) * 12 + (today.month - start_month.month)
+    # If you want to include the start_month itself, add 1
+    return months 
+    
+
 def apply_preference_service(db: Session, watchlist_id: int, user_id: int, preference):
     """Validate and persist watchlist preference values."""
     # Check if the preference is None.
@@ -173,8 +168,9 @@ def apply_preference_service(db: Session, watchlist_id: int, user_id: int, prefe
 
     _validate_month_range(preference.start_month, preference.end_month)
     travel_mode = _normalize_watchlist_mode(preference.travel_mode, error_context="watchlist preference")
-    include_collisions = bool(preference.include_collisions)
-    _validate_watchlist_collision_mode(travel_mode, include_collisions)
+    baseline_months = baseline_months_from_start_month(preference.start_month)
+
+    
 
     # Update the watchlist preference.
     row = watchlist_repository.update_watchlist_preference(
@@ -185,8 +181,8 @@ def apply_preference_service(db: Session, watchlist_id: int, user_id: int, prefe
         end_month=preference.end_month,
         crime_types=_normalize_crime_types(preference.crime_types),
         travel_mode=travel_mode,
-        include_collisions=include_collisions,
-        baseline_months=preference.baseline_months,
+        include_collisions=True,
+        baseline_months=baseline_months,
     )
     if not row:
         # Raise a not found error if the watchlist preference is not found.

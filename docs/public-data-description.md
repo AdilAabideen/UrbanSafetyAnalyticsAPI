@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document describes the `public` schema tables in the `urban_risk` PostgreSQL database (from the running Docker DB container).
+This document describes the application-facing `public` schema model used by the `urban_risk` API.
 
 Included: `public` base tables only.  
 Excluded: `tiger`, `topology`, and system schemas/views.
@@ -21,8 +21,7 @@ Excluded: `tiger`, `topology`, and system schemas/views.
 | `user_reported_crime_details` | `event_id` | Crime-specific detail row for user-reported events. | FK: `event_id` -> `user_reported_events.id`. |
 | `user_reported_events` | `id` | User-submitted events with moderation and snapped location fields. | FK: `user_id` -> `users.id`; FK: `moderated_by` -> `users.id`; parent of detail tables. |
 | `users` | `id` | Application users and auth/admin fields. | Parent of `watchlists` and `user_reported_events`. |
-| `watchlist_analytics_runs` | `id` | Stored analytics runs/results for watchlists. | FK: `watchlist_id` -> `watchlists.id`. |
-| `watchlists` | `id` | User-defined geographic watchlist areas and configuration (bbox, date window, mode/filter settings). | FK: `user_id` -> `users.id`; parent of analytics runs. |
+| `watchlists` | `id` | User-defined watchlist areas with bbox columns (`min_lon`, `min_lat`, `max_lon`, `max_lat`) and preference fields (`start_month`, `end_month`, `crime_types`, `travel_mode`, `baseline_months`). | FK: `user_id` -> `users.id`. |
 
 ## ER Diagram (Public Tables Only)
 
@@ -31,8 +30,6 @@ erDiagram
     users ||--o{ watchlists : "user_id"
     users ||--o{ user_reported_events : "user_id"
     users ||--o{ user_reported_events : "moderated_by"
-
-    watchlists ||--o{ watchlist_analytics_runs : "watchlist_id"
 
     user_reported_events ||--o| user_reported_collision_details : "event_id"
     user_reported_events ||--o| user_reported_crime_details : "event_id"
@@ -53,7 +50,6 @@ erDiagram
 | `user_reported_crime_details` | `event_id` | `user_reported_events` | `id` | `CASCADE` |
 | `user_reported_events` | `moderated_by` | `users` | `id` | `SET NULL` |
 | `user_reported_events` | `user_id` | `users` | `id` | `SET NULL` |
-| `watchlist_analytics_runs` | `watchlist_id` | `watchlists` | `id` | `CASCADE` |
 | `watchlists` | `user_id` | `users` | `id` | `CASCADE` |
 
 ## Notes
@@ -61,3 +57,7 @@ erDiagram
 - `collision_events`, `crime_events`, `user_reported_events`, and `segment_month_collision_stats` contain `segment_id` but not all of these links are enforced as DB foreign keys.
 - `segment_month_collision_stats` and `segment_month_type_stats` are aggregate/stat tables keyed by segment and month.
 - `user_reported_collision_details` and `user_reported_crime_details` act as subtype detail tables for `user_reported_events` by shared `event_id`.
+- Watchlist preference values are stored directly on `watchlists`; there is no separate `watchlist_preferences` table.
+- `bbox_coords` is derived from stored watchlist columns (`min_lon`, `min_lat`, `max_lon`, `max_lat`).
+- Canonical analytics hashes/signatures do not include `include_collisions`.
+- Cohort-based comparison outputs only apply when cohort size is at least `2`.

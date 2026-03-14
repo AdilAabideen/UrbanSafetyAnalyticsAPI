@@ -2,9 +2,15 @@ from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..schemas.watchlist_analytics_schemas import WatchlistRiskRunsResponse, WatchlistRiskScoreResponse
+from ..schemas.watchlist_analytics_schemas import (
+    WatchlistForecastRequest,
+    WatchlistForecastResponse,
+    WatchlistRiskRunsResponse,
+    WatchlistRiskScoreResponse,
+)
 from ..services.auth_service import get_current_user
 from ..services.watchlist_analytics_service import (
+    build_watchlist_forecast_service,
     build_watchlist_risk_score_service,
     list_watchlist_risk_runs_service,
 )
@@ -98,4 +104,43 @@ def list_watchlist_risk_runs(
         user_id=current_user["id"],
         watchlist_id=watchlist_id,
         limit=limit,
+    )
+
+
+@router.post(
+    "/watchlists/{watchlist_id}/analytics/forecast",
+    response_model=WatchlistForecastResponse,
+    summary="Forecast Watchlist Next Month",
+    description=(
+        "Computes next-month forecast for a watchlist using the watchlist bbox plus historical monthly "
+        "baseline from startMonth to the last complete month. The forecast blends official crime counts, "
+        "approved user-reported crime signal, and collision severity points, then applies recency weights "
+        "(lambda=0.85) and mode-based emphasis (walk/drive). Returns score, conservative band, expected "
+        "crime/collision outputs, and Poisson-style intervals."
+    ),
+    responses={
+        200: {"description": "Forecast computed successfully."},
+        400: {"description": "Invalid startMonth/mode or invalid watchlist bbox configuration."},
+        404: {"description": "Watchlist not found for the authenticated user."},
+    },
+)
+def forecast_watchlist_next_month(
+    request: WatchlistForecastRequest,
+    watchlist_id: int = Path(
+        ...,
+        gt=0,
+        description="Unique watchlist identifier owned by the authenticated user.",
+        example=2,
+    ),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WatchlistForecastResponse:
+    """Forecast next-month watchlist outcomes without persisting result rows."""
+    return build_watchlist_forecast_service(
+        db=db,
+        user_id=current_user["id"],
+        watchlist_id=watchlist_id,
+        start_month=request.start_month,
+        mode=request.mode,
+        crime_types=request.crime_types,
     )

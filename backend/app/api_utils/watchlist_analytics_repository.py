@@ -565,3 +565,137 @@ def list_watchlist_risk_runs(
     )
     rows = execute(db, query, {"watchlist_id": watchlist_id, "limit": limit}).mappings().all()
     return [dict(row) for row in rows]
+
+
+def fetch_forecast_baseline_rows(
+    db: Session,
+    *,
+    baseline_from_date,
+    baseline_to_date,
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    crime_types: List[str],
+) -> List[Dict[str, Any]]:
+    """
+    Load monthly baseline rows for recency-weighted watchlist forecasting.
+
+    Each monthly row includes:
+    - official crime count
+    - user-reported crime signal
+    - blended crime_count
+    - collision_count
+    - collision_points
+    """
+    crime_type_clause = ""
+    user_crime_type_clause = ""
+    params: Dict[str, Any] = {
+        "baseline_from_date": baseline_from_date,
+        "baseline_to_date": baseline_to_date,
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
+    }
+    if crime_types:
+        crime_type_clause = "AND ce.crime_type = ANY(:crime_types)"
+        user_crime_type_clause = "AND urc.crime_type = ANY(:crime_types)"
+        params["crime_types"] = crime_types
+
+    query = text(
+        f"""
+        /* watchlist_forecast_monthly_baseline */
+        WITH months AS (
+            SELECT generate_series(
+                CAST(:baseline_from_date AS date),
+                CAST(:baseline_to_date AS date),
+                interval '1 month'
+            )::date AS month
+        ),
+        official_crime AS (
+            SELECT
+                ce.month,
+                COUNT(*)::double precision AS official_crime_count
+            FROM crime_events ce
+            WHERE ce.geom IS NOT NULL
+              AND ce.month BETWEEN :baseline_from_date AND :baseline_to_date
+              AND ce.lon BETWEEN :min_lon AND :max_lon
+              AND ce.lat BETWEEN :min_lat AND :max_lat
+              AND ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+              {crime_type_clause}
+            GROUP BY ce.month
+        ),
+        user_crime_monthly AS (
+            SELECT
+                ure.month,
+                COUNT(*) FILTER (WHERE ure.reporter_type = 'anonymous')::double precision AS anonymous_reports,
+                COUNT(*) FILTER (WHERE ure.reporter_type = 'authenticated')::double precision AS authenticated_reports,
+                COUNT(DISTINCT ure.user_id) FILTER (
+                    WHERE ure.reporter_type = 'authenticated'
+                )::double precision AS distinct_authenticated_users
+            FROM user_reported_events ure
+            JOIN user_reported_crime_details urc ON urc.event_id = ure.id
+            WHERE ure.event_kind = 'crime'
+              AND ure.admin_approved = TRUE
+              AND ure.geom IS NOT NULL
+              AND ure.month BETWEEN :baseline_from_date AND :baseline_to_date
+              AND ure.longitude BETWEEN :min_lon AND :max_lon
+              AND ure.latitude BETWEEN :min_lat AND :max_lat
+              AND ure.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+              {user_crime_type_clause}
+            GROUP BY ure.month
+        ),
+        user_crime_signal AS (
+            SELECT
+                month,
+                (
+                    0.10 * LEAST(
+                        3.0,
+                        distinct_authenticated_users
+                        + (0.5 * anonymous_reports)
+                        + (0.25 * GREATEST(authenticated_reports - distinct_authenticated_users, 0))
+                    )
+                )::double precision AS user_reported_crime_signal
+            FROM user_crime_monthly
+        ),
+        collision_monthly AS (
+            SELECT
+                ce.month,
+                COUNT(*)::bigint AS collision_count,
+                COALESCE(
+                    SUM(
+                        1.0
+                        + (0.5 * COALESCE(ce.slight_casualty_count, 0))
+                        + (2.0 * COALESCE(ce.serious_casualty_count, 0))
+                        + (5.0 * COALESCE(ce.fatal_casualty_count, 0))
+                    ),
+                    0.0
+                )::double precision AS collision_points
+            FROM collision_events ce
+            WHERE ce.geom IS NOT NULL
+              AND ce.month BETWEEN :baseline_from_date AND :baseline_to_date
+              AND ce.longitude BETWEEN :min_lon AND :max_lon
+              AND ce.latitude BETWEEN :min_lat AND :max_lat
+              AND ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+            GROUP BY ce.month
+        )
+        SELECT
+            TO_CHAR(months.month, 'YYYY-MM') AS month,
+            COALESCE(official_crime.official_crime_count, 0.0) AS official_crime_count,
+            COALESCE(user_crime_signal.user_reported_crime_signal, 0.0) AS user_reported_crime_signal,
+            (
+                COALESCE(official_crime.official_crime_count, 0.0)
+                + COALESCE(user_crime_signal.user_reported_crime_signal, 0.0)
+            ) AS crime_count,
+            COALESCE(collision_monthly.collision_count, 0)::bigint AS collision_count,
+            COALESCE(collision_monthly.collision_points, 0.0) AS collision_points
+        FROM months
+        LEFT JOIN official_crime ON official_crime.month = months.month
+        LEFT JOIN user_crime_signal ON user_crime_signal.month = months.month
+        LEFT JOIN collision_monthly ON collision_monthly.month = months.month
+        ORDER BY months.month ASC
+        """
+    )
+    rows = execute(db, query, params).mappings().all()
+    return [dict(row) for row in rows]

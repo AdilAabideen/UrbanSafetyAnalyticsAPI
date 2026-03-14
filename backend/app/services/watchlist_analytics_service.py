@@ -1,6 +1,7 @@
 import hashlib
 import math
 import statistics
+from datetime import date, datetime
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
@@ -35,10 +36,14 @@ DRIVE_WEIGHTS = {"w_crime": 0.40, "w_collision": 0.50, "w_user": 0.10}
 
 CRIME_PERSISTENCE_ALPHA = 0.8
 ROAD_KM_FLOOR = 0.25
-RAW_SCORE_SATURATION = 1.6
+RAW_SCORE_LOG_DIVISOR = 2.5
+RAW_SCORE_MAX_FOR_SCALING = 5000.0
 
 COMPARISON_MIN_COHORT = 2
 REFERENCE_BBOX_COUNT = 2
+SIGNATURE_VERSION = "v2_log_norm"
+
+FORECAST_RECENCY_LAMBDA = 0.85
 
 
 def _safe_float(value: Any) -> float:
@@ -101,7 +106,10 @@ def _weights_for_mode(mode: str) -> Dict[str, float]:
 
 def _score_from_raw(raw_score: float) -> int:
     """Compute the score from the raw score."""
-    bounded = 100.0 * (1.0 - math.exp(-max(raw_score, 0.0) / RAW_SCORE_SATURATION))
+    # Log compression prevents very large raw values from collapsing to 100 too quickly.
+    raw_non_negative = max(raw_score, 0.0)
+    compressed = math.log1p(min(raw_non_negative, RAW_SCORE_MAX_FOR_SCALING))
+    bounded = 100.0 * (1.0 - math.exp(-compressed / RAW_SCORE_LOG_DIVISOR))
     bounded = max(0.0, min(100.0, bounded))
     return int(round(bounded))
 
@@ -120,7 +128,7 @@ def _risk_band(score: int) -> str:
 def _build_signature_key(*, from_value: str, to_value: str, crime_types: List[str], mode: str) -> str:
     """Build the signature key."""
     canonical_types = _canonical_crime_types(crime_types)
-    payload = f"{from_value}|{to_value}|{mode}|{','.join(canonical_types)}"
+    payload = f"{SIGNATURE_VERSION}|{from_value}|{to_value}|{mode}|{','.join(canonical_types)}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -495,3 +503,196 @@ def list_watchlist_risk_runs_service(
         )
 
     return {"watchlist_id": watchlist_id, "items": items}
+
+
+def _to_month_start(value: date) -> date:
+    """Normalize a date to first day of month."""
+    return date(value.year, value.month, 1)
+
+
+def _shift_month(value: date, delta_months: int) -> date:
+    """Shift a month-start date by delta months."""
+    month_index = (value.year * 12 + value.month - 1) + delta_months
+    year = month_index // 12
+    month = (month_index % 12) + 1
+    return date(year, month, 1)
+
+
+def _last_complete_month(today: Optional[date] = None) -> date:
+    """Return latest fully completed month."""
+    today_value = today or date.today()
+    return _shift_month(date(today_value.year, today_value.month, 1), -1)
+
+
+def _parse_start_month(value: str) -> date:
+    """Parse startMonth input in YYYY-MM format."""
+    try:
+        return _to_month_start(datetime.strptime(value, "%Y-%m").date())
+    except ValueError as exc:
+        raise ValidationError(
+            error="INVALID_MONTH_FORMAT",
+            message="startMonth must be in YYYY-MM format",
+            details={"field": "startMonth", "value": value},
+        ) from exc
+
+
+def _month_span(start_date: date, end_date: date) -> int:
+    """Return inclusive month count between start and end."""
+    return (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month) + 1
+
+
+def _weighted_mean(values: List[float], lambda_decay: float = FORECAST_RECENCY_LAMBDA) -> float:
+    """Recency-weighted mean with newest month at weight 1.0."""
+    if not values:
+        return 0.0
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for index, value in enumerate(reversed(values)):
+        weight = lambda_decay**index
+        weighted_sum += weight * float(value)
+        total_weight += weight
+    if total_weight <= 0:
+        return 0.0
+    return weighted_sum / total_weight
+
+
+def _poisson_interval(mu: float) -> Dict[str, int]:
+    """Simple Poisson-style interval from normal approximation."""
+    sigma = 1.96 * math.sqrt(max(mu, 1e-9))
+    low = int(math.floor(max(0.0, mu - sigma)))
+    high = int(math.ceil(mu + sigma))
+    return {"low": low, "high": high}
+
+
+def _forecast_band_from_score(score: int) -> str:
+    """Conservative forecast banding from projected score."""
+    if score >= 60:
+        return "red"
+    if score >= 35:
+        return "amber"
+    return "green"
+
+
+def _normalize_crime_types_input(values: List[str]) -> List[str]:
+    """Normalize incoming crime type array while preserving order."""
+    normalized: List[str] = []
+    seen = set()
+    for value in values or []:
+        token = (value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
+
+
+def build_watchlist_forecast_service(
+    db: Session,
+    *,
+    user_id: int,
+    watchlist_id: int,
+    start_month: str,
+    mode: str,
+    crime_types: List[str],
+):
+    """
+    Forecast next month for one watchlist using recency-weighted baseline history.
+
+    This path does not persist forecast results.
+    """
+    row = watchlist_analytics_repository.get_watchlist_for_analytics(
+        db,
+        watchlist_id=watchlist_id,
+        user_id=user_id,
+    )
+    if not row:
+        raise NotFoundError(error="WATCHLIST_NOT_FOUND", message="Watchlist not found")
+
+    bbox = {
+        "min_lon": float(row["min_lon"]),
+        "min_lat": float(row["min_lat"]),
+        "max_lon": float(row["max_lon"]),
+        "max_lat": float(row["max_lat"]),
+    }
+    _validate_bbox(**bbox)
+
+    baseline_from_date = _parse_start_month(start_month)
+    baseline_to_date = _last_complete_month()
+    if baseline_from_date > baseline_to_date:
+        raise ValidationError(
+            error="INVALID_DATE_RANGE",
+            message="startMonth must be less than or equal to the last complete month",
+            details={
+                "startMonth": baseline_from_date.strftime("%Y-%m"),
+                "lastCompleteMonth": baseline_to_date.strftime("%Y-%m"),
+            },
+        )
+    if _month_span(baseline_from_date, baseline_to_date) <= 0:
+        raise ValidationError(
+            error="INVALID_DATE_RANGE",
+            message="month range from startMonth to the last complete month must be > 0",
+            details={"startMonth": baseline_from_date.strftime("%Y-%m")},
+        )
+
+    normalized_mode = _normalize_mode(mode)
+    normalized_crime_types = _normalize_crime_types_input(crime_types)
+    weights = _weights_for_mode(normalized_mode)
+
+    baseline_rows = watchlist_analytics_repository.fetch_forecast_baseline_rows(
+        db,
+        baseline_from_date=baseline_from_date,
+        baseline_to_date=baseline_to_date,
+        min_lon=bbox["min_lon"],
+        min_lat=bbox["min_lat"],
+        max_lon=bbox["max_lon"],
+        max_lat=bbox["max_lat"],
+        crime_types=normalized_crime_types,
+    )
+    if not baseline_rows:
+        raise ValidationError(
+            error="BASELINE_HISTORY_INSUFFICIENT",
+            message="No monthly baseline rows were found for this watchlist and month range",
+            details={"watchlist_id": watchlist_id},
+        )
+
+    crime_values = [float(item["crime_count"] or 0.0) for item in baseline_rows]
+    collision_points_values = [float(item["collision_points"] or 0.0) for item in baseline_rows]
+    collision_count_values = [float(item["collision_count"] or 0.0) for item in baseline_rows]
+
+    mu_crime = _weighted_mean(crime_values)
+    mu_collision_points = _weighted_mean(collision_points_values)
+    mu_collision_count = _weighted_mean(collision_count_values)
+
+    combined_values = [
+        (weights["w_crime"] * crime_value) + (weights["w_collision"] * collision_points_value)
+        for crime_value, collision_points_value in zip(crime_values, collision_points_values)
+    ]
+    baseline_combined_mean = _weighted_mean(combined_values)
+    projected_combined_value = (weights["w_crime"] * mu_crime) + (weights["w_collision"] * mu_collision_points)
+    ratio = projected_combined_value / max(baseline_combined_mean, 1e-9)
+
+    score = _score_from_raw(projected_combined_value)
+    band = _forecast_band_from_score(score)
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "forecast": {
+            "score": int(score),
+            "band": band,
+            "expected_crime_count": int(round(mu_crime)),
+            "expected_collision_count": int(round(mu_collision_count)),
+            "expected_collision_points": round(float(mu_collision_points), 4),
+            "intervals": {
+                "crimes": _poisson_interval(mu_crime),
+                "collisions_count": _poisson_interval(mu_collision_count),
+            },
+            "components": {
+                "mu_crime": round(float(mu_crime), 4),
+                "mu_collision_points": round(float(mu_collision_points), 4),
+                "mu_collision_count": round(float(mu_collision_count), 4),
+                "projected_combined_value": round(float(projected_combined_value), 4),
+                "baseline_combined_mean": round(float(baseline_combined_mean), 4),
+                "ratio": round(float(ratio), 4),
+            },
+        },
+    }

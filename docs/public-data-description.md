@@ -13,6 +13,8 @@ Excluded: `tiger`, `topology`, and system schemas/views.
 |---|---|---|---|
 | `collision_events` | `collision_index` | Collision event facts with location, severity, casualties, and derived aggregates. | Logical link: `segment_id` -> `road_segments.id`. |
 | `crime_events` | `id` | Crime events with location, type, and context. | Logical link: `segment_id` -> `road_segments.id`. |
+| `risk_score_reference_bboxes` | `id` | Configured reference areas used for cohort/comparison context in risk scoring. | Parent of `risk_score_runs.reference_bbox_id`. |
+| `risk_score_runs` | `id` | Persisted risk score computation outputs, run parameters, components, and comparison metrics. | FK: `watchlist_id` -> `watchlists.id`; FK: `reference_bbox_id` -> `risk_score_reference_bboxes.id`. |
 | `road_segments` | `id` | Road network segments with both projected and geographic geometry (`geom`, `geom_4326`). | FK target for `segment_month_type_stats.segment_id`; logical target for event/stat `segment_id` columns. |
 | `segment_month_collision_stats` | (`segment_id`, `month`) | Monthly collision aggregates by road segment. | Logical link to `road_segments.id`; derived from `collision_events`. |
 | `segment_month_type_stats` | (`segment_id`, `month`, `crime_type`) | Monthly crime-type aggregates by road segment. | FK: `segment_id` -> `road_segments.id`; derived from `crime_events`. |
@@ -34,6 +36,9 @@ erDiagram
     user_reported_events ||--o| user_reported_collision_details : "event_id"
     user_reported_events ||--o| user_reported_crime_details : "event_id"
 
+    watchlists ||--o{ risk_score_runs : "watchlist_id"
+    risk_score_reference_bboxes ||--o{ risk_score_runs : "reference_bbox_id"
+
     road_segments ||--o{ segment_month_type_stats : "segment_id"
     road_segments ||--o{ segment_month_collision_stats : "segment_id (logical)"
     road_segments ||--o{ collision_events : "segment_id (logical)"
@@ -45,6 +50,8 @@ erDiagram
 
 | Child Table | Child Column | Parent Table | Parent Column | On Delete |
 |---|---|---|---|---|
+| `risk_score_runs` | `reference_bbox_id` | `risk_score_reference_bboxes` | `id` | `SET NULL` |
+| `risk_score_runs` | `watchlist_id` | `watchlists` | `id` | `CASCADE` |
 | `segment_month_type_stats` | `segment_id` | `road_segments` | `id` | `NO ACTION` |
 | `user_reported_collision_details` | `event_id` | `user_reported_events` | `id` | `CASCADE` |
 | `user_reported_crime_details` | `event_id` | `user_reported_events` | `id` | `CASCADE` |
@@ -55,6 +62,7 @@ erDiagram
 ## Notes
 
 - `collision_events`, `crime_events`, `user_reported_events`, and `segment_month_collision_stats` contain `segment_id` but not all of these links are enforced as DB foreign keys.
+- `risk_score_runs` links persisted score outputs back to both `watchlists` and optional `risk_score_reference_bboxes`.
 - `segment_month_collision_stats` and `segment_month_type_stats` are aggregate/stat tables keyed by segment and month.
 - `user_reported_collision_details` and `user_reported_crime_details` act as subtype detail tables for `user_reported_events` by shared `event_id`.
 - Watchlist preference values are stored directly on `watchlists`; there is no separate `watchlist_preferences` table.

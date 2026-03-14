@@ -67,12 +67,14 @@ DRIVE_WEIGHTS = {"w_crime": 0.40, "w_collision": 0.50, "w_user": 0.10}
 # Normalization/safety constants.
 CRIME_PERSISTENCE_ALPHA = 0.8
 ROAD_KM_FLOOR = 0.25
-RAW_SCORE_SATURATION = 1.6
+RAW_SCORE_LOG_DIVISOR = 2.5
+RAW_SCORE_MAX_FOR_SCALING = 5000.0
 MAX_MONTH_SPAN = 24
 
 # Comparison threshold for active persistence/comparison phase.
 COMPARISON_MIN_COHORT = 2
 REFERENCE_BBOX_COUNT = 2
+SIGNATURE_VERSION = "v2_log_norm"
 
 
 class RiskScriptError(Exception):
@@ -184,7 +186,10 @@ def _score_from_raw(raw_score: float) -> int:
     Convert raw score to 0-100 using a smooth saturation curve.
     This avoids unstable linear scaling across wildly different geographies.
     """
-    bounded = 100.0 * (1.0 - math.exp(-max(raw_score, 0.0) / RAW_SCORE_SATURATION))
+    # Log compression prevents very large raw values from collapsing to 100 too quickly.
+    raw_non_negative = max(raw_score, 0.0)
+    compressed = math.log1p(min(raw_non_negative, RAW_SCORE_MAX_FOR_SCALING))
+    bounded = 100.0 * (1.0 - math.exp(-compressed / RAW_SCORE_LOG_DIVISOR))
     bounded = max(0.0, min(100.0, bounded))
     return int(round(bounded))
 
@@ -222,7 +227,7 @@ def _build_signature_key(*, from_value: str, to_value: str, crime_types: List[st
     - include_collisions (removed from this algorithm path)
     """
     canonical_types = _canonical_crime_types(crime_types)
-    payload = f"{from_value}|{to_value}|{mode}|{','.join(canonical_types)}"
+    payload = f"{SIGNATURE_VERSION}|{from_value}|{to_value}|{mode}|{','.join(canonical_types)}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

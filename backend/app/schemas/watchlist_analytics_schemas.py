@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WatchlistRiskComponents(BaseModel):
@@ -223,3 +223,149 @@ class WatchlistRiskRunsResponse(BaseModel):
 
     watchlist_id: int = Field(..., description="Watchlist identifier.", example=42)
     items: List[WatchlistRiskRunItem] = Field(default_factory=list, description="Most recent runs first.")
+
+
+class WatchlistForecastRequest(BaseModel):
+    """Input payload for next-month watchlist forecast."""
+
+    start_month: str = Field(
+        ...,
+        alias="startMonth",
+        description="Historical baseline start month in YYYY-MM format.",
+        example="2025-01",
+    )
+    mode: str = Field(
+        "walk",
+        description="Travel mode emphasis. Supported values: walk or drive (aliases accepted).",
+        example="drive",
+    )
+    crime_types: List[str] = Field(
+        default_factory=list,
+        alias="crimeTypes",
+        description="Optional crime type filter. Empty list means all crime types.",
+        example=["Burglary", "Robbery"],
+    )
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
+            "example": {
+                "startMonth": "2025-01",
+                "mode": "drive",
+                "crimeTypes": ["Burglary", "Robbery"],
+            }
+        },
+    )
+
+
+class WatchlistForecastCountInterval(BaseModel):
+    """Count interval bounds for one projected component."""
+
+    low: int = Field(..., description="Lower projected count bound.", example=41)
+    high: int = Field(..., description="Upper projected count bound.", example=71)
+
+
+class WatchlistForecastIntervals(BaseModel):
+    """Projected uncertainty intervals."""
+
+    crimes: WatchlistForecastCountInterval = Field(..., description="Projected crime count interval.")
+    collisions_count: WatchlistForecastCountInterval = Field(
+        ...,
+        description="Projected collision count interval.",
+        example={"low": 0, "high": 2},
+    )
+
+
+class WatchlistForecastComponents(BaseModel):
+    """Internal projected means and combined values."""
+
+    mu_crime: float = Field(..., description="Recency-weighted expected crime count mean.", example=56.2241)
+    mu_collision_points: float = Field(
+        ...,
+        description="Recency-weighted expected collision severity points mean.",
+        example=0.4037,
+    )
+    mu_collision_count: float = Field(
+        ...,
+        description="Recency-weighted expected collision count mean.",
+        example=0.2003,
+    )
+    projected_combined_value: float = Field(
+        ...,
+        description="Mode-weighted projected combined value for next month.",
+        example=36.687,
+    )
+    baseline_combined_mean: float = Field(
+        ...,
+        description="Recency-weighted combined mean across baseline months.",
+        example=36.687,
+    )
+    ratio: float = Field(
+        ...,
+        description="Projected combined value divided by baseline combined mean.",
+        example=1.0,
+    )
+
+
+class WatchlistForecastPayload(BaseModel):
+    """Forecast result payload."""
+
+    score: int = Field(..., ge=0, le=100, description="Projected score in range 0-100.", example=100)
+    band: str = Field(
+        ...,
+        description="Conservative band from projected score (green/amber/red).",
+        example="red",
+    )
+    expected_crime_count: int = Field(..., ge=0, description="Expected crimes next month.", example=56)
+    expected_collision_count: int = Field(..., ge=0, description="Expected collisions next month.", example=0)
+    expected_collision_points: float = Field(
+        ...,
+        ge=0,
+        description="Expected severity-weighted collision points next month.",
+        example=0.4037,
+    )
+    intervals: WatchlistForecastIntervals = Field(
+        ...,
+        description="Poisson-style intervals for projected count metrics.",
+    )
+    components: WatchlistForecastComponents = Field(
+        ...,
+        description="Internal projected means and combined comparison values.",
+    )
+
+
+class WatchlistForecastResponse(BaseModel):
+    """Response payload for next-month forecast."""
+
+    generated_at: str = Field(
+        ...,
+        description="RFC3339 UTC timestamp for forecast generation.",
+        example="2026-03-14T20:44:54Z",
+    )
+    forecast: WatchlistForecastPayload = Field(..., description="Projected next-month forecast.")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "generated_at": "2026-03-14T20:44:54Z",
+                "forecast": {
+                    "score": 100,
+                    "band": "red",
+                    "expected_crime_count": 56,
+                    "expected_collision_count": 0,
+                    "expected_collision_points": 0.4037,
+                    "intervals": {
+                        "crimes": {"low": 41, "high": 71},
+                        "collisions_count": {"low": 0, "high": 2},
+                    },
+                    "components": {
+                        "mu_crime": 56.2241,
+                        "mu_collision_points": 0.4037,
+                        "mu_collision_count": 0.2003,
+                        "projected_combined_value": 36.687,
+                        "baseline_combined_mean": 36.687,
+                        "ratio": 1.0,
+                    },
+                },
+            }
+        }

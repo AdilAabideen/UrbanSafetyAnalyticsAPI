@@ -2,14 +2,15 @@ from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
+from .enums import CrimeType, TravelMode
 
 
 class WatchlistPreferencePayload(BaseModel):
     """Preference payload used when creating/updating watchlists."""
     start_month: date
     end_month: date
-    crime_types: List[str] = Field(default_factory=list)
-    travel_mode: str = Field(..., min_length=1)
+    crime_types: List[CrimeType] = Field(default_factory=list)
+    travel_mode: TravelMode = Field(...)
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -39,8 +40,8 @@ class WatchlistPreference(BaseModel):
 
     start_month: date
     end_month: date
-    crime_types: List[str]
-    travel_mode: str
+    crime_types: List[CrimeType]
+    travel_mode: TravelMode
     include_collisions: bool
     baseline_months: int
     hotspot_k: int

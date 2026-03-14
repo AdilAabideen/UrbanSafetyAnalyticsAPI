@@ -103,3 +103,7 @@ class HighwayClass(str, Enum):
     TRUNK_LINK = "trunk_link"
     UNCLASSIFIED = "unclassified"
 
+
+class TravelMode(str, Enum):
+    WALK = "walk"
+    DRIVE = "drive"

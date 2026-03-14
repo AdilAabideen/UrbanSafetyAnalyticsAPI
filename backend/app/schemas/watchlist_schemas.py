@@ -1,10 +1,12 @@
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 
 class WatchlistPreferencePayload(BaseModel):
+    """Preference payload used when creating/updating watchlists."""
+
     start_month: date
     end_month: date
     crime_types: List[str] = Field(default_factory=list)
@@ -12,17 +14,32 @@ class WatchlistPreferencePayload(BaseModel):
     include_collisions: bool = False
     baseline_months: int = Field(default=6, ge=3, le=24)
 
+
 class WatchlistCreateRequest(BaseModel):
+    """Request payload for creating a watchlist."""
+
     name: str = Field(..., min_length=1)
     min_lon: float
     min_lat: float
     max_lon: float
     max_lat: float
-    preference: WatchlistPreferencePayload
+    preference: Optional[WatchlistPreferencePayload] = None
 
+
+class WatchlistUpdateRequest(BaseModel):
+    """Request payload for patching an existing watchlist."""
+
+    name: Optional[str] = None
+    min_lon: Optional[float] = None
+    min_lat: Optional[float] = None
+    max_lon: Optional[float] = None
+    max_lat: Optional[float] = None
+    preference: Optional[WatchlistPreferencePayload] = None
 
 
 class WatchlistPreference(BaseModel):
+    """Serialized watchlist preference view."""
+
     start_month: date
     end_month: date
     crime_types: List[str]
@@ -37,6 +54,8 @@ class WatchlistPreference(BaseModel):
 
 
 class Watchlist(BaseModel):
+    """Canonical watchlist response object."""
+
     id: int
     user_id: int
     name: str
@@ -49,35 +68,19 @@ class Watchlist(BaseModel):
 
 
 class WatchlistSingleResponse(BaseModel):
+    """Single-watchlist response wrapper."""
+
     watchlist: Watchlist
 
 
 class WatchlistListResponse(BaseModel):
+    """List-watchlists response wrapper."""
+
     items: List[Watchlist]
 
 
 class WatchlistDeleteResponse(BaseModel):
+    """Delete-watchlist response payload."""
+
     deleted: bool
     watchlist_id: int
-
-
-class WatchlistRunResult(BaseModel):
-    watchlist_id: int
-    report_type: str
-    watchlist_run_id: int
-    stored_at: datetime
-    request: Dict[str, Any]
-    result: Dict[str, Any]
-
-
-class WatchlistRunListItem(BaseModel):
-    id: int
-    watchlist_id: int
-    report_type: str
-    request: Dict[str, Any]
-    result: Dict[str, Any]
-    created_at: datetime
-
-
-class WatchlistRunListResponse(BaseModel):
-    items: List[WatchlistRunListItem]

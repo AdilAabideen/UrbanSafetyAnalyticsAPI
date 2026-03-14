@@ -1,43 +1,13 @@
+# Tiles DB Utils.py
 from typing import Optional
 
 from sqlalchemy import text
-from sqlalchemy.exc import InternalError, OperationalError
-
-from ..errors import DependencyError
-from ..schemas.tiles_schemas import TileQueryParams
-from .tiles_utils import (
-    ANONYMOUS_USER_REPORT_WEIGHT,
-    COLLISION_WEIGHT,
-    CRIME_WEIGHT,
-    FATAL_CASUALTY_WEIGHT,
-    REPEAT_AUTHENTICATED_REPORT_WEIGHT,
-    RISK_LENGTH_FLOOR_M,
-    SERIOUS_CASUALTY_WEIGHT,
-    SLIGHT_CASUALTY_WEIGHT,
-    TILE_BUFFER,
-    TILE_EXTENT,
-    USER_REPORTED_CRIME_WEIGHT,
-    USER_REPORTED_SIGNAL_CAP,
-    _build_geom_expression,
-    _build_highway_filter_clause,
-    _resolve_month_filter,
-    _tile_profile,
-    _validate_tile_coordinates,
-)
+from ..db import execute
+from ..schemas.tiles_schemas import TileProfile
 
 
-def _execute(db, query, params):
-    """Execute SQL and translate database failures into a DependencyError."""
-    try:
-        return db.execute(query, params)
-    except (InternalError, OperationalError) as exc:
-        db.rollback()
-        raise DependencyError(
-            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
-        ) from exc
-
-
-def _user_report_signal_sql() -> str:
+# Blends the approved user-reported crime signal at a Lower Weight
+def user_report_signal_sql() -> str:
     """Return SQL expression used to blend approved user-reported crime signal."""
     return """
         (
@@ -54,11 +24,12 @@ def _user_report_signal_sql() -> str:
     """
 
 
-def _roads_only_tile_query(z: int):
+# Builds the SQL query for base road tiles without risk overlays.
+def roads_only_tile_query(z: int):
     """Build SQL for base road tiles without risk overlays."""
-    profile = _tile_profile(z)
-    highway_filter_clause = _build_highway_filter_clause(profile["highways"])
-    geom_expression = _build_geom_expression(profile["simplify_tolerance"])
+    profile = tile_profile(z)
+    highway_filter_clause = build_highway_filter_clause(profile["highways"])
+    geom_expression = build_geom_expression(profile["simplify_tolerance"])
 
     return text(
         f"""
@@ -82,15 +53,68 @@ def _roads_only_tile_query(z: int):
         """
     )
 
+# Builds the Profile for what will be returned based on the zoom level.
+def tile_profile(z: int) -> TileProfile:
+    """Return zoom-specific road class and simplification settings for tile generation."""
+    if z <= 8:
+        return {
+            "highways": ("motorway", "trunk", "primary"),
+            "simplify_tolerance": 80,
+        }
+    if z <= 11:
+        return {
+            "highways": ("motorway", "trunk", "primary", "secondary", "tertiary"),
+            "simplify_tolerance": 30,
+        }
+    if z <= 13:
+        return {
+            "highways": (
+                "motorway",
+                "trunk",
+                "primary",
+                "secondary",
+                "tertiary",
+                "residential",
+                "unclassified",
+                "service",
+            ),
+            "simplify_tolerance": 10,
+        }
+    return {
+        "highways": None,
+        "simplify_tolerance": 0,
+    }
 
-def _roads_with_risk_tile_query(z: int, month_filter_clause: str, include_crime_type_filter: bool):
+# Builds the SQL clause for filtering by highway class at low zooms.
+def build_highway_filter_clause(highways) -> str:
+    """Build the SQL clause for filtering by highway class at low zooms."""
+    if not highways:
+        return ""
+    quoted = ", ".join(f"'{highway}'" for highway in highways)
+    return f"AND rs.highway IN ({quoted})"
+
+# Builds the geometry expression for the road tiles.
+def build_geom_expression(simplify_tolerance: int) -> str:
+    """Return the road geometry expression with optional simplification."""
+    if simplify_tolerance <= 0:
+        return "rs.geom"
+    return f"ST_Simplify(rs.geom, {simplify_tolerance})"
+
+
+# Builds the SQL query for road tiles enriched with risk and safety metrics.
+def roads_with_risk_tile_query(
+    z: int,
+    month_filter_clause: str,
+    include_crime_type_filter: bool,
+):
     """Build SQL for road tiles enriched with risk and safety metrics."""
-    profile = _tile_profile(z)
-    highway_filter_clause = _build_highway_filter_clause(profile["highways"])
-    geom_expression = _build_geom_expression(profile["simplify_tolerance"])
+
+    profile = tile_profile(z)
+    highway_filter_clause = build_highway_filter_clause(profile["highways"])
+    geom_expression = build_geom_expression(profile["simplify_tolerance"])
     crime_type_clause = ""
     user_report_month_filter_clause = month_filter_clause.replace("c.", "ure.")
-    user_report_signal_sql = _user_report_signal_sql()
+    user_report_signal_sql = user_report_signal_sql()
     if include_crime_type_filter:
         crime_type_clause = "AND c.crime_type = :crime_type"
 
@@ -296,58 +320,3 @@ def _roads_with_risk_tile_query(z: int, month_filter_clause: str, include_crime_
     )
 
 
-def _build_tile_bytes(
-    z: int,
-    x: int,
-    y: int,
-    month: Optional[str],
-    startMonth: Optional[str],
-    endMonth: Optional[str],
-    crimeType: Optional[str],
-    includeRisk: bool,
-    db,
-) -> bytes:
-    """Build vector-tile bytes for roads with optional risk overlays."""
-    _validate_tile_coordinates(z, x, y)
-
-    query_params: TileQueryParams = {
-        "z": z,
-        "x": x,
-        "y": y,
-        "extent": TILE_EXTENT,
-        "buffer": TILE_BUFFER,
-        "risk_length_floor_m": RISK_LENGTH_FLOOR_M,
-        "crime_weight": CRIME_WEIGHT,
-        "collision_weight": COLLISION_WEIGHT,
-        "slight_casualty_weight": SLIGHT_CASUALTY_WEIGHT,
-        "serious_casualty_weight": SERIOUS_CASUALTY_WEIGHT,
-        "fatal_casualty_weight": FATAL_CASUALTY_WEIGHT,
-        "user_report_weight": USER_REPORTED_CRIME_WEIGHT,
-        "anonymous_report_weight": ANONYMOUS_USER_REPORT_WEIGHT,
-        "repeat_authenticated_report_weight": REPEAT_AUTHENTICATED_REPORT_WEIGHT,
-        "user_report_signal_cap": USER_REPORTED_SIGNAL_CAP,
-    }
-
-    if includeRisk:
-        month_filter = _resolve_month_filter(
-            month=month,
-            startMonth=startMonth,
-            endMonth=endMonth,
-            includeRisk=includeRisk,
-        )
-        query_params.update(month_filter.params)
-        if crimeType:
-            query_params["crime_type"] = crimeType
-
-        tile_query = _roads_with_risk_tile_query(
-            z=z,
-            month_filter_clause=month_filter.clause or "",
-            include_crime_type_filter=bool(crimeType),
-        )
-    else:
-        tile_query = _roads_only_tile_query(z)
-
-    tile = _execute(db, tile_query, query_params).scalar_one()
-    if isinstance(tile, memoryview):
-        return tile.tobytes()
-    return tile or b""

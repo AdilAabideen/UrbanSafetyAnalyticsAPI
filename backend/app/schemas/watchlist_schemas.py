@@ -1,13 +1,30 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class WatchlistPreferencePayload(BaseModel):
+    start_month: date
+    end_month: date
+    crime_types: List[str] = Field(default_factory=list)
+    travel_mode: str = Field(..., min_length=1)
+    include_collisions: bool = False
+    baseline_months: int = Field(default=6, ge=3, le=24)
+
+class WatchlistCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+    preference: WatchlistPreferencePayload
+
 
 
 class WatchlistPreference(BaseModel):
-    id: int
-    watchlist_id: int
-    window_months: int
+    start_month: date
+    end_month: date
     crime_types: List[str]
     travel_mode: str
     include_collisions: bool
@@ -17,7 +34,6 @@ class WatchlistPreference(BaseModel):
     include_forecast: bool
     weight_crime: float
     weight_collision: float
-    created_at: datetime
 
 
 class Watchlist(BaseModel):
@@ -65,4 +81,3 @@ class WatchlistRunListItem(BaseModel):
 
 class WatchlistRunListResponse(BaseModel):
     items: List[WatchlistRunListItem]
-

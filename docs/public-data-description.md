@@ -22,8 +22,7 @@ Excluded: `tiger`, `topology`, and system schemas/views.
 | `user_reported_events` | `id` | User-submitted events with moderation and snapped location fields. | FK: `user_id` -> `users.id`; FK: `moderated_by` -> `users.id`; parent of detail tables. |
 | `users` | `id` | Application users and auth/admin fields. | Parent of `watchlists` and `user_reported_events`. |
 | `watchlist_analytics_runs` | `id` | Stored analytics runs/results for watchlists. | FK: `watchlist_id` -> `watchlists.id`. |
-| `watchlist_preferences` | `id` | User watchlist configuration (windows, filters, modes). | FK: `watchlist_id` -> `watchlists.id`. |
-| `watchlists` | `id` | User-defined geographic watchlist areas. | FK: `user_id` -> `users.id`; parent of preferences and analytics runs. |
+| `watchlists` | `id` | User-defined geographic watchlist areas and configuration (bbox, date window, mode/filter settings). | FK: `user_id` -> `users.id`; parent of analytics runs. |
 
 ## ER Diagram (Public Tables Only)
 
@@ -33,7 +32,6 @@ erDiagram
     users ||--o{ user_reported_events : "user_id"
     users ||--o{ user_reported_events : "moderated_by"
 
-    watchlists ||--o{ watchlist_preferences : "watchlist_id"
     watchlists ||--o{ watchlist_analytics_runs : "watchlist_id"
 
     user_reported_events ||--o| user_reported_collision_details : "event_id"
@@ -56,7 +54,6 @@ erDiagram
 | `user_reported_events` | `moderated_by` | `users` | `id` | `SET NULL` |
 | `user_reported_events` | `user_id` | `users` | `id` | `SET NULL` |
 | `watchlist_analytics_runs` | `watchlist_id` | `watchlists` | `id` | `CASCADE` |
-| `watchlist_preferences` | `watchlist_id` | `watchlists` | `id` | `CASCADE` |
 | `watchlists` | `user_id` | `users` | `id` | `CASCADE` |
 
 ## Notes

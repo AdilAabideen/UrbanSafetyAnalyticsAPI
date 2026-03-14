@@ -21,18 +21,11 @@ from ..schemas.auth_schemas import (
     UpdateMeResponse,
 )
 
+from ..db import execute
 
 router = APIRouter(tags=["auth"])
 
 
-def _execute(db, query, params):
-    try:
-        return db.execute(query, params)
-    except OperationalError as exc:
-        db.rollback()
-        raise DependencyError(
-            message="Database unavailable. Postgres query execution failed; inspect the database container and server logs."
-        ) from exc
 
 
 @router.post("/auth/register", response_model=RegisterResponse)
@@ -45,7 +38,7 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)) -> RegisterRes
         LIMIT 1
         """
     )
-    existing = _execute(db, existing_query, {"email": payload.email}).mappings().first()
+    existing = execute(db, existing_query, {"email": payload.email}).mappings().first()
     if existing:
         raise ConflictError(error="EMAIL_ALREADY_REGISTERED", message="Email already registered")
 
@@ -57,7 +50,7 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)) -> RegisterRes
         """
     )
     try:
-        user = _execute(
+        user = execute(
             db,
             insert_query,
             {
@@ -153,7 +146,7 @@ def update_me(
     )
 
     try:
-        user = _execute(db, update_query, query_params).mappings().first()
+        user = execute(db, update_query, query_params).mappings().first()
         db.commit()
     except IntegrityError as exc:
         db.rollback()

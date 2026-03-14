@@ -97,11 +97,11 @@ def _snap_to_segment(db: Session, longitude: float, latitude: float):
         SELECT
             rs.id,
             ST_Distance(
-                rs.geom::geography,
+                rs.geom_4326::geography,
                 ST_SetSRID(ST_Point(:longitude, :latitude), 4326)::geography
             ) AS snap_distance_m
-        FROM road_segments_4326 rs
-        ORDER BY rs.geom <-> ST_SetSRID(ST_Point(:longitude, :latitude), 4326)
+        FROM road_segments rs
+        ORDER BY rs.geom_4326 <-> ST_SetSRID(ST_Point(:longitude, :latitude), 4326)
         LIMIT 1
         """
     )

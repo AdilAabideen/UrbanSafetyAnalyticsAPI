@@ -1,3 +1,4 @@
+from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -182,3 +183,43 @@ class WatchlistRiskScoreResponse(BaseModel):
                 },
             }
         }
+
+
+class WatchlistRiskRunItem(BaseModel):
+    """One persisted risk analytics run."""
+
+    run_id: int = Field(..., description="Persisted risk run identifier.", example=128)
+    created_at: datetime = Field(..., description="Run creation timestamp (UTC).")
+    start_month: date = Field(..., description="Run month window start.", example="2024-01-01")
+    end_month: date = Field(..., description="Run month window end.", example="2024-03-01")
+    crime_types: List[str] = Field(
+        default_factory=list,
+        description="Crime types filter used in the run; empty means all crimes.",
+        example=["Robbery", "Burglary"],
+    )
+    travel_mode: str = Field(..., description="Mode used by the run: walk or drive.", example="drive")
+    band: str = Field(..., description="Risk band derived from risk_score.", example="high")
+    risk_result: WatchlistRiskResult = Field(..., description="Risk score and component values for this run.")
+    comparison_basis: Optional[str] = Field(
+        default=None,
+        description="Comparison source used for this run.",
+        example="historical_same_signature",
+    )
+    comparison_sample_size: Optional[int] = Field(
+        default=None,
+        description="Number of comparison rows used for this run.",
+        example=5,
+    )
+    comparison_percentile: Optional[float] = Field(
+        default=None,
+        description="Subject percentile against the comparison cohort.",
+        example=82.4,
+    )
+    execution_time_ms: float = Field(..., description="Execution time for the run in milliseconds.", example=412.6)
+
+
+class WatchlistRiskRunsResponse(BaseModel):
+    """List of previous persisted analytics risk runs for a watchlist."""
+
+    watchlist_id: int = Field(..., description="Watchlist identifier.", example=42)
+    items: List[WatchlistRiskRunItem] = Field(default_factory=list, description="Most recent runs first.")

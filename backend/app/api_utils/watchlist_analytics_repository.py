@@ -527,3 +527,41 @@ def insert_risk_score_run(
             "comparison_percentile": comparison_percentile,
         },
     ).mappings().first()
+
+
+def list_watchlist_risk_runs(
+    db: Session,
+    *,
+    watchlist_id: int,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """List persisted risk runs for a watchlist (excluding reference rows)."""
+    query = text(
+        """
+        SELECT
+            r.id,
+            r.watchlist_id,
+            r.start_month,
+            r.end_month,
+            r.crime_types,
+            r.travel_mode,
+            r.risk_score,
+            r.raw_score,
+            r.band,
+            r.crime_component,
+            r.collision_component,
+            r.user_component,
+            r.comparison_basis,
+            r.comparison_sample_size,
+            r.comparison_percentile,
+            r.execution_time_ms,
+            r.created_at
+        FROM risk_score_runs r
+        WHERE r.watchlist_id = :watchlist_id
+          AND r.reference_bbox_id IS NULL
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT :limit
+        """
+    )
+    rows = execute(db, query, {"watchlist_id": watchlist_id, "limit": limit}).mappings().all()
+    return [dict(row) for row in rows]

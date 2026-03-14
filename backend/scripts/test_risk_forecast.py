@@ -14,7 +14,6 @@ import math
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import text
@@ -158,11 +157,14 @@ def _score_from_raw(raw_score: float) -> int:
     return int(round(max(0.0, min(100.0, bounded))))
 
 
-def _projection_band(ratio: float) -> str:
-    """Band projected ratio with fixed thresholds."""
-    if ratio >= 1.5:
+def _projection_band_from_score(score: int) -> str:
+    """
+    Stricter score-to-band mapping.
+    This is intentionally more conservative so elevated scores are not labeled green.
+    """
+    if score >= 60:
         return "red"
-    if ratio >= 1.25:
+    if score >= 35:
         return "amber"
     return "green"
 
@@ -461,39 +463,12 @@ def run_recency_weighted_forecast(
     ratio = _round_float(ratio)
 
     score = _score_from_raw(projected_r)
-    band = _projection_band(ratio)
+    band = _projection_band_from_score(score)
 
     crime_interval = _poisson_interval(mu_c)
     collision_count_interval = _poisson_interval(mu_k_count)
 
-    target_month = _shift_month(baseline_to_date, 1).strftime("%Y-%m")
-    scope = {
-        "watchlist_id": watchlist["watchlist_id"],
-        "watchlist_name": watchlist["watchlist_name"],
-        "mode": normalized_mode,
-        "start_month": start_month_date.strftime("%Y-%m"),
-        "baseline_end_month": baseline_to_date.strftime("%Y-%m"),
-        "target_month": target_month,
-        "crime_types": normalized_crime_types,
-        "bbox": {
-            "minLon": bbox["min_lon"],
-            "minLat": bbox["min_lat"],
-            "maxLon": bbox["max_lon"],
-            "maxLat": bbox["max_lat"],
-        },
-    }
-
-    history_with_combined = []
-    for item in history:
-        combined_value = (weights["w_crime"] * float(item["crime_count"])) + (
-            weights["w_collision"] * float(item["collision_points"])
-        )
-        item_with_combined = dict(item)
-        item_with_combined["combined_value"] = _round_float(combined_value)
-        history_with_combined.append(item_with_combined)
-
     response = {
-        "scope": scope,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "forecast": {
             "score": score,
@@ -513,13 +488,7 @@ def run_recency_weighted_forecast(
                 "baseline_combined_mean": _round_float(mu_r),
                 "ratio": ratio,
             },
-            "weights": {
-                "w_crime": _round_float(weights["w_crime"]),
-                "w_collision": _round_float(weights["w_collision"]),
-                "recency_lambda": _round_float(RECENCY_LAMBDA),
-            },
         },
-        "history": history_with_combined,
     }
     return response
 
@@ -543,8 +512,6 @@ def main():
     args = parser.parse_args()
 
     crime_types = _parse_crime_types(args.crime_types)
-    started_at = perf_counter()
-
     try:
         with SessionLocal() as db:
             payload = run_recency_weighted_forecast(
@@ -554,7 +521,6 @@ def main():
                 mode=args.mode,
                 crime_types=crime_types,
             )
-            payload["execution_time_ms"] = round((perf_counter() - started_at) * 1000.0, 2)
             print(json.dumps(payload, indent=2, default=str))
     except (OperationalError, SATimeoutError, InternalError) as exc:
         error_payload = {

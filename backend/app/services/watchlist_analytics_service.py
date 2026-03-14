@@ -440,3 +440,58 @@ def build_watchlist_risk_score_service(
             "reference_ids": reference_ids,
         },
     }
+
+
+def list_watchlist_risk_runs_service(
+    db: Session,
+    *,
+    user_id: int,
+    watchlist_id: int,
+    limit: int = 50,
+):
+    """Return previously persisted analytics runs for one watchlist."""
+    row = watchlist_analytics_repository.get_watchlist_for_analytics(
+        db,
+        watchlist_id=watchlist_id,
+        user_id=user_id,
+    )
+    if not row:
+        raise NotFoundError(error="WATCHLIST_NOT_FOUND", message="Watchlist not found")
+
+    run_rows = watchlist_analytics_repository.list_watchlist_risk_runs(
+        db,
+        watchlist_id=watchlist_id,
+        limit=limit,
+    )
+    items = []
+    for run in run_rows:
+        items.append(
+            {
+                "run_id": int(run["id"]),
+                "created_at": run["created_at"],
+                "start_month": run["start_month"],
+                "end_month": run["end_month"],
+                "crime_types": list(run.get("crime_types") or []),
+                "travel_mode": run["travel_mode"],
+                "band": run["band"],
+                "risk_result": {
+                    "risk_score": int(run["risk_score"]),
+                    "raw_score": float(run["raw_score"]),
+                    "components": {
+                        "crime_component": float(run["crime_component"]),
+                        "collision_density": float(run["collision_component"]),
+                        "user_support": float(run["user_component"]),
+                    },
+                },
+                "comparison_basis": run.get("comparison_basis"),
+                "comparison_sample_size": (
+                    int(run["comparison_sample_size"]) if run.get("comparison_sample_size") is not None else None
+                ),
+                "comparison_percentile": (
+                    float(run["comparison_percentile"]) if run.get("comparison_percentile") is not None else None
+                ),
+                "execution_time_ms": float(run["execution_time_ms"]),
+            }
+        )
+
+    return {"watchlist_id": watchlist_id, "items": items}

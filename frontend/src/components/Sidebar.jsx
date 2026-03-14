@@ -11,46 +11,6 @@ const NAV_ITEMS = [
     ),
   },
   {
-    id: "crime",
-    label: "Crime Page",
-    icon: (
-      <>
-        <path d="M4 20h16" />
-        <path d="M6 20V8l6-4 6 4v12" />
-        <path d="M10 12h4" />
-        <path d="M10 16h4" />
-      </>
-    ),
-  },
-  {
-    id: "roads",
-    label: "Roads Page",
-    icon: (
-      <>
-        <path d="M12 3v18" />
-        <path d="M8 6h8" />
-        <path d="M9 12h6" />
-        <path d="M8 18h8" />
-        <path d="M5 3h14" />
-        <path d="M5 21h14" />
-      </>
-    ),
-  },
-  {
-    id: "collisions",
-    label: "Collisions Page",
-    icon: (
-      <>
-        <path d="M7 17h4" />
-        <path d="M13 17h4" />
-        <circle cx="8" cy="17" r="3" />
-        <circle cx="16" cy="17" r="3" />
-        <path d="M5 17V9l3-3h5l3 4h3v7" />
-        <path d="M13 10h4" />
-      </>
-    ),
-  },
-  {
     id: "report-crime",
     label: "Report Crime",
     icon: (

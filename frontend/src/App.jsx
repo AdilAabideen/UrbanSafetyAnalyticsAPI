@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import AdminApprovalsPage from "./components/AdminApprovalsPage";
-import CollisionsPage from "./components/CollisionsPage";
-import CrimePage from "./components/CrimePage";
 import MapPage from "./components/MapPage";
 import ReportCollisionPage from "./components/ReportCollisionPage";
 import ReportCrimePage from "./components/ReportCrimePage";
-import RoadsPage from "./components/RoadsPage";
 import Sidebar from "./components/Sidebar";
 import ViewReportedEventsPage from "./components/ViewReportedEventsPage";
 import ViewWatchlistPage from "./components/ViewWatchlistPage";
@@ -155,10 +152,6 @@ function DashboardRoute() {
             accessToken={session.accessToken}
             isAdmin={isAdmin}
           />
-        ) : activePage === "crime" ? (
-          <CrimePage docsUrl={docsUrl} />
-        ) : activePage === "collisions" ? (
-          <CollisionsPage docsUrl={docsUrl} />
         ) : activePage === "report-crime" ? (
           <ReportCrimePage
             docsUrl={docsUrl}
@@ -181,8 +174,6 @@ function DashboardRoute() {
             onCreateCrime={() => setActivePage("report-crime")}
             onCreateCollision={() => setActivePage("report-collision")}
           />
-        ) : activePage === "roads" ? (
-          <RoadsPage docsUrl={docsUrl} />
         ) : activePage === "watchlist" ? (
           <WatchlistPage
             docsUrl={docsUrl}

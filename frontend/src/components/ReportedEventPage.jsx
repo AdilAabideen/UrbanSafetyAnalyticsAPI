@@ -3,7 +3,7 @@ import mapboxgl from "mapbox-gl";
 import TopBar from "./TopBar";
 import { CRIME_TYPE_OPTIONS } from "../constants/crimeFilterOptions";
 import { config } from "../config/env";
-import { reportedEventsService, roadsService } from "../services";
+import { reportedEventsService, tilesService } from "../services";
 import {
   DEFAULT_MONTH_FROM,
   DEFAULT_MONTH_TO,
@@ -337,7 +337,7 @@ function ReportedEventLocationPanel({
   );
   const roadsTileUrl = useMemo(
     () =>
-      roadsService.getVectorTilesUrl({
+      tilesService.getRoadVectorTilesUrl({
         includeRisk: false,
         startMonth: DEFAULT_MONTH_FROM,
         endMonth: DEFAULT_MONTH_TO,

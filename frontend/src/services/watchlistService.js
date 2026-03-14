@@ -318,6 +318,8 @@ export const watchlistService = {
       },
     );
 
+    console.log(response)
+
     return normalizeRunResponse(response);
   },
 
@@ -331,6 +333,8 @@ export const watchlistService = {
         accessToken,
       },
     );
+
+    console.log(response)
 
     return normalizeRunResponse(response);
   },
@@ -359,6 +363,8 @@ export const watchlistService = {
         accessToken,
       },
     );
+
+    console.log(response)
 
     return Array.isArray(response?.items)
       ? response.items.map(normalizeAnalyticsRun).filter(Boolean)

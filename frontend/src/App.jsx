@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import AdminApprovalsPage from "./components/AdminApprovalsPage";
 import MapPage from "./components/MapPage";
@@ -8,7 +8,6 @@ import Sidebar from "./components/Sidebar";
 import ViewReportedEventsPage from "./components/ViewReportedEventsPage";
 import ViewWatchlistPage from "./components/ViewWatchlistPage";
 import WatchlistPage from "./components/WatchlistPage";
-import { config } from "./config/env";
 import LoginPage from "./pages/LoginPage";
 import ProfilePage from "./pages/ProfilePage";
 import { authService } from "./services";
@@ -54,7 +53,7 @@ function DashboardRoute() {
   const [session, setSession] = useState(() => authService.getStoredSession());
   const [user, setUser] = useState(session.user);
   const [loadingUser, setLoadingUser] = useState(false);
-  const docsUrl = useMemo(() => `${config.apiBaseUrl}/docs`, []);
+  const docsUrl = "http://127.0.0.1:8000/docs#/";
   const isLoggedIn = Boolean(session.accessToken);
   const isAdmin = Boolean(user?.user?.is_admin || user?.is_admin || user?.isAdmin);
 

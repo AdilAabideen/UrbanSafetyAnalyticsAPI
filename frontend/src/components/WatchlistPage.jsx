@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import TopBar from "./TopBar";
 import WatchlistPolygonMap from "./watchlist/WatchlistPolygonMap";
 import WatchlistField from "./watchlist/WatchlistField";
-import WatchlistMonthSlider from "./watchlist/WatchlistMonthSlider";
 import WatchlistCrimeTypeMultiSelect from "./watchlist/WatchlistCrimeTypeMultiSelect";
 import WatchlistModeSelect from "./watchlist/WatchlistModeSelect";
 import { watchlistService } from "../services";
@@ -11,9 +10,10 @@ import {
   parseBboxFromForm,
   toCrimeTypePayloadValue,
   createDefaultWatchlistForm,
-  WATCHLIST_WINDOW_MONTH_OPTIONS,
   WATCHLIST_CRIME_TYPE_OPTIONS,
   WATCHLIST_MODE_OPTIONS,
+  monthValueToApiDate,
+  monthValueToApiDateSecond,
 } from "../utils/watchlistUtils";
 
 function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
@@ -23,20 +23,17 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
   const [creatingWatchlist, setCreatingWatchlist] = useState(false);
   const [watchlistErrorMessage, setWatchlistErrorMessage] = useState("");
   const parsedBbox = useMemo(() => parseBboxFromForm(watchlistForm), [watchlistForm]);
+  const hasValidMonthRange =
+    Boolean(watchlistForm.startMonth) &&
+    Boolean(watchlistForm.endMonth) &&
+    watchlistForm.startMonth <= watchlistForm.endMonth;
   const isFormComplete = useMemo(
-    () =>
-      [
-        watchlistForm.name,
-        watchlistForm.mode,
-      ].every((value) => String(value).trim().length > 0),
+    () => [watchlistForm.name, watchlistForm.mode].every((value) => String(value).trim().length > 0),
     [watchlistForm],
   );
-  const hasWindowMonths = Number(watchlistForm.windowMonths) > 0;
-  const hasCrimeTypes = watchlistForm.crimeTypes.length > 0;
   const canProceed =
     isFormComplete &&
-    hasWindowMonths &&
-    hasCrimeTypes &&
+    hasValidMonthRange &&
     Boolean(parsedBbox) &&
     polygonClosed &&
     !creatingWatchlist;
@@ -82,7 +79,7 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
     }));
   };
 
-  const handleNext = async () => {
+  const handleCreateWatchlist = async () => {
     if (!canProceed || !parsedBbox) {
       return;
     }
@@ -99,10 +96,11 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
       max_lon: parsedBbox.maxLon,
       max_lat: parsedBbox.maxLat,
       preference: {
-        window_months: Number(watchlistForm.windowMonths),
-        crime_types: watchlistForm.crimeTypes.map(toCrimeTypePayloadValue),
-        travel_mode: watchlistForm.mode.toLowerCase(),
-      },
+        start_month: monthValueToApiDateSecond(watchlistForm.startMonth),
+        end_month: monthValueToApiDateSecond(watchlistForm.endMonth),
+        crime_types: watchlistForm.crimeTypes.map(toCrimeTypePayloadValue).filter(Boolean),
+        travel_mode: watchlistForm.mode.toLowerCase() === "driving" ? "drive" : "walk",
+      }
     };
 
     setCreatingWatchlist(true);
@@ -123,19 +121,17 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
       <TopBar
         docsUrl={docsUrl}
         title="Watchlists"
-        subtitle="Create a watchlist by defining the name, preference, and bounding box, then drawing the area on the map."
+        subtitle="Create a watchlist with bbox and preference payload matching the API schema."
       />
 
       <div className="min-h-0 flex-1 p-4">
         <div className="grid h-full min-h-0 grid-cols-2 grid-rows-1 overflow-hidden rounded-[26px] border border-white/5">
           <section className="flex h-full min-h-0 flex-col border-r-2 border-r-white/5">
             <div className="border-b border-white/5 px-5 py-4">
-              <p className="text-[11px] uppercase tracking-[0.35em] text-cyan-100/40">
-                Watchlist Setup
-              </p>
+              <p className="text-[11px] uppercase tracking-[0.35em] text-cyan-100/40">Watchlist Setup</p>
               <h2 className="mt-2 text-xl font-semibold text-cyan-50">Create Watchlist</h2>
               <p className="mt-2 max-w-xl text-sm text-cyan-100/55">
-                Define the watchlist preference on the left, then draw the operational area on the map to populate the bbox.
+                The payload includes `start_month`, `end_month`, `crime_types`, and `travel_mode`.
               </p>
             </div>
 
@@ -147,24 +143,36 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
                   placeholder="Leeds Centre"
                   onChange={(value) => handleFieldChange("name", value)}
                 />
-                <WatchlistMonthSlider
-                  label="WINDOW MONTHS"
-                  value={watchlistForm.windowMonths}
-                  options={WATCHLIST_WINDOW_MONTH_OPTIONS}
-                  onChange={(value) => handleFieldChange("windowMonths", value)}
-                />
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <WatchlistField
+                    label="START MONTH"
+                    type="month"
+                    value={watchlistForm.startMonth}
+                    onChange={(value) => handleFieldChange("startMonth", value)}
+                  />
+                  <WatchlistField
+                    label="END MONTH"
+                    type="month"
+                    value={watchlistForm.endMonth}
+                    onChange={(value) => handleFieldChange("endMonth", value)}
+                  />
+                </div>
+
                 <WatchlistCrimeTypeMultiSelect
                   label="CRIME TYPE"
                   values={watchlistForm.crimeTypes}
                   options={WATCHLIST_CRIME_TYPE_OPTIONS}
                   onChange={(value) => handleFieldChange("crimeTypes", value)}
                 />
+
                 <WatchlistModeSelect
                   label="MODE"
                   value={watchlistForm.mode}
                   options={WATCHLIST_MODE_OPTIONS}
                   onChange={(value) => handleFieldChange("mode", value)}
                 />
+
                 <WatchlistField
                   label="MIN LONGITUDE"
                   value={watchlistForm.minLon}
@@ -194,6 +202,12 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
                   onChange={(value) => handleFieldChange("maxLat", value)}
                 />
 
+                {!hasValidMonthRange ? (
+                  <div className="rounded-[16px] border border-amber-300/30 bg-amber-950/60 px-4 py-3 text-sm text-amber-100">
+                    Start month must be before or equal to end month.
+                  </div>
+                ) : null}
+
                 {watchlistErrorMessage ? (
                   <div className="rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
                     {watchlistErrorMessage}
@@ -207,13 +221,13 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
                 {!accessToken
                   ? "Log in to create and store watchlists."
                   : canProceed
-                    ? "The payload is valid and ready to create."
-                    : "Complete the name, preference, and polygon area to create this watchlist."}
+                    ? "Payload is valid and ready to create."
+                    : "Complete required fields and polygon area to create this watchlist."}
               </p>
 
               <button
                 type="button"
-                onClick={handleNext}
+                onClick={handleCreateWatchlist}
                 disabled={!canProceed || !accessToken}
                 className="mt-4 w-full rounded-[16px] bg-cyan-50 px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[#021116] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-cyan-100/20 disabled:text-cyan-100/40"
               >

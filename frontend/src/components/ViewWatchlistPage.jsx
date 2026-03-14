@@ -1,21 +1,66 @@
 import { useEffect, useMemo, useState } from "react";
 import TopBar from "./TopBar";
+import WatchlistField from "./watchlist/WatchlistField";
+import WatchlistCrimeTypeMultiSelect from "./watchlist/WatchlistCrimeTypeMultiSelect";
+import WatchlistModeSelect from "./watchlist/WatchlistModeSelect";
 import { watchlistService } from "../services";
+import {
+  WATCHLIST_CRIME_TYPE_OPTIONS,
+  WATCHLIST_MODE_OPTIONS,
+  apiDateToMonthValue,
+  monthValueToApiDate,
+} from "../utils/watchlistUtils";
 
-const METRICS_TABS = [
-  { id: "previous-metrics", label: "Previous Metrics" },
-  { id: "new-metrics", label: "New Metrics" },
-];
-const PREVIOUS_METRICS_SUBTABS = [
+const PAGE_TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "risk-scoring", label: "Risk Scoring" },
   { id: "forecast", label: "Forecast" },
-  { id: "risk", label: "Risk" },
-  { id: "hotspots", label: "Hotspots" },
 ];
-const NEW_METRICS_SUBTABS = [
-  { id: "run-forecast", label: "Run Forecast" },
-  { id: "run-risk", label: "Run Risk" },
-  { id: "run-hotspots", label: "Run Hotspots" },
-];
+
+function createEditForm(watchlist) {
+  return {
+    name: watchlist?.name || "",
+    minLon: toInputValue(watchlist?.minLon),
+    minLat: toInputValue(watchlist?.minLat),
+    maxLon: toInputValue(watchlist?.maxLon),
+    maxLat: toInputValue(watchlist?.maxLat),
+    startMonth: apiDateToMonthValue(watchlist?.preference?.startMonth),
+    endMonth: apiDateToMonthValue(watchlist?.preference?.endMonth),
+    crimeTypes: Array.isArray(watchlist?.preference?.crimeTypes)
+      ? watchlist.preference.crimeTypes.join(", ")
+      : "",
+    mode: watchlist?.preference?.travelMode || "",
+  };
+}
+
+function createForecastForm(watchlist) {
+  const normalizedMode = String(watchlist?.preference?.travelMode || "").toLowerCase();
+
+  return {
+    startMonth: apiDateToMonthValue(watchlist?.preference?.startMonth),
+    mode: normalizedMode === "drive" || normalizedMode === "driving" ? "drive" : "walk",
+    crimeTypes: Array.isArray(watchlist?.preference?.crimeTypes)
+      ? watchlist.preference.crimeTypes
+      : [],
+  };
+}
+
+function toInputValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : "";
+}
+
+function parseOptionalNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function parseCrimeTypes(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 function ViewWatchlistPage({
   docsUrl,
@@ -24,19 +69,37 @@ function ViewWatchlistPage({
   onSelectWatchlist,
   onCreateNew,
 }) {
+  const [activeTab, setActiveTab] = useState("overview");
   const [watchlists, setWatchlists] = useState([]);
   const [selectedWatchlist, setSelectedWatchlist] = useState(null);
+  const [editForm, setEditForm] = useState(createEditForm(null));
+  const [forecastForm, setForecastForm] = useState(createForecastForm(null));
   const [loadingList, setLoadingList] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [savingWatchlist, setSavingWatchlist] = useState(false);
+  const [deletingWatchlist, setDeletingWatchlist] = useState(false);
   const [listErrorMessage, setListErrorMessage] = useState("");
   const [detailErrorMessage, setDetailErrorMessage] = useState("");
-  const [metricsDrawerOpen, setMetricsDrawerOpen] = useState(false);
-  const [activeMetricsTab, setActiveMetricsTab] = useState(METRICS_TABS[0].id);
+  const [actionMessage, setActionMessage] = useState("");
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  const [computingRiskScore, setComputingRiskScore] = useState(false);
+  const [loadingRiskRuns, setLoadingRiskRuns] = useState(false);
+  const [riskRuns, setRiskRuns] = useState([]);
+  const [riskRunsErrorMessage, setRiskRunsErrorMessage] = useState("");
+  const [riskActionMessage, setRiskActionMessage] = useState("");
+  const [latestRiskResult, setLatestRiskResult] = useState(null);
+  const [riskRefreshToken, setRiskRefreshToken] = useState(0);
+
+  const [runningForecast, setRunningForecast] = useState(false);
+  const [forecastActionMessage, setForecastActionMessage] = useState("");
+  const [forecastResult, setForecastResult] = useState(null);
 
   useEffect(() => {
     if (!accessToken) {
       setWatchlists([]);
       setSelectedWatchlist(null);
+      setEditForm(createEditForm(null));
       setListErrorMessage("");
       setDetailErrorMessage("");
       return undefined;
@@ -59,23 +122,15 @@ function ViewWatchlistPage({
 
         setWatchlists(items);
 
-        if (!selectedWatchlistId && items.length) {
-          onSelectWatchlist?.(items[0].id);
+        if (!items.length) {
+          onSelectWatchlist?.(null);
+          setSelectedWatchlist(null);
+          return;
         }
 
-        if (selectedWatchlistId) {
-          const matchedWatchlist = items.find((item) => item.id === selectedWatchlistId) || null;
-
-          if (matchedWatchlist) {
-            setSelectedWatchlist((current) =>
-              current?.id === matchedWatchlist.id
-                ? {
-                    ...matchedWatchlist,
-                    preference: current.preference || matchedWatchlist.preference,
-                  }
-                : matchedWatchlist,
-            );
-          }
+        const selectedExists = items.some((item) => item.id === selectedWatchlistId);
+        if (!selectedWatchlistId || !selectedExists) {
+          onSelectWatchlist?.(items[0].id);
         }
       } catch (error) {
         if (error?.name === "AbortError") {
@@ -96,14 +151,11 @@ function ViewWatchlistPage({
     return () => {
       controller.abort();
     };
-  }, [accessToken, onSelectWatchlist, selectedWatchlistId]);
+  }, [accessToken, onSelectWatchlist, refreshToken, selectedWatchlistId]);
 
   useEffect(() => {
     if (!accessToken || !selectedWatchlistId) {
-      if (!watchlists.length) {
-        setSelectedWatchlist(null);
-      }
-
+      setSelectedWatchlist(null);
       setDetailErrorMessage("");
       setLoadingDetail(false);
       return undefined;
@@ -130,7 +182,8 @@ function ViewWatchlistPage({
           return;
         }
 
-        setDetailErrorMessage(error?.message || "Failed to load the selected watchlist.");
+        setSelectedWatchlist(null);
+        setDetailErrorMessage(error?.message || "Failed to load watchlist detail.");
       } finally {
         if (!controller.signal.aborted) {
           setLoadingDetail(false);
@@ -143,38 +196,267 @@ function ViewWatchlistPage({
     return () => {
       controller.abort();
     };
-  }, [accessToken, selectedWatchlistId, watchlists.length]);
+  }, [accessToken, selectedWatchlistId, refreshToken]);
 
-  const summaryCards = useMemo(() => {
-    const preference = selectedWatchlist?.preference;
+  useEffect(() => {
+    setEditForm(createEditForm(selectedWatchlist));
+    setForecastForm(createForecastForm(selectedWatchlist));
+    setActionMessage("");
+    setRiskRuns([]);
+    setLatestRiskResult(null);
+    setRiskActionMessage("");
+    setRiskRunsErrorMessage("");
+    setRiskRefreshToken(0);
+    setForecastActionMessage("");
+    setForecastResult(null);
+  }, [selectedWatchlist?.id]);
 
-    return [
+  useEffect(() => {
+    if (activeTab !== "risk-scoring" || !accessToken || !selectedWatchlist?.id) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    const loadRiskRuns = async () => {
+      setLoadingRiskRuns(true);
+      setRiskRunsErrorMessage("");
+
+      try {
+        const runs = await watchlistService.getWatchlistRiskScoreRuns(
+          selectedWatchlist.id,
+          accessToken,
+          { limit: 50 },
+          { signal: controller.signal },
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setRiskRuns(runs);
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        setRiskRuns([]);
+        setRiskRunsErrorMessage(error?.message || "Failed to load risk-score runs.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingRiskRuns(false);
+        }
+      }
+    };
+
+    void loadRiskRuns();
+
+    return () => {
+      controller.abort();
+    };
+  }, [accessToken, activeTab, riskRefreshToken, selectedWatchlist?.id]);
+
+  const isValidMonthRange =
+    Boolean(editForm.startMonth) &&
+    Boolean(editForm.endMonth) &&
+    editForm.startMonth <= editForm.endMonth;
+  const bbox = {
+    minLon: parseOptionalNumber(editForm.minLon),
+    minLat: parseOptionalNumber(editForm.minLat),
+    maxLon: parseOptionalNumber(editForm.maxLon),
+    maxLat: parseOptionalNumber(editForm.maxLat),
+  };
+  const hasValidBbox =
+    [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat].every((value) => Number.isFinite(value)) &&
+    bbox.minLon < bbox.maxLon &&
+    bbox.minLat < bbox.maxLat;
+
+  const canSave =
+    Boolean(selectedWatchlist?.id) &&
+    String(editForm.name).trim().length > 0 &&
+    String(editForm.mode).trim().length > 0 &&
+    isValidMonthRange &&
+    hasValidBbox &&
+    !savingWatchlist;
+
+  const summaryCards = useMemo(
+    () => [
       {
-        label: "Watchlist ID",
-        value: selectedWatchlist?.id ? `#${selectedWatchlist.id}` : "Unavailable",
-        meta: selectedWatchlist?.userId ? `User ${selectedWatchlist.userId}` : "Stored watchlist record",
-        accent: "text-cyan-50",
+        label: "Watchlists Loaded",
+        value: String(watchlists.length),
+        meta: loadingList ? "Loading list..." : "From GET /watchlists",
       },
       {
-        label: "Window Months",
-        value: preference?.windowMonths ? String(preference.windowMonths) : "No preference",
-        meta: "Rolling analysis window",
-        accent: "text-[#60a5fa]",
+        label: "Selected ID",
+        value: selectedWatchlist?.id ? `#${selectedWatchlist.id}` : "None",
+        meta: selectedWatchlist?.name || "No selected watchlist",
       },
       {
         label: "Travel Mode",
-        value: formatTravelMode(preference?.travelMode),
-        meta: "Movement profile preference",
-        accent: "text-[#39ef7d]",
+        value: selectedWatchlist?.preference?.travelMode || "Not set",
+        meta: "Stored preference",
       },
       {
         label: "Crime Types",
-        value: formatCount(preference?.crimeTypes?.length || 0),
-        meta: preference?.crimeTypes?.length ? "Selected categories" : "No crime filters stored",
-        accent: "text-[#f59e0b]",
+        value: String(selectedWatchlist?.preference?.crimeTypes?.length || 0),
+        meta: "Stored preference",
       },
-    ];
-  }, [selectedWatchlist]);
+    ],
+    [loadingList, selectedWatchlist, watchlists.length],
+  );
+
+  const handleFieldChange = (key, value) => {
+    setActionMessage("");
+    setEditForm((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  };
+
+  const handleSave = async () => {
+    if (!canSave || !selectedWatchlist?.id || !accessToken) {
+      return;
+    }
+
+    setSavingWatchlist(true);
+    setActionMessage("");
+
+    const payload = {
+      name: editForm.name.trim(),
+      min_lon: bbox.minLon,
+      min_lat: bbox.minLat,
+      max_lon: bbox.maxLon,
+      max_lat: bbox.maxLat,
+      preference: {
+        start_month: monthValueToApiDate(editForm.startMonth),
+        end_month: monthValueToApiDate(editForm.endMonth),
+        crime_types: parseCrimeTypes(editForm.crimeTypes),
+        travel_mode: editForm.mode.toLowerCase(),
+      },
+    };
+
+    try {
+      const updatedWatchlist = await watchlistService.updateWatchlist(
+        selectedWatchlist.id,
+        payload,
+        accessToken,
+      );
+
+      setSelectedWatchlist(updatedWatchlist);
+      setWatchlists((current) =>
+        current.map((watchlist) =>
+          watchlist.id === updatedWatchlist.id ? updatedWatchlist : watchlist,
+        ),
+      );
+      setActionMessage("Watchlist updated successfully.");
+    } catch (error) {
+      setActionMessage(error?.message || "Failed to update watchlist.");
+    } finally {
+      setSavingWatchlist(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedWatchlist?.id || !accessToken || deletingWatchlist) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete watchlist \"${selectedWatchlist.name}\" (ID ${selectedWatchlist.id})?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingWatchlist(true);
+    setActionMessage("");
+
+    try {
+      await watchlistService.deleteWatchlist(selectedWatchlist.id, accessToken);
+      setActionMessage("Watchlist deleted successfully.");
+      setRefreshToken((current) => current + 1);
+    } catch (error) {
+      setActionMessage(error?.message || "Failed to delete watchlist.");
+    } finally {
+      setDeletingWatchlist(false);
+    }
+  };
+
+  const handleRunRiskScore = async () => {
+    if (!selectedWatchlist?.id || !accessToken || computingRiskScore) {
+      return;
+    }
+
+    setComputingRiskScore(true);
+    setRiskActionMessage("");
+
+    try {
+      const response = await watchlistService.computeWatchlistRiskScore(
+        selectedWatchlist.id,
+        accessToken,
+      );
+
+      setLatestRiskResult(response);
+      setRiskActionMessage("Risk score computed successfully.");
+      setRiskRefreshToken((current) => current + 1);
+    } catch (error) {
+      setRiskActionMessage(error?.message || "Failed to compute risk score.");
+    } finally {
+      setComputingRiskScore(false);
+    }
+  };
+
+  const handleRefreshRiskRuns = () => {
+    setRiskRefreshToken((current) => current + 1);
+  };
+
+  const canRunForecast =
+    Boolean(selectedWatchlist?.id) &&
+    Boolean(forecastForm.startMonth) &&
+    String(forecastForm.mode).trim().length > 0 &&
+    !runningForecast;
+
+  const handleForecastFieldChange = (key, value) => {
+    setForecastActionMessage("");
+    setForecastForm((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  };
+
+  const handleRunForecast = async () => {
+    if (!canRunForecast || !selectedWatchlist?.id || !accessToken) {
+      return;
+    }
+
+    setRunningForecast(true);
+    setForecastActionMessage("");
+
+    const payload = {
+      start_month: monthValueToApiDate(forecastForm.startMonth),
+      mode: String(forecastForm.mode || "").toLowerCase(),
+      crime_types: Array.isArray(forecastForm.crimeTypes)
+        ? forecastForm.crimeTypes.filter(Boolean)
+        : [],
+    };
+
+    try {
+      console.log(payload);
+      const response = await watchlistService.forecastWatchlistNextMonth(
+        selectedWatchlist.id,
+        payload,
+        accessToken,
+      );
+
+      setForecastResult(response);
+      setForecastActionMessage("Forecast computed successfully.");
+    } catch (error) {
+      setForecastActionMessage(error?.message || "Failed to compute forecast.");
+    } finally {
+      setRunningForecast(false);
+    }
+  };
 
   if (!accessToken) {
     return (
@@ -198,11 +480,11 @@ function ViewWatchlistPage({
   }
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#071316]">
+    <div className="flex min-h-0 flex-1 flex-col bg-[#071316]">
       <TopBar
         docsUrl={docsUrl}
         title="View Watchlists"
-        subtitle="Review saved watchlists, inspect their stored preference payloads, and reopen any record."
+        subtitle="Review watchlists, edit preferences, and run risk scoring analytics."
       />
 
       <div className="min-h-0 flex-1 p-4">
@@ -212,7 +494,7 @@ function ViewWatchlistPage({
               <div>
                 <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Watchlists</p>
                 <h2 className="mt-2 text-xl font-semibold text-cyan-50">
-                  {loadingList ? "Loading..." : `${formatCount(watchlists.length)} Loaded`}
+                  {loadingList ? "Loading..." : `${watchlists.length} Loaded`}
                 </h2>
               </div>
 
@@ -248,28 +530,11 @@ function ViewWatchlistPage({
                             : "border-white/5 bg-[#071316]/70 hover:border-cyan-100/20 hover:bg-cyan-100/5"
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/40">
-                              Watchlist #{watchlist.id}
-                            </p>
-                            <h3 className="mt-2 text-base font-semibold text-cyan-50">
-                              {watchlist.name}
-                            </h3>
-                          </div>
-                          <span className="rounded-full border border-cyan-100/10 bg-[#030b0e]/70 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/55">
-                            {formatTravelMode(watchlist.preference?.travelMode)}
-                          </span>
-                        </div>
-
-                        <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-cyan-100/55">
-                          <span>{watchlist.preference?.windowMonths || 0} months</span>
-                          <span>{watchlist.preference?.crimeTypes?.length || 0} crime types</span>
-                        </div>
-
-                        <p className="mt-4 text-xs uppercase tracking-[0.18em] text-cyan-100/35">
-                          {formatTimestamp(watchlist.createdAt)}
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/40">
+                          Watchlist #{watchlist.id}
                         </p>
+                        <h3 className="mt-2 text-base font-semibold text-cyan-50">{watchlist.name}</h3>
+                        <p className="mt-2 text-xs text-cyan-100/55">{formatTimestamp(watchlist.createdAt)}</p>
                       </button>
                     );
                   })}
@@ -279,9 +544,6 @@ function ViewWatchlistPage({
                   <div>
                     <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/35">Empty State</p>
                     <h3 className="mt-3 text-xl font-semibold text-cyan-50">No watchlists yet</h3>
-                    <p className="mt-3 text-sm leading-6 text-cyan-100/60">
-                      Create a watchlist to populate this desk. Newly created watchlists will land here automatically.
-                    </p>
                   </div>
                 </div>
               )}
@@ -294,11 +556,27 @@ function ViewWatchlistPage({
               <h2 className="mt-2 text-2xl font-semibold text-cyan-50">
                 {selectedWatchlist?.name || (loadingDetail ? "Loading detail..." : "No watchlist selected")}
               </h2>
-              <p className="mt-2 text-sm text-cyan-100/60">
-                {selectedWatchlist
-                  ? `Created ${formatTimestamp(selectedWatchlist.createdAt)}`
-                  : "Choose a watchlist from the list to inspect its stored preference and bounding box."}
-              </p>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {PAGE_TABS.map((tab) => {
+                  const isActive = activeTab === tab.id;
+
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-[0.18em] transition-colors ${
+                        isActive
+                          ? "bg-cyan-50 text-[#021116]"
+                          : "border border-cyan-100/10 bg-cyan-100/5 text-cyan-100/70 hover:bg-cyan-100/10 hover:text-cyan-50"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {detailErrorMessage ? (
@@ -309,93 +587,135 @@ function ViewWatchlistPage({
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
               {selectedWatchlist ? (
-                <div className="space-y-5">
-                  <div className="rounded-[24px] border border-white/5 bg-[#071316]/75 p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Live Record</p>
-                        <h3 className="mt-3 text-3xl font-semibold text-cyan-50">
-                          {selectedWatchlist.name}
-                        </h3>
-                        <p className="mt-3 max-w-2xl text-sm leading-6 text-cyan-100/60">
-                          This watchlist stores a bbox plus a preference object for time window, crime categories, and travel mode. The detail panel is reading the single-watchlist endpoint.
-                        </p>
+                activeTab === "overview" ? (
+                  <div className="space-y-5">
+                    <div className="grid gap-3 lg:grid-cols-4">
+                      {summaryCards.map((card) => (
+                        <article
+                          key={card.label}
+                          className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4"
+                        >
+                          <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/40">{card.label}</p>
+                          <p className="mt-3 text-xl font-semibold text-cyan-50">{card.value}</p>
+                          <p className="mt-2 text-sm text-cyan-100/55">{card.meta}</p>
+                        </article>
+                      ))}
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <WatchlistField
+                        label="NAME"
+                        value={editForm.name}
+                        onChange={(value) => handleFieldChange("name", value)}
+                      />
+                      <WatchlistModeSelect
+                        label="MODE"
+                        value={editForm.mode}
+                        options={WATCHLIST_MODE_OPTIONS}
+                        onChange={(value) => handleFieldChange("mode", value)}
+                      />
+                      <WatchlistField
+                        label="START MONTH"
+                        type="month"
+                        value={editForm.startMonth}
+                        onChange={(value) => handleFieldChange("startMonth", value)}
+                      />
+                      <WatchlistField
+                        label="END MONTH"
+                        type="month"
+                        value={editForm.endMonth}
+                        onChange={(value) => handleFieldChange("endMonth", value)}
+                      />
+                      <WatchlistField
+                        label="MIN LONGITUDE"
+                        value={editForm.minLon}
+                        inputMode="decimal"
+                        onChange={(value) => handleFieldChange("minLon", value)}
+                      />
+                      <WatchlistField
+                        label="MIN LATITUDE"
+                        value={editForm.minLat}
+                        inputMode="decimal"
+                        onChange={(value) => handleFieldChange("minLat", value)}
+                      />
+                      <WatchlistField
+                        label="MAX LONGITUDE"
+                        value={editForm.maxLon}
+                        inputMode="decimal"
+                        onChange={(value) => handleFieldChange("maxLon", value)}
+                      />
+                      <WatchlistField
+                        label="MAX LATITUDE"
+                        value={editForm.maxLat}
+                        inputMode="decimal"
+                        onChange={(value) => handleFieldChange("maxLat", value)}
+                      />
+                    </div>
+
+                    <label className="flex flex-col gap-2">
+                      <span className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">CRIME TYPES (comma-separated)</span>
+                      <textarea
+                        value={editForm.crimeTypes}
+                        onChange={(event) => handleFieldChange("crimeTypes", event.target.value)}
+                        rows={3}
+                        className="rounded-md border border-cyan-200/10 bg-[#071316]/70 px-3 py-2 text-sm font-medium text-cyan-50 outline-none transition-colors placeholder:text-cyan-100/30 focus:border-cyan-400/40"
+                      />
+                    </label>
+
+                    {!isValidMonthRange ? (
+                      <div className="rounded-[16px] border border-amber-300/30 bg-amber-950/60 px-4 py-3 text-sm text-amber-100">
+                        Start month must be before or equal to end month.
                       </div>
+                    ) : null}
+
+                    {actionMessage ? (
+                      <div className="rounded-[16px] border border-cyan-100/20 bg-cyan-950/40 px-4 py-3 text-sm text-cyan-100">
+                        {actionMessage}
+                      </div>
+                    ) : null}
+
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={handleSave}
+                        disabled={!canSave}
+                        className="rounded-[14px] bg-cyan-50 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-[#021116] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-cyan-100/20 disabled:text-cyan-100/40"
+                      >
+                        {savingWatchlist ? "Saving..." : "Save Watchlist"}
+                      </button>
 
                       <button
                         type="button"
-                        onClick={() => setMetricsDrawerOpen(true)}
-                        className="rounded-full border border-cyan-100/10 bg-cyan-50/10 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-cyan-50 transition-colors hover:bg-cyan-50/20"
+                        onClick={handleDelete}
+                        disabled={deletingWatchlist || !selectedWatchlist?.id}
+                        className="rounded-[14px] border border-red-300/30 bg-red-950/40 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-red-100 transition-colors hover:bg-red-900/50 disabled:cursor-not-allowed disabled:opacity-45"
                       >
-                        Metrics
+                        {deletingWatchlist ? "Deleting..." : "Delete Watchlist"}
                       </button>
                     </div>
                   </div>
-
-                  <div className="grid gap-3 lg:grid-cols-4">
-                    {summaryCards.map((card) => (
-                      <article
-                        key={card.label}
-                        className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4"
-                      >
-                        <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/40">
-                          {card.label}
-                        </p>
-                        <p className={`mt-3 text-xl font-semibold ${card.accent}`}>{card.value}</p>
-                        <p className="mt-2 text-sm text-cyan-100/55">{card.meta}</p>
-                      </article>
-                    ))}
-                  </div>
-
-                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr),minmax(320px,0.8fr)]">
-                    <section className="rounded-[24px] border border-white/5 bg-[#071316]/70 p-5">
-                      <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Bounding Box</p>
-                      <h3 className="mt-3 text-xl font-semibold text-cyan-50">Stored coverage envelope</h3>
-                      <div className="mt-5 grid gap-3 md:grid-cols-2">
-                        <CoordinateCard label="Min Longitude" value={selectedWatchlist.minLon} />
-                        <CoordinateCard label="Min Latitude" value={selectedWatchlist.minLat} />
-                        <CoordinateCard label="Max Longitude" value={selectedWatchlist.maxLon} />
-                        <CoordinateCard label="Max Latitude" value={selectedWatchlist.maxLat} />
-                      </div>
-                    </section>
-
-                    <section className="rounded-[24px] border border-white/5 bg-[#071316]/70 p-5">
-                      <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Preference Payload</p>
-                      <h3 className="mt-3 text-xl font-semibold text-cyan-50">Saved analytics settings</h3>
-                      <div className="mt-5 space-y-4">
-                        <PreferenceRow
-                          label="Travel Mode"
-                          value={formatTravelMode(selectedWatchlist.preference?.travelMode)}
-                        />
-                        <PreferenceRow
-                          label="Window"
-                          value={
-                            selectedWatchlist.preference?.windowMonths
-                              ? `${selectedWatchlist.preference.windowMonths} months`
-                              : "No preference"
-                          }
-                        />
-                        <div>
-                          <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">Crime Types</p>
-                          {selectedWatchlist.preference?.crimeTypes?.length ? (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {selectedWatchlist.preference.crimeTypes.map((crimeType) => (
-                                <span
-                                  key={crimeType}
-                                  className="rounded-full border border-cyan-100/10 bg-cyan-50/10 px-3 py-1.5 text-xs font-medium text-cyan-50"
-                                >
-                                  {formatCrimeTypeLabel(crimeType)}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="mt-3 text-sm text-cyan-100/55">No crime types stored on this record.</p>
-                          )}
-                        </div>
-                      </div>
-                    </section>
-                  </div>
-                </div>
+                ) : activeTab === "risk-scoring" ? (
+                  <RiskScoringTab
+                    computingRiskScore={computingRiskScore}
+                    latestRiskResult={latestRiskResult}
+                    loadingRiskRuns={loadingRiskRuns}
+                    riskActionMessage={riskActionMessage}
+                    riskRuns={riskRuns}
+                    riskRunsErrorMessage={riskRunsErrorMessage}
+                    onRefreshRuns={handleRefreshRiskRuns}
+                    onRunRiskScore={handleRunRiskScore}
+                  />
+                ) : (
+                  <ForecastTab
+                    canRunForecast={canRunForecast}
+                    forecastActionMessage={forecastActionMessage}
+                    forecastForm={forecastForm}
+                    forecastResult={forecastResult}
+                    runningForecast={runningForecast}
+                    onFieldChange={handleForecastFieldChange}
+                    onRunForecast={handleRunForecast}
+                  />
+                )
               ) : (
                 <div className="grid h-full min-h-[420px] place-items-center rounded-[24px] border border-dashed border-cyan-100/10 bg-[#071316]/50 px-6 text-center">
                   <div>
@@ -403,9 +723,6 @@ function ViewWatchlistPage({
                     <h3 className="mt-3 text-2xl font-semibold text-cyan-50">
                       {loadingDetail ? "Loading watchlist..." : "Select a watchlist"}
                     </h3>
-                    <p className="mt-3 max-w-lg text-sm leading-6 text-cyan-100/60">
-                      Pick a watchlist from the left rail to inspect the saved bbox and preference object returned by `/watchlists`.
-                    </p>
                   </div>
                 </div>
               )}
@@ -413,886 +730,396 @@ function ViewWatchlistPage({
           </section>
         </div>
       </div>
-
-      <MetricsDrawer
-        activeTab={activeMetricsTab}
-        isOpen={metricsDrawerOpen}
-        onClose={() => setMetricsDrawerOpen(false)}
-        onTabChange={setActiveMetricsTab}
-        accessToken={accessToken}
-        selectedWatchlist={selectedWatchlist}
-        onWatchlistUpdated={setSelectedWatchlist}
-        watchlistName={selectedWatchlist?.name || "Watchlist"}
-      />
     </div>
   );
 }
 
-function MetricsDrawer({
-  activeTab,
-  isOpen,
-  onClose,
-  onTabChange,
-  accessToken,
-  selectedWatchlist,
-  onWatchlistUpdated,
-  watchlistName,
+function RiskScoringTab({
+  computingRiskScore,
+  latestRiskResult,
+  loadingRiskRuns,
+  riskActionMessage,
+  riskRuns,
+  riskRunsErrorMessage,
+  onRefreshRuns,
+  onRunRiskScore,
 }) {
-  const [activePreviousSubtab, setActivePreviousSubtab] = useState(PREVIOUS_METRICS_SUBTABS[0].id);
-  const [activeNewSubtab, setActiveNewSubtab] = useState(NEW_METRICS_SUBTABS[0].id);
-  const [historyItems, setHistoryItems] = useState([]);
-  const [historyErrorMessage, setHistoryErrorMessage] = useState("");
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  const [expandedHistoryId, setExpandedHistoryId] = useState(null);
-  const [runForms, setRunForms] = useState(createRunForms(selectedWatchlist?.preference));
-  const [runFeedback, setRunFeedback] = useState({});
-  const [runningMetricId, setRunningMetricId] = useState("");
-
-  useEffect(() => {
-    setRunForms(createRunForms(selectedWatchlist?.preference));
-    setRunFeedback({});
-  }, [selectedWatchlist?.id, selectedWatchlist?.preference]);
-
-  useEffect(() => {
-    if (!isOpen || activeTab !== "previous-metrics" || !selectedWatchlist?.id || !accessToken) {
-      return undefined;
-    }
-
-    const controller = new AbortController();
-
-    const loadHistory = async () => {
-      setLoadingHistory(true);
-      setHistoryErrorMessage("");
-
-      try {
-        const items = await getHistoryForSubtab(
-          activePreviousSubtab,
-          selectedWatchlist.id,
-          accessToken,
-          { signal: controller.signal },
-        );
-
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        setHistoryItems(items);
-        setExpandedHistoryId((current) =>
-          items.some((item) => item.id === current) ? current : null,
-        );
-      } catch (error) {
-        if (error?.name === "AbortError") {
-          return;
-        }
-
-        setHistoryItems([]);
-        setExpandedHistoryId(null);
-        setHistoryErrorMessage(error?.message || "Failed to load previous metrics.");
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoadingHistory(false);
-        }
-      }
-    };
-
-    void loadHistory();
-
-    return () => {
-      controller.abort();
-    };
-  }, [accessToken, activePreviousSubtab, activeTab, isOpen, selectedWatchlist?.id]);
-
-  const handleRunMetric = async () => {
-    if (!selectedWatchlist?.id || !accessToken) {
-      return;
-    }
-
-    const draftPreference = buildPreferenceFromRunForms(runForms, activeNewSubtab);
-    setRunningMetricId(activeNewSubtab);
-    setRunFeedback((current) => ({
-      ...current,
-      [activeNewSubtab]: {
-        tone: "",
-        message: "",
-        result: null,
-      },
-    }));
-
-    try {
-      const updatedWatchlist = await watchlistService.updateWatchlist(
-        selectedWatchlist.id,
-        {
-          preference: draftPreference,
-        },
-        accessToken,
-      );
-
-      onWatchlistUpdated?.(updatedWatchlist);
-
-      const runResult = await runMetricForSubtab(
-        activeNewSubtab,
-        selectedWatchlist.id,
-        accessToken,
-      );
-
-      setRunFeedback((current) => ({
-        ...current,
-        [activeNewSubtab]: {
-          tone: "success",
-          message: `Stored run #${runResult.watchlistRunId} completed successfully.`,
-          result: runResult,
-        },
-      }));
-    } catch (error) {
-      setRunFeedback((current) => ({
-        ...current,
-        [activeNewSubtab]: {
-          tone: "error",
-          message: error?.message || "Failed to run watchlist analytics.",
-          result: null,
-        },
-      }));
-    } finally {
-      setRunningMetricId("");
-    }
-  };
-
-  const activeRunState = runFeedback[activeNewSubtab] || {};
+  const riskResult =
+    latestRiskResult?.risk_result ||
+    latestRiskResult?.riskResult ||
+    latestRiskResult?.risk ||
+    {};
+  const comparison = latestRiskResult?.comparison || {};
+  const components = riskResult?.components || {};
+  const distribution = comparison?.distribution || {};
+  const computedScore = extractRiskScoreValue(latestRiskResult);
 
   return (
-    <>
-      <div
-        aria-hidden={!isOpen}
-        className={`absolute inset-0 z-40 bg-[#02080c]/55 transition-opacity duration-300 ${
-          isOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-        }`}
-        onClick={onClose}
-      />
+    <div className="space-y-5">
+      <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Risk Scoring</p>
+        <h3 className="mt-2 text-xl font-semibold text-cyan-50">Run and inspect watchlist risk score</h3>
+        <p className="mt-2 text-sm text-cyan-100/60">
+          Runs <code>POST /watchlists/{`{watchlist_id}`}/analytics/risk-score</code> and lists
+          history from <code>GET /watchlists/{`{watchlist_id}`}/analytics/risk-score/runs</code>.
+        </p>
 
-      <aside
-        aria-hidden={!isOpen}
-        className={`absolute right-0 top-0 z-50 flex h-full w-[80vw] max-w-none flex-col border-l border-white/8 bg-[#020b10] shadow-2xl transition-transform duration-300 ${
-          isOpen ? "translate-x-0" : "translate-x-full"
-        }`}
-      >
-        <div className="flex items-center justify-between gap-4 border-b border-white/5 px-6 py-5">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Watchlist Metrics</p>
-            <h2 className="mt-2 text-2xl font-semibold text-cyan-50">{watchlistName}</h2>
-          </div>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={onRunRiskScore}
+            disabled={computingRiskScore}
+            className="rounded-[14px] bg-cyan-50 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-[#021116] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-cyan-100/20 disabled:text-cyan-100/40"
+          >
+            {computingRiskScore ? "Running..." : "Run Risk Score"}
+          </button>
 
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-full border border-cyan-100/10 bg-cyan-100/5 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
+            onClick={onRefreshRuns}
+            className="rounded-[14px] border border-cyan-100/10 bg-cyan-100/5 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
           >
-            Close
+            Refresh Runs
           </button>
         </div>
 
-        <div className="flex items-center gap-2 border-b border-white/5 px-6 py-4">
-          {METRICS_TABS.map((tab) => {
-            const isActive = tab.id === activeTab;
-
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => onTabChange(tab.id)}
-                className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-cyan-50 text-[#021116]"
-                    : "border border-cyan-100/10 bg-cyan-100/5 text-cyan-100/70 hover:bg-cyan-100/10 hover:text-cyan-50"
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-hidden p-6">
-          <div className="h-full overflow-y-auto rounded-[24px] border border-white/5 bg-[#071316]/70 p-5">
-            {activeTab === "previous-metrics" ? (
-              <div className="space-y-4">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Metrics Workspace</p>
-                  <h3 className="mt-2 text-xl font-semibold text-cyan-50">Previous Metrics</h3>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {PREVIOUS_METRICS_SUBTABS.map((tab) => {
-                    const isActive = tab.id === activePreviousSubtab;
-
-                    return (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setActivePreviousSubtab(tab.id)}
-                        className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                          isActive
-                            ? "bg-cyan-50 text-[#021116]"
-                            : "border border-cyan-100/10 bg-cyan-100/5 text-cyan-100/70 hover:bg-cyan-100/10 hover:text-cyan-50"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {historyErrorMessage ? (
-                  <div className="rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
-                    {historyErrorMessage}
-                  </div>
-                ) : null}
-
-                {loadingHistory ? (
-                  <EmptyPanel label="Loading previous metrics..." />
-                ) : historyItems.length ? (
-                  <div className="space-y-3">
-                    {historyItems.map((item) => {
-                      const isExpanded = expandedHistoryId === item.id;
-
-                      return (
-                        <div
-                          key={`${item.reportType}-${item.id}`}
-                          className="overflow-hidden rounded-[20px] border border-white/5 bg-[#030b0e]/70"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setExpandedHistoryId((current) => (current === item.id ? null : item.id))}
-                            className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition-colors hover:bg-cyan-100/5"
-                          >
-                            <div>
-                              <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">
-                                Run #{item.id}
-                              </p>
-                              <h4 className="mt-2 text-base font-semibold text-cyan-50">
-                                {getHistoryHeadline(item)}
-                              </h4>
-                              <p className="mt-2 text-sm text-cyan-100/55">
-                                {getHistorySummary(item)}
-                              </p>
-                            </div>
-                            <span className="text-xs uppercase tracking-[0.18em] text-cyan-100/45">
-                              {formatTimestamp(item.createdAt)}
-                            </span>
-                          </button>
-
-                          {isExpanded ? (
-                            <div className="border-t border-white/5 px-4 py-4">
-                              <MetricResultPanel
-                                mode="stored"
-                                subtab={activePreviousSubtab}
-                                result={item}
-                              />
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <EmptyPanel label="No previous metrics stored for this watchlist and category yet." />
-                )}
-              </div>
-            ) : activeTab === "new-metrics" ? (
-              <div className="space-y-5">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Metrics Workspace</p>
-                  <h3 className="mt-2 text-xl font-semibold text-cyan-50">New Metrics</h3>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {NEW_METRICS_SUBTABS.map((tab) => {
-                    const isActive = tab.id === activeNewSubtab;
-
-                    return (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setActiveNewSubtab(tab.id)}
-                        className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                          isActive
-                            ? "bg-cyan-50 text-[#021116]"
-                            : "border border-cyan-100/10 bg-cyan-100/5 text-cyan-100/70 hover:bg-cyan-100/10 hover:text-cyan-50"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <RunMetricForm
-                  activeSubtab={activeNewSubtab}
-                  formState={runForms}
-                  onChange={setRunForms}
-                />
-
-                {activeRunState.message ? (
-                  <div
-                    className={`rounded-[16px] border px-4 py-3 text-sm ${
-                      activeRunState.tone === "error"
-                        ? "border-red-300/30 bg-[#4a0f0fd0] text-red-100"
-                        : "border-emerald-300/20 bg-emerald-400/10 text-emerald-100"
-                    }`}
-                  >
-                    {activeRunState.message}
-                  </div>
-                ) : null}
-
-                <button
-                  type="button"
-                  onClick={handleRunMetric}
-                  disabled={runningMetricId === activeNewSubtab}
-                  className="rounded-full bg-cyan-50 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[#021116] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-cyan-100/20 disabled:text-cyan-100/40"
-                >
-                  {runningMetricId === activeNewSubtab ? "Running..." : "Run Metric"}
-                </button>
-
-                {activeRunState.result ? (
-                  <MetricResultPanel
-                    mode="run"
-                    subtab={activeNewSubtab}
-                    result={activeRunState.result}
-                  />
-                ) : (
-                  <EmptyPanel label="Run a metric to see the stored wrapper and result here." />
-                )}
-              </div>
-            ) : (
-              <EmptyPanel label="Metrics workspace unavailable." />
-            )}
+        {riskActionMessage ? (
+          <div className="mt-4 rounded-[16px] border border-cyan-100/20 bg-cyan-950/40 px-4 py-3 text-sm text-cyan-100">
+            {riskActionMessage}
           </div>
-        </div>
-      </aside>
-    </>
-  );
-}
-
-function RunMetricForm({ activeSubtab, formState, onChange }) {
-  const draft = formState[activeSubtab];
-
-  return (
-    <div className="space-y-4 rounded-[20px] border border-white/5 bg-[#030b0e]/70 p-4">
-      <div>
-        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Run Configuration</p>
-        <h3 className="mt-2 text-xl font-semibold text-cyan-50">{getRunFormTitle(activeSubtab)}</h3>
+        ) : null}
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <MetricField
-          label="Window Months"
-          type="number"
-          value={draft.windowMonths}
-          onChange={(value) => updateRunForm(onChange, activeSubtab, "windowMonths", value)}
-        />
-        {(activeSubtab === "run-forecast" || activeSubtab === "run-risk") ? (
-          <MetricField
-            label="Travel Mode"
-            type="select"
-            value={draft.travelMode}
-            options={[
-              { value: "walk", label: "Walk" },
-              { value: "drive", label: "Drive" },
-            ]}
-            onChange={(value) => {
-              updateRunForm(onChange, activeSubtab, "travelMode", value);
-              if (value === "walk") {
-                updateRunForm(onChange, activeSubtab, "includeCollisions", false);
-              }
-            }}
-          />
-        ) : null}
-        <MetricField
-          label="Crime Types"
-          value={draft.crimeTypes}
-          placeholder="Comma separated, leave blank for all"
-          onChange={(value) => updateRunForm(onChange, activeSubtab, "crimeTypes", value)}
-        />
-        {activeSubtab === "run-forecast" ? (
-          <MetricField
-            label="Baseline Months"
-            type="number"
-            value={draft.baselineMonths}
-            onChange={(value) => updateRunForm(onChange, activeSubtab, "baselineMonths", value)}
-          />
-        ) : null}
-        {activeSubtab === "run-hotspots" ? (
-          <MetricField
-            label="Hotspot K"
-            type="number"
-            value={draft.hotspotK}
-            onChange={(value) => updateRunForm(onChange, activeSubtab, "hotspotK", value)}
-          />
-        ) : null}
-        {(activeSubtab === "run-forecast" || activeSubtab === "run-risk") ? (
-          <>
-            <MetricField
-              label="Weight Crime"
-              type="number"
-              value={draft.weightCrime}
-              onChange={(value) => updateRunForm(onChange, activeSubtab, "weightCrime", value)}
+      {latestRiskResult ? (
+        <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+          <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Latest Result</p>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+            <MetricCard label="Watchlist ID" value={toDisplayValue(latestRiskResult.watchlist_id)} />
+            <MetricCard
+              label="Computed Score"
+              value={<span className={getRiskScoreTextClass(computedScore)}>{formatRiskScore(computedScore)}</span>}
             />
-            <MetricField
-              label="Weight Collision"
-              type="number"
-              value={draft.weightCollision}
-              onChange={(value) => updateRunForm(onChange, activeSubtab, "weightCollision", value)}
-            />
-          </>
-        ) : null}
-      </div>
+            <MetricCard label="Raw Score" value={formatMetricNumber(riskResult.raw_score, 3)} />
+            <MetricCard label="Percentile" value={formatMetricNumber(comparison.percentile, 2)} />
+          </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        {(activeSubtab === "run-forecast" || activeSubtab === "run-risk") ? (
-          <MetricToggle
-            checked={draft.includeCollisions}
-            disabled={draft.travelMode !== "drive"}
-            label="Include Collisions"
-            onChange={(value) => updateRunForm(onChange, activeSubtab, "includeCollisions", value)}
-          />
-        ) : null}
-        {activeSubtab === "run-forecast" ? (
-          <MetricToggle
-            checked={draft.includeForecast}
-            label="Enable Forecast"
-            onChange={(value) => updateRunForm(onChange, activeSubtab, "includeForecast", value)}
-          />
-        ) : null}
-        {activeSubtab === "run-hotspots" ? (
-          <MetricToggle
-            checked={draft.includeHotspotStability}
-            label="Enable Hotspots"
-            onChange={(value) => updateRunForm(onChange, activeSubtab, "includeHotspotStability", value)}
-          />
-        ) : null}
-      </div>
-    </div>
-  );
-}
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Risk Components</p>
+              <DetailRow label="Crime Component" value={formatMetricNumber(components.crime_component, 4)} />
+              <DetailRow label="Collision Density" value={formatMetricNumber(components.collision_density, 6)} />
+              <DetailRow label="User Support" value={formatMetricNumber(components.user_support, 6)} />
+            </article>
 
-function EmptyPanel({ label }) {
-  return (
-    <div className="grid min-h-[220px] place-items-center rounded-[20px] border border-dashed border-cyan-100/10 bg-[#030b0e]/50 px-6 text-center">
-      <p className="text-sm text-cyan-100/55">{label}</p>
-    </div>
-  );
-}
-
-function MetricResultPanel({ mode, result, subtab }) {
-  const crimeRows = getResultsByCrimeType(result).map(([crimeType, payload]) => ({
-    crimeType,
-    payload,
-  }));
-
-  return (
-    <div className="space-y-4 rounded-[20px] border border-white/5 bg-[#071316]/75 p-4">
-      <div>
-        <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">
-          {mode === "run" ? "Latest Run" : "Stored Result"}
-        </p>
-        <h4 className="mt-2 text-lg font-semibold text-cyan-50">
-          {getMetricPanelTitle(subtab)}
-        </h4>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-3">
-        <StatPill label="Run ID" value={result.watchlistRunId || result.id || "—"} />
-        <StatPill label="Stored At" value={formatTimestamp(result.storedAt || result.createdAt)} />
-        <StatPill label="Type" value={result.reportType || getReportTypeLabel(subtab)} />
-      </div>
-
-      {result.request ? (
-        <section className="rounded-[18px] border border-white/5 bg-[#030b0e]/75 p-4">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Request</p>
-          <div className="mt-3">
-            <JsonObjectViewer data={result.request} />
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Comparison</p>
+              <DetailRow label="Cohort Type" value={toDisplayValue(comparison.cohort_type)} />
+              <DetailRow label="Cohort Size" value={toDisplayValue(comparison.cohort_size)} />
+              <DetailRow
+                label="Rank"
+                value={`${toDisplayValue(comparison.rank)} / ${toDisplayValue(comparison.rank_out_of)}`}
+              />
+              <DetailRow label="Percentile" value={formatMetricNumber(comparison.percentile, 2)} />
+              <DetailRow
+                label="Distribution"
+                value={`min ${toDisplayValue(distribution.min)}, median ${toDisplayValue(distribution.median)}, max ${toDisplayValue(distribution.max)}`}
+              />
+            </article>
           </div>
         </section>
       ) : null}
 
-      {crimeRows.length ? (
-        <div className="space-y-3">
-          {crimeRows.map(({ crimeType, payload }) => (
-            <div key={crimeType} className="rounded-[18px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{crimeType}</p>
-              <div className="mt-3">
-                <JsonObjectViewer data={payload} />
-              </div>
-            </div>
-          ))}
+      <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Previous Runs</p>
+          <span className="text-xs text-cyan-100/60">{loadingRiskRuns ? "Loading..." : `${riskRuns.length} runs`}</span>
         </div>
-      ) : (
-        <EmptyPanel label="No result payload returned for this metric." />
-      )}
-    </div>
-  );
-}
 
-function JsonObjectViewer({ data, level = 0 }) {
-  const entries = Object.entries(data || {});
-
-  if (!entries.length) {
-    return <p className="text-sm text-cyan-100/50">No data available.</p>;
-  }
-
-  return (
-    <div className={`space-y-3 ${level > 0 ? "rounded-[16px] border border-white/5 bg-[#071316]/55 p-3" : ""}`}>
-      {entries.map(([key, value]) => {
-        const label = toReadableLabel(key);
-
-        if (value && typeof value === "object" && !Array.isArray(value)) {
-          return (
-            <div key={`${level}-${key}`}>
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
-              <div className="mt-2">
-                <JsonObjectViewer data={value} level={level + 1} />
-              </div>
-            </div>
-          );
-        }
-
-        if (Array.isArray(value)) {
-          return (
-            <div key={`${level}-${key}`}>
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
-              <div className="mt-2 space-y-2">
-                {value.length ? (
-                  value.map((item, index) =>
-                    item && typeof item === "object" ? (
-                      <JsonObjectViewer key={`${key}-${index}`} data={item} level={level + 1} />
-                    ) : (
-                      <div
-                        key={`${key}-${index}`}
-                        className="rounded-[14px] border border-white/5 bg-[#071316]/55 px-3 py-2 text-sm text-cyan-50"
-                      >
-                        {formatViewerValue(item)}
-                      </div>
-                    ),
-                  )
-                ) : (
-                  <p className="text-sm text-cyan-100/50">No values.</p>
-                )}
-              </div>
-            </div>
-          );
-        }
-
-        return (
-          <div
-            key={`${level}-${key}`}
-            className="grid gap-2 rounded-[14px] border border-white/5 bg-[#071316]/55 px-3 py-3 md:grid-cols-[180px,minmax(0,1fr)]"
-          >
-            <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
-            <p className="text-sm font-medium text-cyan-50 break-words">{formatViewerValue(value)}</p>
+        {riskRunsErrorMessage ? (
+          <div className="mt-4 rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
+            {riskRunsErrorMessage}
           </div>
-        );
-      })}
+        ) : null}
+
+        {riskRuns.length ? (
+          <div className="mt-4 space-y-3">
+            {riskRuns.map((run, index) => (
+              <article
+                key={run.id || `${run.createdAt}-${index}`}
+                className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-[0.18em] text-cyan-100/55">
+                    Run {run.id ? `#${run.id}` : `#${index + 1}`}
+                  </p>
+                  <p className="text-xs text-cyan-100/55">{formatTimestamp(run.createdAt)}</p>
+                </div>
+                <p className="mt-2 text-sm text-cyan-100/75">
+                  Score:{" "}
+                  <strong className={getRiskScoreTextClass(run.score ?? extractRiskScoreValue(run.data))}>
+                    {formatRiskScore(run.score ?? extractRiskScoreValue(run.data))}
+                  </strong>
+                </p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-[16px] border border-dashed border-cyan-100/10 bg-[#030b0e]/65 px-4 py-5 text-sm text-cyan-100/55">
+            No risk-score runs found for this watchlist yet.
+          </div>
+        )}
+      </section>
     </div>
   );
 }
 
-function MetricField({ label, onChange, options = [], type = "text", value, ...props }) {
-  if (type === "select") {
-    return (
-      <label className="flex flex-col gap-2">
-        <span className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">{label}</span>
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="rounded-[14px] border border-cyan-200/10 bg-[#071316]/70 px-3 py-2 text-sm text-cyan-50 outline-none transition-colors focus:border-cyan-400/40"
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-    );
-  }
-
+function DetailRow({ label, value }) {
   return (
-    <label className="flex flex-col gap-2">
-      <span className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">{label}</span>
-      <input
-        {...props}
-        type={type}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="rounded-[14px] border border-cyan-200/10 bg-[#071316]/70 px-3 py-2 text-sm text-cyan-50 outline-none transition-colors placeholder:text-cyan-100/30 focus:border-cyan-400/40"
-      />
-    </label>
+    <p className="mt-2 flex items-start justify-between gap-3 text-sm">
+      <span className="text-cyan-100/55">{label}</span>
+      <span className="text-right text-cyan-50">{toDisplayValue(value)}</span>
+    </p>
   );
 }
 
-function MetricToggle({ checked, disabled, label, onChange }) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`rounded-[16px] border px-4 py-4 text-left transition-colors ${
-        checked
-          ? "border-cyan-300/35 bg-cyan-50/10 text-cyan-50"
-          : "border-cyan-100/10 bg-[#030b0e]/80 text-cyan-100/60 hover:bg-cyan-100/5 hover:text-cyan-50"
-      } disabled:cursor-not-allowed disabled:opacity-45`}
-    >
-      <p className="text-[11px] uppercase tracking-[0.24em]">{label}</p>
-      <p className="mt-2 text-sm font-medium">{checked ? "Enabled" : "Disabled"}</p>
-    </button>
-  );
-}
+function ForecastTab({
+  canRunForecast,
+  forecastActionMessage,
+  forecastForm,
+  forecastResult,
+  runningForecast,
+  onFieldChange,
+  onRunForecast,
+}) {
+  const forecastPayload = forecastResult?.forecast || forecastResult || {};
+  const intervalCrimes = forecastPayload?.intervals?.crimes || {};
+  const intervalCollisions = forecastPayload?.intervals?.collisions_count || {};
+  const forecastComponents = forecastPayload?.components || {};
+  const bandClass = getForecastBandTextClass(forecastPayload.band);
 
-function StatPill({ label, value }) {
   return (
-    <div className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-      <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{toReadableLabel(label)}</p>
-      <p className="mt-2 text-base font-semibold text-cyan-50">{String(value ?? "—")}</p>
+    <div className="space-y-5">
+      <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Forecast</p>
+        <h3 className="mt-2 text-xl font-semibold text-cyan-50">Compute next-month forecast</h3>
+        <p className="mt-2 text-sm text-cyan-100/60">
+          Calls <code>POST /watchlists/{`{watchlist_id}`}/analytics/forecast</code> with
+          `start_month`, `mode`, and `crime_types`.
+        </p>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <WatchlistField
+            label="START MONTH"
+            type="month"
+            value={forecastForm.startMonth}
+            onChange={(value) => onFieldChange("startMonth", value)}
+          />
+
+          <div className="rounded-[12px] border border-cyan-200/10 bg-[#071316]/70 px-4 py-3">
+            <p className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">MODE</p>
+            <div className="mt-3 flex gap-2">
+              {["walk", "drive"].map((mode) => {
+                const active = forecastForm.mode === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => onFieldChange("mode", mode)}
+                    className={`rounded-[12px] border px-3 py-2 text-xs font-medium uppercase tracking-[0.14em] transition-colors ${
+                      active
+                        ? "border-cyan-300/40 bg-cyan-50/12 text-cyan-50"
+                        : "border-cyan-100/10 bg-[#030b0e]/80 text-cyan-100/70 hover:bg-cyan-100/10 hover:text-cyan-50"
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <WatchlistCrimeTypeMultiSelect
+            label="CRIME TYPES"
+            values={Array.isArray(forecastForm.crimeTypes) ? forecastForm.crimeTypes : []}
+            options={WATCHLIST_CRIME_TYPE_OPTIONS}
+            onChange={(values) => onFieldChange("crimeTypes", values)}
+          />
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={onRunForecast}
+            disabled={!canRunForecast}
+            className="rounded-[14px] bg-cyan-50 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-[#021116] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-cyan-100/20 disabled:text-cyan-100/40"
+          >
+            {runningForecast ? "Running..." : "Run Forecast"}
+          </button>
+        </div>
+
+        {forecastActionMessage ? (
+          <div className="mt-4 rounded-[16px] border border-cyan-100/20 bg-cyan-950/40 px-4 py-3 text-sm text-cyan-100">
+            {forecastActionMessage}
+          </div>
+        ) : null}
+      </div>
+
+      {forecastResult ? (
+        <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+          <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Forecast Result</p>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            <MetricCard label="Generated At" value={forecastResult.generated_at || "—"} />
+            <MetricCard
+              label="Score"
+              value={toDisplayValue(forecastPayload.score)}
+              valueClass={bandClass}
+            />
+            <MetricCard
+              label="Band"
+              value={String(toDisplayValue(forecastPayload.band)).toUpperCase()}
+              valueClass={bandClass}
+            />
+            <MetricCard
+              label="Expected Crimes"
+              value={toDisplayValue(forecastPayload.expected_crime_count)}
+            />
+            <MetricCard
+              label="Expected Collisions"
+              value={toDisplayValue(forecastPayload.expected_collision_count)}
+            />
+            <MetricCard
+              label="Expected Collision Points"
+              value={formatMetricNumber(forecastPayload.expected_collision_points, 4)}
+            />
+          </div>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Intervals</p>
+              <DetailRow
+                label="Crimes (low-high)"
+                value={`${toDisplayValue(intervalCrimes.low)} - ${toDisplayValue(intervalCrimes.high)}`}
+              />
+              <DetailRow
+                label="Collisions Count (low-high)"
+                value={`${toDisplayValue(intervalCollisions.low)} - ${toDisplayValue(intervalCollisions.high)}`}
+              />
+            </article>
+
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Components</p>
+              <DetailRow label="Mu Crime" value={formatMetricNumber(forecastComponents.mu_crime, 4)} />
+              <DetailRow
+                label="Mu Collision Points"
+                value={formatMetricNumber(forecastComponents.mu_collision_points, 4)}
+              />
+              <DetailRow
+                label="Mu Collision Count"
+                value={formatMetricNumber(forecastComponents.mu_collision_count, 4)}
+              />
+              <DetailRow
+                label="Projected Combined Value"
+                value={formatMetricNumber(forecastComponents.projected_combined_value, 4)}
+              />
+              <DetailRow
+                label="Baseline Combined Mean"
+                value={formatMetricNumber(forecastComponents.baseline_combined_mean, 4)}
+              />
+              <DetailRow label="Ratio" value={formatMetricNumber(forecastComponents.ratio, 4)} />
+            </article>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
 
-function createRunForms(preference) {
-  const base = {
-    windowMonths: String(preference?.windowMonths || 6),
-    crimeTypes: Array.isArray(preference?.crimeTypes) ? preference.crimeTypes.join(", ") : "",
-    travelMode: normalizeTravelMode(preference?.travelMode),
-    includeCollisions: Boolean(preference?.includeCollisions),
-    baselineMonths: String(preference?.baselineMonths || 6),
-    hotspotK: String(preference?.hotspotK || 20),
-    includeHotspotStability: Boolean(preference?.includeHotspotStability),
-    includeForecast: Boolean(preference?.includeForecast),
-    weightCrime: String(preference?.weightCrime || 1),
-    weightCollision: String(preference?.weightCollision || 0.8),
-  };
-
-  return {
-    "run-forecast": { ...base },
-    "run-risk": { ...base },
-    "run-hotspots": { ...base },
-  };
+function MetricCard({ label, value, valueClass = "text-cyan-50" }) {
+  return (
+    <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-3">
+      <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">{label}</p>
+      <p className={`mt-2 text-sm font-semibold ${valueClass}`}>{value}</p>
+    </article>
+  );
 }
 
-function normalizeTravelMode(value) {
-  const normalized = String(value || "").toLowerCase();
-  return normalized === "drive" ? "drive" : "walk";
-}
-
-function updateRunForm(setter, subtab, key, value) {
-  setter((current) => ({
-    ...current,
-    [subtab]: {
-      ...current[subtab],
-      [key]: value,
-    },
-  }));
-}
-
-function buildPreferenceFromRunForms(runForms, activeSubtab) {
-  const source = runForms[activeSubtab];
-  const travelMode = normalizeTravelMode(source.travelMode);
-  const includeCollisions = travelMode === "drive" ? Boolean(source.includeCollisions) : false;
-
-  return {
-    window_months: Number(source.windowMonths) || 6,
-    crime_types: parseCrimeTypesInput(source.crimeTypes),
-    travel_mode: travelMode,
-    include_collisions: includeCollisions,
-    baseline_months: Number(source.baselineMonths) || 6,
-    hotspot_k: Number(source.hotspotK) || 20,
-    include_hotspot_stability:
-      activeSubtab === "run-hotspots" ? Boolean(source.includeHotspotStability) : false,
-    include_forecast: activeSubtab === "run-forecast" ? Boolean(source.includeForecast) : false,
-    weight_crime: Number(source.weightCrime) || 1,
-    weight_collision: Number(source.weightCollision) || 0.8,
-  };
-}
-
-function parseCrimeTypesInput(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-async function getHistoryForSubtab(subtab, watchlistId, accessToken, requestOptions = {}) {
-  if (subtab === "forecast") {
-    return watchlistService.getRiskForecastResults(watchlistId, accessToken, { limit: 20 }, requestOptions);
-  }
-
-  if (subtab === "hotspots") {
-    return watchlistService.getHotspotStabilityResults(watchlistId, accessToken, { limit: 20 }, requestOptions);
-  }
-
-  return watchlistService.getRiskScoreResults(watchlistId, accessToken, { limit: 20 }, requestOptions);
-}
-
-async function runMetricForSubtab(subtab, watchlistId, accessToken) {
-  if (subtab === "run-forecast") {
-    return watchlistService.runRiskForecast(watchlistId, accessToken);
-  }
-
-  if (subtab === "run-hotspots") {
-    return watchlistService.runHotspotStability(watchlistId, accessToken);
-  }
-
-  return watchlistService.runRiskScore(watchlistId, accessToken);
-}
-
-function getHistoryHeadline(item) {
-  const request = item.request || {};
-
-  if (item.reportType === "risk_forecast") {
-    return request.target ? `Target ${request.target}` : "Forecast run";
-  }
-
-  if (item.reportType === "hotspot_stability") {
-    return [request.from, request.to].filter(Boolean).join(" to ") || "Hotspot run";
-  }
-
-  return [request.from, request.to].filter(Boolean).join(" to ") || "Risk score run";
-}
-
-function getHistorySummary(item) {
-  const rows = getResultsByCrimeType(item);
-
-  if (!rows.length) {
-    return "No persisted result summary available.";
-  }
-
-  const [crimeType, payload] = rows[0];
-
-  if (item.reportType === "risk_forecast") {
-    return `${crimeType}: expected ${payload?.forecast?.expected_count ?? "—"}, ${payload?.forecast?.predicted_band || "unknown"} band`;
-  }
-
-  if (item.reportType === "hotspot_stability") {
-    return `${crimeType}: avg jaccard ${payload?.summary?.average_jaccard ?? "—"}, persistent ${payload?.summary?.persistent_hotspot_count ?? "—"}`;
-  }
-
-  return `${crimeType}: score ${payload?.risk_score ?? payload?.score ?? "—"}, ${payload?.band || "unknown"} band`;
-}
-
-function getResultsByCrimeType(resultWrapper) {
-  return Object.entries(resultWrapper?.result?.results_by_crime_type || {});
-}
-
-function getRunFormTitle(activeSubtab) {
-  if (activeSubtab === "run-forecast") {
-    return "Run Forecast";
-  }
-
-  if (activeSubtab === "run-hotspots") {
-    return "Run Hotspots";
-  }
-
-  return "Run Risk";
-}
-
-function getMetricPanelTitle(subtab) {
-  if (subtab === "forecast" || subtab === "run-forecast") {
-    return "Forecast Result";
-  }
-
-  if (subtab === "hotspots" || subtab === "run-hotspots") {
-    return "Hotspot Result";
-  }
-
-  return "Risk Result";
-}
-
-function getReportTypeLabel(subtab) {
-  if (subtab === "forecast" || subtab === "run-forecast") {
-    return "risk_forecast";
-  }
-
-  if (subtab === "hotspots" || subtab === "run-hotspots") {
-    return "hotspot_stability";
-  }
-
-  return "risk_score";
-}
-
-function toReadableLabel(value) {
-  return String(value || "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (match) => match.toUpperCase());
-}
-
-function formatViewerValue(value) {
-  if (value === null || value === undefined || value === "") {
+function toDisplayValue(value) {
+  if (value === undefined || value === null || value === "") {
     return "—";
-  }
-
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
   }
 
   return String(value);
 }
 
-function CoordinateCard({ label, value }) {
-  return (
-    <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/80 p-4">
-      <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">{label}</p>
-      <p className="mt-3 text-lg font-semibold text-cyan-50">{formatCoordinate(value)}</p>
-    </div>
+function extractRiskScoreValue(payload) {
+  const score = Number(
+    payload?.risk_result?.risk_score ??
+      payload?.riskResult?.riskScore ??
+      payload?.risk_result?.score ??
+    payload?.risk_score ??
+      payload?.riskScore ??
+      payload?.score ??
+      payload?.risk?.risk_score ??
+      payload?.risk?.riskScore ??
+      payload?.risk?.score,
   );
+
+  return Number.isFinite(score) ? score : null;
 }
 
-function PreferenceRow({ label, value }) {
-  return (
-    <div className="rounded-[18px] border border-white/5 bg-[#030b0e]/80 p-4">
-      <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/40">{label}</p>
-      <p className="mt-3 text-base font-semibold text-cyan-50">{value}</p>
-    </div>
-  );
+function formatRiskScore(score) {
+  return Number.isFinite(score) ? `${Math.round(score)}%` : "Unavailable";
 }
 
-function formatCount(value) {
-  return Number(value || 0).toLocaleString("en-GB");
+function getRiskScoreTextClass(score) {
+  if (!Number.isFinite(score)) {
+    return "text-cyan-50";
+  }
+
+  if (score > 60) {
+    return "text-red-300";
+  }
+
+  if (score > 30) {
+    return "text-orange-300";
+  }
+
+  return "text-[#39ef7d]";
 }
 
-function formatCoordinate(value) {
-  return Number(value || 0).toFixed(6);
+function getForecastBandTextClass(band) {
+  const normalizedBand = String(band || "").toLowerCase();
+
+  if (normalizedBand === "red") {
+    return "text-red-300";
+  }
+
+  if (normalizedBand === "orange" || normalizedBand === "amber") {
+    return "text-orange-300";
+  }
+
+  return "text-[#39ef7d]";
+}
+
+function formatMetricNumber(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : "—";
 }
 
 function formatTimestamp(value) {
   if (!value) {
-    return "Unknown timestamp";
+    return "No timestamp";
   }
 
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function formatTravelMode(value) {
-  if (!value) {
-    return "No mode";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
   }
 
-  return value
-    .split(/[_\s-]+/)
-    .filter(Boolean)
-    .map((part) => part[0].toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function formatCrimeTypeLabel(value) {
-  if (!value) {
-    return "Unknown";
-  }
-
-  return value
-    .split(/[_-]+/)
-    .join(" ")
-    .replace(/\b\w/g, (match) => match.toUpperCase());
+  return date.toLocaleString();
 }
 
 export default ViewWatchlistPage;

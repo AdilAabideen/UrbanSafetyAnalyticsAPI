@@ -1,8 +1,4 @@
-import { createMonthOptionsFromRange } from "../constants/crimeFilterOptions";
-
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
-
-export const WATCHLIST_WINDOW_MONTH_OPTIONS = createMonthOptionsFromRange("2023-04", "2026-01").reverse();
 
 export const WATCHLIST_CRIME_TYPE_OPTIONS = [
   { value: "Violence and sexual offences", label: "Violence and sexual offences", count: 387354 },
@@ -23,10 +19,19 @@ export const WATCHLIST_CRIME_TYPE_OPTIONS = [
 
 export const WATCHLIST_MODE_OPTIONS = ["Walking", "Cycling", "Driving"];
 
+function toMonthInputValue(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
 export function createDefaultWatchlistForm() {
+  const now = new Date();
+  const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const sixMonthsAgo = new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 5, 1);
+
   return {
     name: "",
-    windowMonths: WATCHLIST_WINDOW_MONTH_OPTIONS.length,
+    startMonth: toMonthInputValue(sixMonthsAgo),
+    endMonth: toMonthInputValue(currentMonth),
     crimeTypes: [],
     mode: "",
     minLon: "",
@@ -37,7 +42,44 @@ export function createDefaultWatchlistForm() {
 }
 
 export function toCrimeTypePayloadValue(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "").trim();
+}
+
+export function monthValueToApiDateSecond(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  if (/^\d{4}-\d{2}$/.test(value)) {
+    return `${value}-01`;
+  }
+
+  return value;
+}
+
+export function monthValueToApiDate(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  if (/^\d{4}-\d{2}$/.test(value)) {
+    return `${value}`;
+  }
+
+  return value;
+}
+
+export function apiDateToMonthValue(value) {
+  const text = String(value || "");
+  return text.length >= 7 ? text.slice(0, 7) : "";
 }
 
 export function parseBboxFromForm(form) {

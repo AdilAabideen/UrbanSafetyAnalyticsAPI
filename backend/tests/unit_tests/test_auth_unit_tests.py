@@ -10,6 +10,7 @@ from app.services.auth_service import (
 
 
 def test_password_hashing_and_verification():
+    """Ensure password hashing is one-way and verification works for valid/invalid inputs."""
     raw_password = "UnitPass-123"
     password_hash = hash_password(raw_password)
 
@@ -19,6 +20,7 @@ def test_password_hashing_and_verification():
 
 
 def test_jwt_token_creation_and_decoding():
+    """Ensure JWT creation embeds subject and decode returns expected claims."""
     token = create_access_token(42)
     payload = decode_access_token(token)
 
@@ -27,6 +29,7 @@ def test_jwt_token_creation_and_decoding():
 
 
 def test_invalid_token_decode_is_rejected():
+    """Ensure malformed token payloads are rejected with an auth-domain error."""
     with pytest.raises(AuthenticationError) as exc_info:
         decode_access_token("not-a-valid-jwt")
 

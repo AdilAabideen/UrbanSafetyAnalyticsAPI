@@ -1,149 +1,104 @@
-# Tile Risk Calculation Algorithm
+# Tile Risk Calculation Algorithm (v2)
 
-This document explains how risk is calculated for `GET /tiles/roads/{z}/{x}/{y}.mvt` when `includeRisk=true`.
+This document describes how `GET /tiles/roads/{z}/{x}/{y}.mvt` computes risk after the v2 update.
 
-## 1) Request Gate and Inputs
+## API Contract
 
-Risk mode is enabled only when `includeRisk=true`.
+Query parameters:
+- `startMonth` (optional, `YYYY-MM`)
+- `endMonth` (optional, `YYYY-MM`)
+- `crimeType` (optional)
+- `crime` (optional boolean)
+- `collisions` (optional boolean)
+- `userReportedEvents` (optional boolean)
 
-Required time filter in risk mode:
-- either `month=YYYY-MM`
-- or `startMonth=YYYY-MM` and `endMonth=YYYY-MM`
+Removed parameters:
+- `month` is removed. If provided, API returns `400`.
+- `includeRisk` is removed.
 
-Optional:
-- `crimeType` (filters crime and user-reported crime signal)
+Risk-mode rules:
+- If all toggles are omitted/false, the endpoint returns roads-only tiles.
+- If any toggle is `true`, both `startMonth` and `endMonth` are required.
 
-Validation behavior:
-- tile `x,y` must be valid for zoom `z`
-- cannot pass both `month` and range
-- range must include both `startMonth` and `endMonth`
-- `startMonth <= endMonth`
+## Scoring Backbone (Retained from v1)
 
-## 2) Data Sources Used
+The final score still follows the original method:
+1. Build per-segment risk components.
+2. Convert each enabled component to percentile via `percent_rank()`.
+3. Weighted combine enabled component percentiles.
+4. Normalize again with `percent_rank()` to get final `risk_score` (0-100).
+5. Banding:
+   - `green`: `< 30`
+   - `orange`: `>= 30` and `< 50`
+   - `red`: `>= 50`
 
-The SQL combines these tables:
-- `road_segments` (geometry, segment length)
-- `segment_month_type_stats` (official crimes by segment/month/type)
-- `user_reported_events` + `user_reported_crime_details` (approved user-reported signal)
-- `segment_month_collision_stats` (collisions and casualties by segment/month)
+## Component Metrics
 
-## 3) Constants (Current Weights)
+### 1) Crime Component
 
-From `backend/app/schemas/tiles_schemas.py`:
-- `CRIME_WEIGHT = 0.55`
-- `COLLISION_WEIGHT = 0.45`
-- `SLIGHT_CASUALTY_WEIGHT = 0.5`
-- `SERIOUS_CASUALTY_WEIGHT = 2.0`
-- `FATAL_CASUALTY_WEIGHT = 5.0`
-- `USER_REPORTED_CRIME_WEIGHT = 0.10`
-- `ANONYMOUS_USER_REPORT_WEIGHT = 0.5`
-- `REPEAT_AUTHENTICATED_REPORT_WEIGHT = 0.25`
-- `USER_REPORTED_SIGNAL_CAP = 3.0`
-- `RISK_LENGTH_FLOOR_M = 100.0`
+`CrimeRisk_i = alpha * HarmDensity_i + (1 - alpha) * Persistence_i`
 
-## 4) Computation Pipeline
+Where:
+- `HarmDensity_i = SUM_t,c(recency_weight_crime(t) * harm_weight(c) * count_i,t,c) / exposure_i`
+- `Persistence_i = active_official_crime_months_i / months_in_window`
+- `exposure_i = max(length_m, risk_length_floor_m) / 1000`
 
-1. Build monthly crime totals per segment:
-   - `official_crimes = SUM(segment_month_type_stats.crime_count)`
-   - apply month/range filter
-   - apply `crimeType` filter if provided
+Notes:
+- Harm weighting uses fixed code constants by police crime type.
+- Recency weight is exponential: `exp(-lambda * age_in_months)`.
+- Persistence uses official crime months only.
 
-2. Build approved user-reported crime signal per segment:
-   - per `(segment_id, month, crime_type)`:
-     - `anonymous_reports`
-     - `authenticated_reports`
-     - `distinct_authenticated_users`
-   - per-row signal:
+### 2) Collision Component
 
-```text
-USER_REPORTED_CRIME_WEIGHT * LEAST(
-  USER_REPORTED_SIGNAL_CAP,
-  distinct_authenticated_users
-  + (ANONYMOUS_USER_REPORT_WEIGHT * anonymous_reports)
-  + (REPEAT_AUTHENTICATED_REPORT_WEIGHT
-     * GREATEST(authenticated_reports - distinct_authenticated_users, 0))
-)
-```
+Base density:
+- `collision_severity_points = collisions + slight*w_slight + serious*w_serious + fatal*w_fatal`
+- `collision_density = SUM_t(recency_weight_collision(t) * collision_severity_points_t) / exposure_i`
 
-   - segment-level signal is the sum of the above across grouped rows:
-     - `user_reported_crime_signal = SUM(per-row signal)`
+Road-context multiplier:
+- `CollisionRisk_i = collision_density_i * RoadFactor_i`
+- `RoadFactor_i = RoadClassFactor_i * JunctionFactor_i * CurveFactor_i`
 
-3. Build collision totals per segment:
-   - `collisions`
-   - `casualties`
-   - `fatal_casualties`
-   - `serious_casualties`
-   - `slight_casualties`
-   - same month/range filter as crime
+Road-factor inputs:
+- `RoadClassFactor`: based on OSM highway class.
+- `JunctionFactor`: endpoint-nearby segment count proxy.
+- `CurveFactor`: sinuosity proxy (`segment_length / endpoint_distance`).
 
-4. Compute base risk metrics per segment:
+### 3) User-Reported Events Component
 
-```text
-crimes = official_crimes + user_reported_crime_signal
-normalized_km = GREATEST(length_m, RISK_LENGTH_FLOOR_M) / 1000
-crimes_per_km = crimes / normalized_km
+User reports are clustered first, then scored:
+- Cluster key: same day + same crime type + same segment neighborhood
+- Segment neighborhood includes same segment and nearby segments (distance threshold)
 
-collision_severity_points =
-  collisions
-  + (slight_casualties  * SLIGHT_CASUALTY_WEIGHT)
-  + (serious_casualties * SERIOUS_CASUALTY_WEIGHT)
-  + (fatal_casualties   * FATAL_CASUALTY_WEIGHT)
+Cluster score:
+- `score_k = min(cap, a*D_k + b*A_k + c*R_k)`
+  - `D_k`: distinct authenticated users
+  - `A_k`: anonymous reports
+  - `R_k`: repeat authenticated reports
 
-collision_density = collision_severity_points / normalized_km
-```
+Segment user risk:
+- `UserRisk_i = SUM_k(recency_weight_user_reports(t_k) * score_k)`
 
-5. Restrict ranking population to active roads:
-   - active roads are only segments where `crimes > 0 OR collisions > 0`
+## Toggle-Aware Fusion
 
-6. Percentile-rank both risk dimensions on active roads:
-   - `crime_pct = percent_rank(crimes_per_km)`
-   - `collision_pct = percent_rank(collision_density)`
+Each component is independent. Disabled components are excluded entirely.
 
-7. Combine into weighted risk percentile:
+Let enabled components be subset `E`.
 
-```text
-pct = (crime_pct * CRIME_WEIGHT) + (collision_pct * COLLISION_WEIGHT)
-raw_safety_score = pct * 100
-```
+`combined_pct_i = SUM_{j in E}(w_j * pct_{i,j}) / SUM_{j in E}(w_j)`
 
-8. Normalize again across active roads:
-   - `safety_score = percent_rank(raw_safety_score) * 100`
-   - this produces a 0-100 final relative score
+Then final score:
+- `risk_score_i = 100 * percent_rank(combined_pct_i)`
 
-9. Banding:
-   - `red` if `safety_score >= 50`
-   - `orange` if `safety_score >= 30` and `< 50`
-   - `green` otherwise
+This keeps results comparable while respecting user-selected toggles.
 
-## 5) Important Interpretation Notes
+## Tile Output Fields
 
-- The score is relative percentile ranking, not an absolute danger probability.
-- Ranking population is all active segments in the computed dataset, then tile geometry is clipped for output.
-- Segments with no active signal get `NULL` in ranking CTEs, then are `COALESCE`d to zeros in output, which typically yields low-risk (`green`) display.
-- `crimeType` affects official crime and user-reported crime signal; it does not filter collisions.
+Risk output is intentionally minimal:
+- `risk_score`
+- `band`
 
-## 6) Output Attributes per Road Feature
-
-Each vector tile feature can include:
-- `crimes`, `official_crimes`, `user_reported_crime_signal`, `approved_user_reports`
-- `crimes_per_km`
-- `collisions`, `casualties`, `fatal_casualties`, `serious_casualties`, `slight_casualties`
-- `collision_severity_points`, `collision_density`
-- `crime_pct`, `collision_pct`, `pct`, `safety_score`, `band`
-
-## 7) Short Worked Example
-
-Given one segment:
-- `official_crimes=12`
-- `user_reported_crime_signal=1.5`
-- `length_m=400`
-- `collisions=4`, `slight=6`, `serious=1`, `fatal=0`
-
-Then:
-- `crimes = 13.5`
-- `normalized_km = max(400,100)/1000 = 0.4`
-- `crimes_per_km = 13.5 / 0.4 = 33.75`
-- `collision_severity_points = 4 + (6*0.5) + (1*2.0) + (0*5.0) = 9`
-- `collision_density = 9 / 0.4 = 22.5`
-
-Final `safety_score` depends on where `33.75` and `22.5` rank against other active segments in the same run.
+Road identity fields remain for rendering:
+- `segment_id`
+- `highway`
+- `name`
+- geometry (`geom`)

@@ -1,38 +1,50 @@
 # Tiles.py
 from typing import Optional
-from fastapi import APIRouter, Depends, Path, Query, Response
+
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from sqlalchemy.orm import Session
 
-from ..schemas.tiles_schemas import MVT_MEDIA_TYPE, PBF_MEDIA_TYPE, TILE_CACHE_CONTROL
 from ..db import get_db
+from ..errors import ValidationError
 from ..schemas.enums import CrimeType
+from ..schemas.tiles_schemas import MVT_MEDIA_TYPE, TILE_CACHE_CONTROL
+from ..services.tile_service import get_road_tiles_mvt as get_road_tiles_mvt_service
 
-from ..services.tile_service import get_road_tiles_mvt
 router = APIRouter(tags=["tiles"])
 
 
 @router.get("/tiles/roads/{z}/{x}/{y}.mvt")
 def get_road_tiles_mvt(
+    request: Request,
     z: int = Path(..., ge=0, le=22),
     x: int = Path(..., ge=0),
     y: int = Path(..., ge=0),
-    month: Optional[str] = Query(None),
     startMonth: Optional[str] = Query(None),
     endMonth: Optional[str] = Query(None),
     crimeType: Optional[CrimeType] = Query(None),
-    includeRisk: bool = Query(False),
+    crime: Optional[bool] = Query(None),
+    collisions: Optional[bool] = Query(None),
+    userReportedEvents: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
 ):
-    tiles_bytes = get_road_tiles_mvt(
+    if "month" in request.query_params:
+        raise ValidationError(
+            error="MONTH_PARAMETER_REMOVED",
+            message="month has been removed; use startMonth and endMonth instead",
+            details={"field": "month"},
+        )
+
+    tiles_bytes = get_road_tiles_mvt_service(
         z=z,
         x=x,
         y=y,
-        month=month,
         startMonth=startMonth,
         endMonth=endMonth,
         crimeType=crimeType,
-        includeRisk=includeRisk,
-        db=db
+        crime=crime,
+        collisions=collisions,
+        userReportedEvents=userReportedEvents,
+        db=db,
     )
 
     return Response(
@@ -40,5 +52,3 @@ def get_road_tiles_mvt(
         media_type=MVT_MEDIA_TYPE,
         headers={"Cache-Control": TILE_CACHE_CONTROL},
     )
-
-

@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import InternalError, OperationalError
 from sqlalchemy.orm import Session
 
-from .auth_utils import bearer_scheme, decode_access_token
+from ..services.auth_service import bearer_scheme, decode_access_token
 from .report_event_utils import (
     event_kind_query,
     reporter_type_query,

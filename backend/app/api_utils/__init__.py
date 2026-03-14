@@ -3,7 +3,7 @@
 __all__ = [
     "analytics_db_utils",
     "analytics_utils",
-    "auth_utils",
+    "auth_repository",
     "crime_utils",
     "crime_utils_db",
     "roads_utils",

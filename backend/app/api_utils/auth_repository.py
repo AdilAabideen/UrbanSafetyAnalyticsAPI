@@ -1,73 +1,51 @@
-import os
-from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 
-import bcrypt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from sqlalchemy import text
+from sqlalchemy.exc import InternalError, OperationalError
 from sqlalchemy.orm import Session
 
-from ..db import get_db
+from ..errors import DependencyError
+from ..db import execute
+
+def get_user_by_email(db: Session, email: str) -> Optional[Dict[str, Any]]:
+    """Get a user by email."""
+    query = text(
+        """
+        SELECT
+            u.id,
+            u.email,
+            u.is_admin,
+            u.created_at
+        FROM users u
+        WHERE u.email = :email
+        LIMIT 1
+        """
+    )
+    row = execute(db, query, {"email": email}).mappings().first()
+    return dict(row) if row else None
 
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
-DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@admin.com")
-DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "adminpassword")
-
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_password(password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
-
-
-def create_access_token(user_id: int) -> str:
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
-    payload = {
-        "sub": str(user_id),
-        "exp": expires_at,
-    }
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+def get_user_with_password_by_email(db: Session, email: str) -> Optional[Dict[str, Any]]:
+    """Get a user with password by email."""
+    query = text(
+        """
+        SELECT
+            u.id,
+            u.email,
+            u.password_hash,
+            u.is_admin,
+            u.created_at
+        FROM users u
+        WHERE u.email = :email
+        LIMIT 1
+        """
+    )
+    row = execute(db, query, {"email": email}).mappings().first()
+    return dict(row) if row else None
 
 
-def decode_access_token(token: str) -> dict:
-    try:
-        return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-
-
-def col(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
-):
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    payload = decode_access_token(credentials.credentials)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+def get_user_by_id(db: Session, user_id: int) -> Optional[Dict[str, Any]]:
+    """Get a user by ID."""
     query = text(
         """
         SELECT
@@ -80,20 +58,63 @@ def col(
         LIMIT 1
         """
     )
-    user = db.execute(query, {"user_id": int(user_id)}).mappings().first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return dict(user)
+    row = execute(db, query, {"user_id": user_id}).mappings().first()
+    return dict(row) if row else None
 
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
-):
-    """Backwards-compatible auth dependency name used by API routers."""
-    return col(credentials=credentials, db=db)
+def create_user(db: Session, email: str, password_hash: str) -> Dict[str, Any]:
+    """Create a user."""
+    query = text(
+        """
+        INSERT INTO users (email, password_hash, is_admin)
+        VALUES (:email, :password_hash, FALSE)
+        RETURNING id, email, is_admin, created_at
+        """
+    )
+    row = execute(
+        db,
+        query,
+        {
+            "email": email,
+            "password_hash": password_hash,
+        },
+    ).mappings().first()
+    return dict(row)
+
+
+def update_user(
+    db: Session,
+    user_id: int,
+    *,
+    email: Optional[str] = None,
+    password_hash: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Update a user."""
+    update_fields = []
+    query_params: Dict[str, Any] = {"user_id": user_id}
+
+    # Add the email to the update fields if it is provided.
+    if email is not None:
+        update_fields.append("email = :email")
+        query_params["email"] = email
+
+    # Add the password hash to the update fields if it is provided.
+    if password_hash is not None:
+        update_fields.append("password_hash = :password_hash")
+        query_params["password_hash"] = password_hash
+
+    # If no update fields are provided, return the user.
+    if not update_fields:
+        return get_user_by_id(db, user_id)
+
+    # Update the user in the database.
+    query = text(
+        f"""
+        UPDATE users
+        SET {", ".join(update_fields)}
+        WHERE id = :user_id
+        RETURNING id, email, is_admin, created_at
+        """
+    )
+    row = execute(db, query, query_params).mappings().first()
+    return dict(row) if row else None

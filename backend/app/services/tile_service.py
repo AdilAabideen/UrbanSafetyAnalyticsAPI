@@ -6,36 +6,59 @@ from ..api_utils.tiles_repository import roads_with_risk_tile_query
 from ..db import execute as _execute
 from ..errors import ValidationError
 from ..schemas.tiles_schemas import (
-    ANONYMOUS_USER_REPORT_WEIGHT,
-    COLLISION_WEIGHT,
-    CRIME_WEIGHT,
+    ADJACENT_SEGMENT_DISTANCE_M,
+    COLLISION_COMPONENT_WEIGHT,
+    COLLISION_DECAY_LAMBDA,
+    CRIME_ALPHA,
+    CRIME_COMPONENT_WEIGHT,
+    CRIME_DECAY_LAMBDA,
+    CRIME_HARM_WEIGHTS,
+    CURVE_FACTOR_CAP,
+    CURVE_WEIGHT,
+    DEFAULT_CRIME_HARM_WEIGHT,
     FATAL_CASUALTY_WEIGHT,
-    REPEAT_AUTHENTICATED_REPORT_WEIGHT,
+    JUNCTION_DEGREE_WEIGHT,
+    JUNCTION_DISTANCE_M,
+    JUNCTION_FACTOR_CAP,
     RISK_LENGTH_FLOOR_M,
+    ROAD_CLASS_DEFAULT_FACTOR,
+    ROAD_CLASS_HIGH_FACTOR,
+    ROAD_CLASS_MEDIUM_FACTOR,
     SERIOUS_CASUALTY_WEIGHT,
     SLIGHT_CASUALTY_WEIGHT,
     TILE_BUFFER,
     TILE_EXTENT,
-    USER_REPORTED_CRIME_WEIGHT,
-    USER_REPORTED_SIGNAL_CAP,
+    USER_REPORT_ANONYMOUS_WEIGHT,
+    USER_REPORT_CLUSTER_CAP,
+    USER_REPORT_COMPONENT_WEIGHT,
+    USER_REPORT_DECAY_LAMBDA,
+    USER_REPORT_DISTINCT_AUTH_WEIGHT,
+    USER_REPORT_REPEAT_WEIGHT,
+    TileMonthFilter,
     TileQueryParams,
-    TileMonthFilter
 )
+
 
 # Service to get the road tiles in MVT format.
 def get_road_tiles_mvt(
     z: int,
     x: int,
     y: int,
-    month: Optional[str],
     startMonth: Optional[str],
     endMonth: Optional[str],
     crimeType: Optional[str],
-    includeRisk: bool,
+    crime: Optional[bool],
+    collisions: Optional[bool],
+    userReportedEvents: Optional[bool],
     db,
 ) -> bytes:
     """Build vector-tile bytes for roads with optional risk overlays."""
     validate_tile_coordinates(z, x, y)
+
+    include_crime = bool(crime)
+    include_collisions = bool(collisions)
+    include_user_reports = bool(userReportedEvents)
+    include_any_risk = include_crime or include_collisions or include_user_reports
 
     query_params: TileQueryParams = {
         "z": z,
@@ -44,32 +67,63 @@ def get_road_tiles_mvt(
         "extent": TILE_EXTENT,
         "buffer": TILE_BUFFER,
         "risk_length_floor_m": RISK_LENGTH_FLOOR_M,
-        "crime_weight": CRIME_WEIGHT,
-        "collision_weight": COLLISION_WEIGHT,
         "slight_casualty_weight": SLIGHT_CASUALTY_WEIGHT,
         "serious_casualty_weight": SERIOUS_CASUALTY_WEIGHT,
         "fatal_casualty_weight": FATAL_CASUALTY_WEIGHT,
-        "user_report_weight": USER_REPORTED_CRIME_WEIGHT,
-        "anonymous_report_weight": ANONYMOUS_USER_REPORT_WEIGHT,
-        "repeat_authenticated_report_weight": REPEAT_AUTHENTICATED_REPORT_WEIGHT,
-        "user_report_signal_cap": USER_REPORTED_SIGNAL_CAP,
+        "include_crime": include_crime,
+        "include_collisions": include_collisions,
+        "include_user_reports": include_user_reports,
+        "crime_alpha": CRIME_ALPHA,
+        "crime_decay_lambda": CRIME_DECAY_LAMBDA,
+        "collision_decay_lambda": COLLISION_DECAY_LAMBDA,
+        "user_report_decay_lambda": USER_REPORT_DECAY_LAMBDA,
+        "crime_component_weight": CRIME_COMPONENT_WEIGHT,
+        "collision_component_weight": COLLISION_COMPONENT_WEIGHT,
+        "user_report_component_weight": USER_REPORT_COMPONENT_WEIGHT,
+        "junction_distance_m": JUNCTION_DISTANCE_M,
+        "junction_degree_weight": JUNCTION_DEGREE_WEIGHT,
+        "junction_factor_cap": JUNCTION_FACTOR_CAP,
+        "curve_weight": CURVE_WEIGHT,
+        "curve_factor_cap": CURVE_FACTOR_CAP,
+        "adjacent_segment_distance_m": ADJACENT_SEGMENT_DISTANCE_M,
+        "user_report_distinct_auth_weight": USER_REPORT_DISTINCT_AUTH_WEIGHT,
+        "user_report_anonymous_weight": USER_REPORT_ANONYMOUS_WEIGHT,
+        "user_report_repeat_weight": USER_REPORT_REPEAT_WEIGHT,
+        "user_report_cluster_cap": USER_REPORT_CLUSTER_CAP,
+        "road_class_high_factor": ROAD_CLASS_HIGH_FACTOR,
+        "road_class_medium_factor": ROAD_CLASS_MEDIUM_FACTOR,
+        "road_class_default_factor": ROAD_CLASS_DEFAULT_FACTOR,
+        "harm_anti_social_behaviour": CRIME_HARM_WEIGHTS["Anti-social behaviour"],
+        "harm_bicycle_theft": CRIME_HARM_WEIGHTS["Bicycle theft"],
+        "harm_burglary": CRIME_HARM_WEIGHTS["Burglary"],
+        "harm_criminal_damage_and_arson": CRIME_HARM_WEIGHTS["Criminal damage and arson"],
+        "harm_drugs": CRIME_HARM_WEIGHTS["Drugs"],
+        "harm_other_crime": CRIME_HARM_WEIGHTS["Other crime"],
+        "harm_other_theft": CRIME_HARM_WEIGHTS["Other theft"],
+        "harm_possession_of_weapons": CRIME_HARM_WEIGHTS["Possession of weapons"],
+        "harm_public_order": CRIME_HARM_WEIGHTS["Public order"],
+        "harm_robbery": CRIME_HARM_WEIGHTS["Robbery"],
+        "harm_shoplifting": CRIME_HARM_WEIGHTS["Shoplifting"],
+        "harm_theft_from_the_person": CRIME_HARM_WEIGHTS["Theft from the person"],
+        "harm_vehicle_crime": CRIME_HARM_WEIGHTS["Vehicle crime"],
+        "harm_violence_and_sexual_offences": CRIME_HARM_WEIGHTS["Violence and sexual offences"],
+        "harm_default": DEFAULT_CRIME_HARM_WEIGHT,
     }
 
-    if includeRisk:
+    if include_any_risk:
         month_filter = resolve_month_filter(
-            month=month,
             startMonth=startMonth,
             endMonth=endMonth,
-            includeRisk=includeRisk,
+            require_window=True,
         )
         query_params.update(month_filter.params)
-        if crimeType:
+
+        if crimeType and (include_crime or include_user_reports):
             query_params["crime_type"] = crimeType
 
         tile_query = roads_with_risk_tile_query(
             z=z,
-            month_filter_clause=month_filter.clause or "",
-            include_crime_type_filter=bool(crimeType),
+            include_crime_type_filter=bool(crimeType and (include_crime or include_user_reports)),
         )
     else:
         tile_query = _roads_only_tile_query(z)
@@ -78,6 +132,7 @@ def get_road_tiles_mvt(
     if isinstance(tile, memoryview):
         return tile.tobytes()
     return tile or b""
+
 
 # Validate the tile coordinates for the given zoom level.
 def validate_tile_coordinates(
@@ -97,61 +152,45 @@ def validate_tile_coordinates(
 
 # Resolve the month filter for the risk tile requests.
 def resolve_month_filter(
-    month: Optional[str],
     startMonth: Optional[str],
     endMonth: Optional[str],
-    includeRisk: bool,
+    require_window: bool,
 ) -> TileMonthFilter:
-    """Build SQL month filter clauses and bind params for risk tile requests."""
+    """Build SQL month filter bind params for risk tile requests."""
 
-    # Either Pass a Month or a Range
-    if month and (startMonth or endMonth):
+    if not (startMonth or endMonth):
+        if require_window:
+            raise ValidationError(
+                error="MISSING_MONTH_FILTER",
+                message="startMonth and endMonth are required when risk toggles are enabled",
+                details={"field": "startMonth/endMonth"},
+            )
+        return TileMonthFilter(clause=None, params={})
+
+    if not (startMonth and endMonth):
         raise ValidationError(
             error="INVALID_MONTH_FILTER",
-            message="Use either month or startMonth/endMonth, not both",
-            details={"field": "month/startMonth/endMonth"},
+            message="startMonth and endMonth must be provided together",
+            details={"field": "startMonth/endMonth"},
         )
 
-    # If a Range is Passed, Ensure Both Start and End Months are Passed
-    if startMonth or endMonth:
-        if not (startMonth and endMonth):
-            raise ValidationError(
-                error="INVALID_MONTH_FILTER",
-                message="startMonth and endMonth must be provided together",
-                details={"field": "startMonth/endMonth"},
-            )
-
-        start_month_date = parse_month(startMonth, "startMonth")
-        end_month_date = parse_month(endMonth, "endMonth")
-        if start_month_date > end_month_date:
-            raise ValidationError(
-                error="INVALID_MONTH_RANGE",
-                message="startMonth must be less than or equal to endMonth",
-                details={"field": "startMonth/endMonth"},
-            )
-
-        return TileMonthFilter(
-            clause="c.month BETWEEN :start_month_date AND :end_month_date",
-            params={
-                "start_month_date": start_month_date,
-                "end_month_date": end_month_date,
-            },
-        )
-
-    if month:
-        return TileMonthFilter(
-            clause="c.month = :month_date",
-            params={"month_date": parse_month(month, "month")},
-        )
-
-    if includeRisk:
+    start_month_date = parse_month(startMonth, "startMonth")
+    end_month_date = parse_month(endMonth, "endMonth")
+    if start_month_date > end_month_date:
         raise ValidationError(
-            error="MISSING_MONTH_FILTER",
-            message="month or startMonth/endMonth is required when includeRisk=true",
-            details={"field": "includeRisk"},
+            error="INVALID_MONTH_RANGE",
+            message="startMonth must be less than or equal to endMonth",
+            details={"field": "startMonth/endMonth"},
         )
 
-    return TileMonthFilter(clause=None, params={})
+    return TileMonthFilter(
+        clause="BETWEEN :start_month_date AND :end_month_date",
+        params={
+            "start_month_date": start_month_date,
+            "end_month_date": end_month_date,
+        },
+    )
+
 
 # Parse the month string into a date.
 def parse_month(month: str, field_name: str) -> date:

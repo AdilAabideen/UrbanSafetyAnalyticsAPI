@@ -6,20 +6,61 @@ function FilterComponent({
   crimeTypeOptions,
   outcomeOptions,
   lsoaOptions,
+  customFields,
   visibleCrimeCount,
   mode,
   onChange,
   onClear,
+  layout = "overlay",
+  title = "Crime Filters",
+  visibleLabel = "Visible crimes",
+  categorySectionTitle = "Crime Filters",
+  crimeTypeLabel = "Crime Type",
+  outcomeLabel = "Last Outcome Category",
+  lsoaLabel = "LSOA Name",
+  lsoaPlaceholder = "Search LSOA",
+  lsoaEmptyMessage = "No LSOA names available for this view yet.",
 }) {
   const hasActiveFilters = Object.values(filters).some(Boolean);
+  const isPanelLayout = layout === "panel";
+  const containerClassName = isPanelLayout
+    ? "flex h-full min-h-0 w-full flex-col gap-3 overflow-y-auto rounded-[24px] border border-cyan-200/10 bg-[#030b0e]/90 p-4 shadow-2xl"
+    : "pointer-events-auto flex w-[340px] max-h-[35%] max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto rounded-xl border border-cyan-200/10 bg-[#071316]/85 p-4 shadow-2xl backdrop-blur-md";
+  const categoryFields = customFields?.length
+    ? customFields
+    : [
+        {
+          key: "crimeType",
+          label: crimeTypeLabel,
+          value: filters.crimeType,
+          options: crimeTypeOptions,
+          placeholder: "All crime types",
+        },
+        {
+          key: "outcomeCategory",
+          label: outcomeLabel,
+          value: filters.outcomeCategory,
+          options: outcomeOptions,
+          placeholder: "All outcomes",
+        },
+        {
+          key: "lsoaName",
+          label: lsoaLabel,
+          value: filters.lsoaName,
+          options: lsoaOptions,
+          placeholder: lsoaPlaceholder,
+          emptyMessage: lsoaEmptyMessage,
+          allowCustomValue: true,
+        },
+      ];
 
   return (
-    <div className="pointer-events-auto flex w-[340px] max-w-[calc(100vw-2rem)] max-h-[35%] flex-col gap-3 overflow-y-auto rounded-xl border border-cyan-200/10 bg-[#071316]/85 p-4 shadow-2xl backdrop-blur-md">
+    <div className={containerClassName}>
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold tracking-wide text-cyan-50">Crime Filters</h2>
+          <h2 className="text-xl font-semibold tracking-wide text-cyan-50">{title}</h2>
           <p className="mt-1 text-xs text-cyan-100/60">
-            Visible crimes: {visibleCrimeCount} | Mode: {mode}
+            {visibleLabel}: {visibleCrimeCount} | Mode: {mode}
           </p>
         </div>
 
@@ -48,57 +89,22 @@ function FilterComponent({
 
       <section className="flex flex-col gap-3 rounded-lg bg-cyan-100/5 p-3">
         <h3 className="text-lg font-medium uppercase tracking-wider text-cyan-100/50">
-          Crime Filters
+          {categorySectionTitle}
         </h3>
-        <SearchSelectField
-          label="Crime Type"
-          value={filters.crimeType}
-          options={crimeTypeOptions}
-          placeholder="All crime types"
-          onChange={(value) => onChange("crimeType", value)}
-        />
-        <SearchSelectField
-          label="Last Outcome Category"
-          value={filters.outcomeCategory}
-          options={outcomeOptions}
-          placeholder="All outcomes"
-          onChange={(value) => onChange("outcomeCategory", value)}
-        />
-        <SearchSelectField
-          label="LSOA Name"
-          value={filters.lsoaName}
-          options={lsoaOptions}
-          placeholder="Search LSOA"
-          emptyMessage="No LSOA names available for this map view yet."
-          allowCustomValue
-          onChange={(value) => onChange("lsoaName", value)}
-        />
+        {categoryFields.map((field) => (
+          <SearchSelectField
+            key={field.key}
+            label={field.label}
+            value={field.value ?? filters[field.key] ?? ""}
+            options={field.options || []}
+            placeholder={field.placeholder || "Search"}
+            emptyMessage={field.emptyMessage}
+            allowCustomValue={Boolean(field.allowCustomValue)}
+            onChange={(value) => onChange(field.key, value)}
+          />
+        ))}
       </section>
     </div>
-  );
-}
-
-function SelectFilterField({ label, value, options, placeholder, onChange }) {
-  return (
-    <label className="flex flex-col gap-2">
-      <span className="text-sm font-medium uppercase tracking-wider text-cyan-100/50">
-        {label}
-      </span>
-      <div className="rounded-md border border-cyan-200/10 bg-[#071316]/70 px-3 py-2">
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="w-full bg-transparent text-sm font-medium text-cyan-50 outline-none"
-        >
-          <option value="">{placeholder}</option>
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-    </label>
   );
 }
 

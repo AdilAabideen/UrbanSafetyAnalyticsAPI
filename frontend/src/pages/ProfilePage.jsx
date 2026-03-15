@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
 function ProfilePage({
-  apiBaseUrl,
   loading,
   user,
   onRefresh,
@@ -9,26 +8,27 @@ function ProfilePage({
   onLogout,
   onBackToMap,
 }) {
-  const [email, setEmail] = useState(user?.email || "");
+  
+  const [email, setEmail] = useState(user?.user.email || "");
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
   useEffect(() => {
-    setEmail(user?.email || "");
-  }, [user?.email]);
+    setEmail(user?.user.email || "");
+  }, [user?.user.email]);
 
   const createdAtLabel = useMemo(() => {
-    if (!user?.created_at) {
+    if (!user?.user.created_at) {
       return "Unavailable";
     }
 
     return new Intl.DateTimeFormat(undefined, {
       dateStyle: "medium",
       timeStyle: "short",
-    }).format(new Date(user.created_at));
-  }, [user?.created_at]);
+    }).format(new Date(user?.user.created_at));
+  }, [user?.user.created_at]);
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -60,7 +60,7 @@ function ProfilePage({
 
     const payload = {};
 
-    if (email.trim() && email.trim() !== user?.email) {
+    if (email.trim() && email.trim() !== user?.user.email) {
       payload.email = email.trim();
     }
 
@@ -81,7 +81,7 @@ function ProfilePage({
 
     try {
       const updatedUser = await onUpdateProfile(payload);
-      setEmail(updatedUser.email);
+      setEmail(updatedUser.user.email);
       setPassword("");
       setFeedback({ tone: "success", text: "Profile updated successfully." });
     } catch (error) {
@@ -94,9 +94,9 @@ function ProfilePage({
     }
   }
 
-  if (loading || !user) {
+  if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#071316] px-4 py-10">
+      <div className="grid h-full w-full place-items-center bg-[#071316] px-4 py-10">
         <div className="w-full max-w-[420px] rounded-2xl border border-cyan-100/10 bg-[#030b0e] p-6 text-center shadow-2xl">
           <p className="text-sm text-cyan-100/60">Loading profile...</p>
         </div>
@@ -104,15 +104,38 @@ function ProfilePage({
     );
   }
 
+  if (!user) {
+    return (
+      <div className="grid h-full w-full place-items-center bg-[#071316] px-4 py-10">
+        <div className="w-full max-w-[420px] rounded-2xl border border-cyan-100/10 bg-[#030b0e] p-6 text-center shadow-2xl">
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-100/45">
+            Not signed in
+          </p>
+          <p className="mt-3 text-sm text-cyan-100/60">
+            Log in to view your profile.
+          </p>
+          <div className="mt-5 flex justify-center gap-3">
+            <ActionButton variant="primary" onClick={() => window.location.href = "/login"}>
+              Go to Login
+            </ActionButton>
+            <ActionButton variant="secondary" onClick={onBackToMap}>
+              Back to Map
+            </ActionButton>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#071316] px-4 py-10">
-      <section className="w-full max-w-[520px] rounded-2xl border border-cyan-100/10 bg-[#030b0e] p-6 shadow-2xl">
+    <div className="h-full w-full overflow-y-auto bg-[#071316] px-4 py-10">
+      <section className="mx-auto w-full max-w-[520px] rounded-2xl border border-cyan-100/10 bg-[#030b0e] p-6 shadow-2xl">
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-100/45">
               Profile
             </p>
-            <p className="mt-2 text-sm text-cyan-100/60">{apiBaseUrl}</p>
+            <p className="mt-2 text-sm text-cyan-100/60">Urban Risk Intelligence System</p>
           </div>
           <button
             type="button"
@@ -125,9 +148,9 @@ function ProfilePage({
         </div>
 
         <div className="mt-6 space-y-2 rounded-lg border border-cyan-100/10 bg-cyan-100/5 p-4 text-sm text-cyan-50">
-          <p>User ID: {user.id}</p>
-          <p>Email: {user.email}</p>
-          <p>Admin: {user.is_admin ? "Yes" : "No"}</p>
+          <p>User ID: {user?.user.id}</p>
+          <p>Email: {user?.user.email}</p>
+          <p>Admin: {user?.user.is_admin ? "Yes" : "No"}</p>
           <p>Created: {createdAtLabel}</p>
         </div>
 

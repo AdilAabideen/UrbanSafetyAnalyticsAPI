@@ -1,290 +1,144 @@
-from datetime import datetime
+# Tiles.py
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-
+from ..errors import ValidationError
+from ..services.tile_service import get_road_tiles_mvt as get_road_tiles_mvt_service
 
 router = APIRouter(tags=["tiles"])
 
-MVT_MEDIA_TYPE = "application/vnd.mapbox-vector-tile"
-PBF_MEDIA_TYPE = "application/x-protobuf"
-TILE_CACHE_CONTROL = "public, max-age=60"
-TILE_EXTENT = 4096
-TILE_BUFFER = 64
 
-
-def _tile_profile(z):
-    if z <= 8:
-        return {
-            "highways": ("motorway", "trunk", "primary"),
-            "simplify_tolerance": 80,
-        }
-    if z <= 11:
-        return {
-            "highways": ("motorway", "trunk", "primary", "secondary", "tertiary"),
-            "simplify_tolerance": 30,
-        }
-    if z <= 13:
-        return {
-            "highways": (
-                "motorway",
-                "trunk",
-                "primary",
-                "secondary",
-                "tertiary",
-                "residential",
-                "unclassified",
-                "service",
-            ),
-            "simplify_tolerance": 10,
-        }
-    return {
-        "highways": None,
-        "simplify_tolerance": 0,
-    }
-
-
-def _validate_tile_coordinates(z, x, y):
-    max_index = (1 << z) - 1
-    if x < 0 or y < 0 or x > max_index or y > max_index:
-        raise HTTPException(status_code=400, detail="Tile coordinates out of range for zoom level")
-
-
-def _parse_month(month):
-    try:
-        return datetime.strptime(month, "%Y-%m").date()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="month must be in YYYY-MM format") from exc
-
-
-def _resolve_month_filter(month, startMonth, endMonth, includeRisk):
-    if month and (startMonth or endMonth):
-        raise HTTPException(
-            status_code=400,
-            detail="Use either month or startMonth/endMonth, not both",
-        )
-
-    if startMonth or endMonth:
-        if not (startMonth and endMonth):
-            raise HTTPException(
-                status_code=400,
-                detail="startMonth and endMonth must be provided together",
-            )
-
-        start_month_date = _parse_month(startMonth)
-        end_month_date = _parse_month(endMonth)
-        if start_month_date > end_month_date:
-            raise HTTPException(
-                status_code=400,
-                detail="startMonth must be less than or equal to endMonth",
-            )
-
-        return (
-            "c.month BETWEEN :start_month_date AND :end_month_date",
-            {
-                "start_month_date": start_month_date,
-                "end_month_date": end_month_date,
+@router.get(
+    "/tiles/roads/{z}/{x}/{y}.mvt",
+    summary="This is an Endpoint to get the road tiles in MVT format with Risk Overlays",
+    description=(
+        "Returns a Mapbox Vector Tile (MVT) for roads in the requested slippy-map tile. "
+        "Risk scoring is optional and controlled by the `crime`, `collisions`, and "
+        "`userReportedEvents` toggles. When any toggle is enabled, both `startMonth` "
+        "and `endMonth` are required in `YYYY-MM` format."
+    ),
+    response_class=Response,
+    response_description="Binary Mapbox Vector Tile payload (`application/vnd.mapbox-vector-tile`).",
+    responses={
+        200: {
+            "description": "Binary Mapbox Vector Tile payload (`application/vnd.mapbox-vector-tile`).",
+            "content": {
+                "application/vnd.mapbox-vector-tile": {
+                    "schema": {"type": "string", "format": "binary"},
+                }
             },
-        )
-
-    if month:
-        return "c.month = :month_date", {"month_date": _parse_month(month)}
-
-    if includeRisk:
-        raise HTTPException(
-            status_code=400,
-            detail="month or startMonth/endMonth is required when includeRisk=true",
-        )
-
-    return None, {}
-
-
-def _execute(db, query, params):
-    try:
-        return db.execute(query, params)
-    except OperationalError as exc:
-        print(exc)
-        raise HTTPException(
-            status_code=503,
-            detail="Database unavailable. Check BACKEND_DATABASE_URL or DATABASE_URL and Postgres connectivity.",
-        ) from exc
-
-
-def _build_highway_filter_clause(highways):
-    if not highways:
-        return ""
-
-    quoted = ", ".join(f"'{highway}'" for highway in highways)
-    return f"AND rs.highway IN ({quoted})"
-
-
-def _build_geom_expression(simplify_tolerance):
-    if simplify_tolerance <= 0:
-        return "rs.geom"
-    return f"ST_Simplify(rs.geom, {simplify_tolerance})"
-
-
-def _roads_only_tile_query(z):
-    profile = _tile_profile(z)
-    highway_filter_clause = _build_highway_filter_clause(profile["highways"])
-    geom_expression = _build_geom_expression(profile["simplify_tolerance"])
-
-    return text(
-        f"""
-        WITH bounds AS (
-            SELECT ST_TileEnvelope(:z, :x, :y) AS geom
-        )
-        SELECT COALESCE(ST_AsMVT(mvt, 'roads', :extent, 'geom'), ''::bytea) AS tile
-        FROM (
-            SELECT
-                rs.id AS segment_id,
-                rs.highway,
-                rs.name,
-                ST_AsMVTGeom({geom_expression}, bounds.geom, :extent, :buffer, true) AS geom
-            FROM road_segments rs
-            CROSS JOIN bounds
-            WHERE rs.geom && bounds.geom
-              {highway_filter_clause}
-        ) AS mvt
-        WHERE geom IS NOT NULL
-        """
-    )
-
-
-def _roads_with_risk_tile_query(z, month_filter_clause, include_crime_type_filter):
-    profile = _tile_profile(z)
-    highway_filter_clause = _build_highway_filter_clause(profile["highways"])
-    geom_expression = _build_geom_expression(profile["simplify_tolerance"])
-    crime_type_clause = ""
-    if include_crime_type_filter:
-        crime_type_clause = "AND c.crime_type = :crime_type"
-
-    return text(
-        f"""
-        WITH bounds AS (
-            SELECT ST_TileEnvelope(:z, :x, :y) AS geom
-        ),
-        crime_counts AS (
-            SELECT
-                c.segment_id,
-                SUM(c.crime_count) AS crimes
-            FROM segment_month_type_stats c
-            WHERE {month_filter_clause}
-              AND c.segment_id IS NOT NULL
-              {crime_type_clause}
-            GROUP BY c.segment_id
-        ),
-        ranked_scores AS (
-            SELECT
-                rs.id AS segment_id,
-                COALESCE(cc.crimes, 0) AS crimes,
-                COALESCE(COALESCE(cc.crimes, 0) / NULLIF(rs.length_m / 1000.0, 0), 0) AS crimes_per_km,
-                percent_rank() OVER (
-                    ORDER BY COALESCE(COALESCE(cc.crimes, 0) / NULLIF(rs.length_m / 1000.0, 0), 0)
-                ) AS pct
-            FROM road_segments rs
-            LEFT JOIN crime_counts cc ON cc.segment_id = rs.id
-        )
-        SELECT COALESCE(ST_AsMVT(mvt, 'roads', :extent, 'geom'), ''::bytea) AS tile
-        FROM (
-            SELECT
-                rs.id AS segment_id,
-                rs.highway,
-                rs.name,
-                ranked_scores.crimes,
-                ranked_scores.crimes_per_km,
-                ranked_scores.pct,
-                CASE
-                    WHEN ranked_scores.pct >= 0.95 THEN 'red'
-                    WHEN ranked_scores.pct >= 0.80 THEN 'orange'
-                    ELSE 'green'
-                END AS band,
-                ST_AsMVTGeom({geom_expression}, bounds.geom, :extent, :buffer, true) AS geom
-            FROM road_segments rs
-            CROSS JOIN bounds
-            LEFT JOIN ranked_scores ON ranked_scores.segment_id = rs.id
-            WHERE rs.geom && bounds.geom
-              {highway_filter_clause}
-        ) AS mvt
-        WHERE geom IS NOT NULL
-        """
-    )
-
-
-def _build_tile_bytes(z, x, y, month, startMonth, endMonth, crimeType, includeRisk, db):
-    _validate_tile_coordinates(z, x, y)
-
-    query_params = {
-        "z": z,
-        "x": x,
-        "y": y,
-        "extent": TILE_EXTENT,
-        "buffer": TILE_BUFFER,
-    }
-
-    if includeRisk:
-        month_filter_clause, month_params = _resolve_month_filter(
-            month=month,
-            startMonth=startMonth,
-            endMonth=endMonth,
-            includeRisk=includeRisk,
-        )
-        query_params.update(month_params)
-        if crimeType:
-            query_params["crime_type"] = crimeType
-
-        tile_query = _roads_with_risk_tile_query(
-            z=z,
-            month_filter_clause=month_filter_clause,
-            include_crime_type_filter=bool(crimeType),
-        )
-    else:
-        tile_query = _roads_only_tile_query(z)
-
-    tile = _execute(db, tile_query, query_params).scalar_one()
-    if isinstance(tile, memoryview):
-        return tile.tobytes()
-    return tile or b""
-
-
-@router.get("/tiles/roads/{z}/{x}/{y}.mvt")
+        },
+        400: {
+            "description": (
+                "Invalid request. Examples: removed `month` or `crimeType`, invalid tile "
+                "coordinates, invalid month format, or missing month window when risk "
+                "toggles are enabled."
+            ),
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "error": {"type": "string"},
+                            "message": {"type": "string"},
+                            "details": {"type": "object"},
+                        },
+                    },
+                    "examples": {
+                        "month_removed": {
+                            "summary": "Removed month parameter",
+                            "value": {
+                                "error": "MONTH_PARAMETER_REMOVED",
+                                "message": "month has been removed; use startMonth and endMonth instead",
+                                "details": {"field": "month"},
+                            },
+                        },
+                        "missing_window": {
+                            "summary": "Missing risk month window",
+                            "value": {
+                                "error": "MISSING_MONTH_FILTER",
+                                "message": "startMonth and endMonth are required when risk toggles are enabled",
+                                "details": {"field": "startMonth/endMonth"},
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        503: {
+            "description": "Database dependency unavailable while generating tile.",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "error": {"type": "string"},
+                            "message": {"type": "string"},
+                            "details": {"type": "object"},
+                        },
+                    }
+                }
+            },
+        },
+    },
+)
 def get_road_tiles_mvt(
-    z: int = Path(..., ge=0, le=22),
-    x: int = Path(..., ge=0),
-    y: int = Path(..., ge=0),
-    month: Optional[str] = Query(None),
-    startMonth: Optional[str] = Query(None),
-    endMonth: Optional[str] = Query(None),
-    crimeType: Optional[str] = Query(None),
-    includeRisk: bool = Query(False),
+    request: Request,
+    z: int = Path(..., ge=0, le=22, description="Slippy-map zoom level (0-22)."),
+    x: int = Path(..., ge=0, description="Slippy-map tile X coordinate."),
+    y: int = Path(..., ge=0, description="Slippy-map tile Y coordinate."),
+    startMonth: Optional[str] = Query(
+        None,
+        description=(
+            "Inclusive start month for risk scoring in `YYYY-MM` format. "
+            "Required when any risk toggle is true."
+        ),
+    ),
+    endMonth: Optional[str] = Query(
+        None,
+        description=(
+            "Inclusive end month for risk scoring in `YYYY-MM` format. "
+            "Required when any risk toggle is true."
+        ),
+    ),
+    crime: Optional[bool] = Query(None, description="Include crime component in risk scoring."),
+    collisions: Optional[bool] = Query(None, description="Include collisions component in risk scoring."),
+    userReportedEvents: Optional[bool] = Query(
+        None,
+        description="Include user-reported events component in risk scoring.",
+    ),
     db: Session = Depends(get_db),
 ):
-    return Response(
-        content=_build_tile_bytes(z, x, y, month, startMonth, endMonth, crimeType, includeRisk, db),
-        media_type=MVT_MEDIA_TYPE,
-        headers={"Cache-Control": TILE_CACHE_CONTROL},
+    if "month" in request.query_params:
+        raise ValidationError(
+            error="MONTH_PARAMETER_REMOVED",
+            message="month has been removed; use startMonth and endMonth instead",
+            details={"field": "month"},
+        )
+    if "crimeType" in request.query_params:
+        raise ValidationError(
+            error="CRIME_TYPE_PARAMETER_REMOVED",
+            message="crimeType has been removed from tiles risk input",
+            details={"field": "crimeType"},
+        )
+
+    tiles_bytes = get_road_tiles_mvt_service(
+        z=z,
+        x=x,
+        y=y,
+        startMonth=startMonth,
+        endMonth=endMonth,
+        crime=crime,
+        collisions=collisions,
+        userReportedEvents=userReportedEvents,
+        db=db,
     )
 
-
-@router.get("/tiles/roads/{z}/{x}/{y}.pbf")
-def get_road_tiles_pbf(
-    z: int = Path(..., ge=0, le=22),
-    x: int = Path(..., ge=0),
-    y: int = Path(..., ge=0),
-    month: Optional[str] = Query(None),
-    startMonth: Optional[str] = Query(None),
-    endMonth: Optional[str] = Query(None),
-    crimeType: Optional[str] = Query(None),
-    includeRisk: bool = Query(False),
-    db: Session = Depends(get_db),
-):
     return Response(
-        content=_build_tile_bytes(z, x, y, month, startMonth, endMonth, crimeType, includeRisk, db),
-        media_type=PBF_MEDIA_TYPE,
-        headers={"Cache-Control": TILE_CACHE_CONTROL},
+        content=tiles_bytes,
+        media_type="application/vnd.mapbox-vector-tile",
+        headers={"Cache-Control": "public, max-age=60"},
     )

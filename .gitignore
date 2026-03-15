@@ -9,5 +9,8 @@ __pycache__/
 
 .pytest_cache/
 scripts/
+!scripts/
+scripts/*
+!scripts/repair_postgres.py
 
 temp/

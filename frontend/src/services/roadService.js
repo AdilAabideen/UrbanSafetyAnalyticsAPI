@@ -2,10 +2,21 @@ import { API_BASE_URL } from "../config/env";
 import { fetchJson, toFeatureCollection, toQueryString } from "./serviceUtils";
 
 export const roadsService = {
-  getVectorTilesUrl({ startMonth, endMonth } = {}) {
-    const params = new URLSearchParams({ includeRisk: "true"});
+  getVectorTilesUrl({
+    startMonth,
+    endMonth,
+    crime = true,
+    collisions = true,
+    userReportedEvents = true,
+    includeRisk = true,
+  } = {}) {
+    const params = new URLSearchParams();
     if (startMonth) params.set("startMonth", startMonth);
     if (endMonth) params.set("endMonth", endMonth);
+    params.set("crime", String(Boolean(crime)));
+    params.set("collisions", String(Boolean(collisions)));
+    params.set("userReportedEvents", String(Boolean(userReportedEvents)));
+    params.set("includeRisk", String(Boolean(includeRisk)));
     return `${API_BASE_URL}/tiles/roads/{z}/{x}/{y}.mvt?${params}`;
   },
 

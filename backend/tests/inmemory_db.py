@@ -1,3 +1,6 @@
+from collections import deque
+
+
 class InMemoryResult:
     def __init__(self, scalar=None, rows=None):
         self.scalar = scalar
@@ -24,13 +27,25 @@ class InMemoryResult:
 
 class InMemoryDB:
     def __init__(self, handlers):
-        self.handlers = handlers
+        self.handlers = {}
+        self.executed_sql = []
+        for needle, payload in handlers.items():
+            if isinstance(payload, list):
+                self.handlers[needle] = deque(payload)
+            else:
+                self.handlers[needle] = payload
 
     def execute(self, query, params):
         sql = str(query)
+        self.executed_sql.append(sql)
         for needle, payload in self.handlers.items():
             if needle not in sql:
                 continue
+
+            if isinstance(payload, deque):
+                if not payload:
+                    raise AssertionError(f"No remaining payloads for query needle: {needle}")
+                payload = payload.popleft()
 
             result = payload(params) if callable(payload) else payload
             return InMemoryResult(
@@ -39,3 +54,9 @@ class InMemoryDB:
             )
 
         raise AssertionError(f"Unexpected query in InMemoryDB: {sql}")
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None

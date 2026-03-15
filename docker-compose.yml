@@ -1,4 +1,20 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BACKEND_DATABASE_URL: postgresql+psycopg2://app:app@db:5432/urban_risk
+      JWT_SECRET_KEY: change-me
+      JWT_EXPIRE_MINUTES: 1440
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+
   db:
     build:
       context: .

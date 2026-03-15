@@ -133,6 +133,69 @@ Design pattern used across backend:
 - Risk score docs: `docs/watchlist-analytics-risk-score.md`
 - Risk score diagrams/index: `docs/analytics-risk-score-api-diagrams.md`
 
+## Assessor Quick Start
+
+### Prerequisites
+- Docker Desktop installed.
+- Docker Desktop running before executing any `docker compose` commands.
+
+### Start Everything (API + DB + Frontend)
+
+From repository root:
+
+```bash
+docker compose up --build -d
+```
+
+This starts:
+- PostgreSQL/PostGIS on `localhost:5432`
+- FastAPI backend on `localhost:8000`
+- Vite frontend on `localhost:5173`
+
+### Verify Services
+
+```bash
+docker compose ps
+```
+
+Expected: `db` is healthy and both `api` and `frontend` are up.
+
+### Open the App and API Docs
+
+- Frontend: `http://localhost:5173`
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+
+### Recommended Usage
+
+We recommend you use the frontend for assessment and demonstration, rather than calling endpoints manually first.
+Open `http://localhost:5173`, authenticate, then exercise map, watchlist, and analytics flows from the UI.
+Use Swagger (`/docs`) only when you want to inspect request/response contracts directly.
+
+### Shutdown
+
+Stop and remove containers:
+
+```bash
+docker compose down
+```
+
+Stop without removing:
+
+```bash
+docker compose stop
+```
+
+### If Docker Daemon Is Not Running
+
+If you see:
+- `Cannot connect to the Docker daemon ...`
+
+Then:
+1. Start Docker Desktop.
+2. Run `docker info` to verify daemon access.
+3. Retry `docker compose up --build -d`.
+
 ## Risk Scoring Design (Current Watchlist Analytics)
 
 Watchlist risk scoring is explainable, persisted, and comparison-aware:
@@ -152,6 +215,40 @@ Forecasting is intentionally lightweight:
 - strict month-coverage checks before returning output.
 
 ## Testing and Reliability
+
+### How To Run Tests
+
+Run tests from repository root.
+
+Activate your Python environment first (example):
+
+```bash
+source venv/bin/activate
+```
+
+Run the full suite:
+
+```bash
+pytest
+```
+
+Run smoke tests only:
+
+```bash
+pytest backend/tests/smoke_tests.py
+```
+
+Run integration tests only:
+
+```bash
+pytest backend/tests/integration_tests
+```
+
+Run unit tests only:
+
+```bash
+pytest backend/tests/unit_tests
+```
 
 ### Testing Strategy
 
@@ -175,8 +272,3 @@ Coverage emphasis is behavior- and contract-focused (validation, ownership, work
 - Ownership validation on user-scoped resources.
 - SQL parameterization and DB exception translation.
 - Spatial query constraints and pre-aggregations to reduce expensive runtime scans.
-
-## Notes
-
-This README intentionally excludes setup/run instructions for now.  
-Operational setup can be added later as a dedicated section once you finalize the preferred local and deployment workflow.

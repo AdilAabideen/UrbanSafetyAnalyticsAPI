@@ -12,7 +12,7 @@ import {
 } from "../utils/watchlistUtils";
 
 const PAGE_TABS = [
-  { id: "overview", label: "Overview" },
+  { id: "overview", label: "Overview and Edit" },
   { id: "risk-scoring", label: "Risk Scoring" },
   { id: "forecast", label: "Forecast" },
 ];

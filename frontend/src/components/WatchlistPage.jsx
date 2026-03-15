@@ -130,9 +130,7 @@ function WatchlistPage({ docsUrl, accessToken, onWatchlistCreated }) {
             <div className="border-b border-white/5 px-5 py-4">
               <p className="text-[11px] uppercase tracking-[0.35em] text-cyan-100/40">Watchlist Setup</p>
               <h2 className="mt-2 text-xl font-semibold text-cyan-50">Create Watchlist</h2>
-              <p className="mt-2 max-w-xl text-sm text-cyan-100/55">
-                The payload includes `start_month`, `end_month`, `crime_types`, and `travel_mode`.
-              </p>
+
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-3 py-0">

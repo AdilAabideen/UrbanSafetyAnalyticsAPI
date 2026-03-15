@@ -42,5 +42,17 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      FRONTEND_ENV_FILE: ${FRONTEND_ENV_FILE:-.env.assessor}
+    ports:
+      - "5173:5173"
+
 volumes:
   pgdata:

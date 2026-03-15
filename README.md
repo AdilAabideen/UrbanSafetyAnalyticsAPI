@@ -152,6 +152,8 @@ This starts:
 - FastAPI backend on `localhost:8000`
 - Vite frontend on `localhost:5173`
 
+Note: on a fresh clone/first run, database initialization imports a bundled seed dataset and can take a few minutes before services are fully ready.
+
 ### Verify Services
 
 ```bash

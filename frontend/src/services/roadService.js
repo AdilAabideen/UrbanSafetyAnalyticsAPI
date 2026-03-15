@@ -3,10 +3,9 @@ import { fetchJson, toFeatureCollection, toQueryString } from "./serviceUtils";
 
 export const roadsService = {
   getVectorTilesUrl({ startMonth, endMonth } = {}) {
-    const params = new URLSearchParams({ includeRisk: 'true'});
+    const params = new URLSearchParams({ includeRisk: "true"});
     if (startMonth) params.set("startMonth", startMonth);
     if (endMonth) params.set("endMonth", endMonth);
-
     return `${API_BASE_URL}/tiles/roads/{z}/{x}/{y}.mvt?${params}`;
   },
 

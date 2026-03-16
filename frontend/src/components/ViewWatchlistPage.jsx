@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import TopBar from "./TopBar";
+import WatchlistPolygonMap from "./watchlist/WatchlistPolygonMap";
 import WatchlistField from "./watchlist/WatchlistField";
 import WatchlistCrimeTypeMultiSelect from "./watchlist/WatchlistCrimeTypeMultiSelect";
 import WatchlistModeSelect from "./watchlist/WatchlistModeSelect";
@@ -12,9 +13,11 @@ import {
 } from "../utils/watchlistUtils";
 
 const PAGE_TABS = [
-  { id: "overview", label: "Overview and Edit" },
+  { id: "main", label: "Main" },
+  { id: "map", label: "Map" },
   { id: "risk-scoring", label: "Risk Scoring" },
   { id: "forecast", label: "Forecast" },
+  { id: "overview", label: "Overview and Edit" },
 ];
 
 function createEditForm(watchlist) {
@@ -69,7 +72,7 @@ function ViewWatchlistPage({
   onSelectWatchlist,
   onCreateNew,
 }) {
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState("main");
   const [watchlists, setWatchlists] = useState([]);
   const [selectedWatchlist, setSelectedWatchlist] = useState(null);
   const [editForm, setEditForm] = useState(createEditForm(null));
@@ -94,6 +97,14 @@ function ViewWatchlistPage({
   const [runningForecast, setRunningForecast] = useState(false);
   const [forecastActionMessage, setForecastActionMessage] = useState("");
   const [forecastResult, setForecastResult] = useState(null);
+  const [loadingBasicMetrics, setLoadingBasicMetrics] = useState(false);
+  const [basicMetricsResult, setBasicMetricsResult] = useState(null);
+  const [basicMetricsErrorMessage, setBasicMetricsErrorMessage] = useState("");
+  const [basicMetricsRefreshToken, setBasicMetricsRefreshToken] = useState(0);
+  const [loadingMapEvents, setLoadingMapEvents] = useState(false);
+  const [mapEventsResult, setMapEventsResult] = useState(null);
+  const [mapEventsErrorMessage, setMapEventsErrorMessage] = useState("");
+  const [mapEventsRefreshToken, setMapEventsRefreshToken] = useState(0);
 
   useEffect(() => {
     if (!accessToken) {
@@ -209,7 +220,103 @@ function ViewWatchlistPage({
     setRiskRefreshToken(0);
     setForecastActionMessage("");
     setForecastResult(null);
+    setLoadingBasicMetrics(false);
+    setBasicMetricsResult(null);
+    setBasicMetricsErrorMessage("");
+    setBasicMetricsRefreshToken(0);
+    setLoadingMapEvents(false);
+    setMapEventsResult(null);
+    setMapEventsErrorMessage("");
+    setMapEventsRefreshToken(0);
   }, [selectedWatchlist?.id]);
+
+  useEffect(() => {
+    if (activeTab !== "main" || !accessToken || !selectedWatchlist?.id) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    const loadBasicMetrics = async () => {
+      setLoadingBasicMetrics(true);
+      setBasicMetricsErrorMessage("");
+
+      try {
+        const response = await watchlistService.getWatchlistBasicMetrics(
+          selectedWatchlist.id,
+          accessToken,
+          { signal: controller.signal },
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setBasicMetricsResult(response);
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        setBasicMetricsResult(null);
+        setBasicMetricsErrorMessage(error?.message || "Failed to load basic metrics.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingBasicMetrics(false);
+        }
+      }
+    };
+
+    void loadBasicMetrics();
+
+    return () => {
+      controller.abort();
+    };
+  }, [accessToken, activeTab, basicMetricsRefreshToken, selectedWatchlist?.id]);
+
+  useEffect(() => {
+    if (activeTab !== "map" || !accessToken || !selectedWatchlist?.id) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    const loadMapEvents = async () => {
+      setLoadingMapEvents(true);
+      setMapEventsErrorMessage("");
+
+      try {
+        const response = await watchlistService.getWatchlistMapEvents(
+          selectedWatchlist.id,
+          accessToken,
+          { signal: controller.signal },
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setMapEventsResult(response);
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        setMapEventsResult(null);
+        setMapEventsErrorMessage(error?.message || "Failed to load map event overlays.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingMapEvents(false);
+        }
+      }
+    };
+
+    void loadMapEvents();
+
+    return () => {
+      controller.abort();
+    };
+  }, [accessToken, activeTab, mapEventsRefreshToken, selectedWatchlist?.id]);
 
   useEffect(() => {
     if (activeTab !== "risk-scoring" || !accessToken || !selectedWatchlist?.id) {
@@ -270,6 +377,29 @@ function ViewWatchlistPage({
     [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat].every((value) => Number.isFinite(value)) &&
     bbox.minLon < bbox.maxLon &&
     bbox.minLat < bbox.maxLat;
+  const selectedWatchlistBbox = {
+    minLon: parseOptionalNumber(selectedWatchlist?.minLon),
+    minLat: parseOptionalNumber(selectedWatchlist?.minLat),
+    maxLon: parseOptionalNumber(selectedWatchlist?.maxLon),
+    maxLat: parseOptionalNumber(selectedWatchlist?.maxLat),
+  };
+  const hasSelectedWatchlistBbox =
+    [
+      selectedWatchlistBbox.minLon,
+      selectedWatchlistBbox.minLat,
+      selectedWatchlistBbox.maxLon,
+      selectedWatchlistBbox.maxLat,
+    ].every((value) => Number.isFinite(value)) &&
+    selectedWatchlistBbox.minLon < selectedWatchlistBbox.maxLon &&
+    selectedWatchlistBbox.minLat < selectedWatchlistBbox.maxLat;
+  const selectedWatchlistPolygonPoints = hasSelectedWatchlistBbox
+    ? [
+        [selectedWatchlistBbox.minLon, selectedWatchlistBbox.minLat],
+        [selectedWatchlistBbox.maxLon, selectedWatchlistBbox.minLat],
+        [selectedWatchlistBbox.maxLon, selectedWatchlistBbox.maxLat],
+        [selectedWatchlistBbox.minLon, selectedWatchlistBbox.maxLat],
+      ]
+    : [];
 
   const canSave =
     Boolean(selectedWatchlist?.id) &&
@@ -362,7 +492,7 @@ function ViewWatchlistPage({
     }
 
     const confirmed = window.confirm(
-      `Delete watchlist \"${selectedWatchlist.name}\" (ID ${selectedWatchlist.id})?`,
+      `Delete watchlist "${selectedWatchlist.name}" (ID ${selectedWatchlist.id})?`,
     );
 
     if (!confirmed) {
@@ -411,6 +541,14 @@ function ViewWatchlistPage({
     setRiskRefreshToken((current) => current + 1);
   };
 
+  const handleRefreshBasicMetrics = () => {
+    setBasicMetricsRefreshToken((current) => current + 1);
+  };
+
+  const handleRefreshMapEvents = () => {
+    setMapEventsRefreshToken((current) => current + 1);
+  };
+
   const canRunForecast =
     Boolean(selectedWatchlist?.id) &&
     Boolean(forecastForm.startMonth) &&
@@ -442,7 +580,6 @@ function ViewWatchlistPage({
     };
 
     try {
-      console.log(payload);
       const response = await watchlistService.forecastWatchlistNextMonth(
         selectedWatchlist.id,
         payload,
@@ -488,7 +625,7 @@ function ViewWatchlistPage({
       />
 
       <div className="min-h-0 flex-1 p-4">
-        <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[360px,minmax(0,1fr)]">
+        <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[300px,minmax(0,1fr)]">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-[26px] border border-white/5 bg-[#030b0e]/90 shadow-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
               <div>
@@ -587,7 +724,26 @@ function ViewWatchlistPage({
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
               {selectedWatchlist ? (
-                activeTab === "overview" ? (
+                activeTab === "main" ? (
+                  <MainTab
+                    loadingBasicMetrics={loadingBasicMetrics}
+                    basicMetricsResult={basicMetricsResult}
+                    basicMetricsErrorMessage={basicMetricsErrorMessage}
+                    selectedWatchlist={selectedWatchlist}
+                    onRefreshBasicMetrics={handleRefreshBasicMetrics}
+                  />
+                ) : activeTab === "map" ? (
+                  <MapTab
+                    hasSelectedWatchlistBbox={hasSelectedWatchlistBbox}
+                    loadingMapEvents={loadingMapEvents}
+                    mapEventsErrorMessage={mapEventsErrorMessage}
+                    mapEventsResult={mapEventsResult}
+                    selectedWatchlist={selectedWatchlist}
+                    selectedWatchlistBbox={selectedWatchlistBbox}
+                    selectedWatchlistPolygonPoints={selectedWatchlistPolygonPoints}
+                    onRefreshMapEvents={handleRefreshMapEvents}
+                  />
+                ) : activeTab === "overview" ? (
                   <div className="space-y-5">
                     <div className="grid gap-3 lg:grid-cols-4">
                       {summaryCards.map((card) => (
@@ -702,6 +858,7 @@ function ViewWatchlistPage({
                     riskActionMessage={riskActionMessage}
                     riskRuns={riskRuns}
                     riskRunsErrorMessage={riskRunsErrorMessage}
+                    selectedWatchlist={selectedWatchlist}
                     onRefreshRuns={handleRefreshRiskRuns}
                     onRunRiskScore={handleRunRiskScore}
                   />
@@ -734,6 +891,227 @@ function ViewWatchlistPage({
   );
 }
 
+function MapTab({
+  hasSelectedWatchlistBbox,
+  loadingMapEvents,
+  mapEventsErrorMessage,
+  mapEventsResult,
+  onRefreshMapEvents,
+  selectedWatchlist,
+  selectedWatchlistBbox,
+  selectedWatchlistPolygonPoints,
+}) {
+  const crimeFeatures = Array.isArray(mapEventsResult?.crimes?.features)
+    ? mapEventsResult.crimes.features
+    : [];
+  const collisionFeatures = Array.isArray(mapEventsResult?.collisions?.features)
+    ? mapEventsResult.collisions.features
+    : [];
+  const userReportedFeatures = Array.isArray(mapEventsResult?.user_reported_events?.features)
+    ? mapEventsResult.user_reported_events.features
+    : [];
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Map Overlay</p>
+            <h3 className="mt-2 text-xl font-semibold text-cyan-50">Watchlist Aerial View</h3>
+            <p className="mt-1 text-sm text-cyan-100/60">
+              Event points and bbox overlay for watchlist #{selectedWatchlist?.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onRefreshMapEvents}
+            className="rounded-[14px] border border-cyan-100/10 bg-cyan-100/5 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
+          >
+            {loadingMapEvents ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-[12px] border border-white/5 bg-[#030b0e]/70 px-3 py-2 text-xs text-cyan-100/75">
+            <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-red-500" />
+            Crimes: <span className="font-semibold text-cyan-50">{crimeFeatures.length}</span>
+          </div>
+          <div className="rounded-[12px] border border-white/5 bg-[#030b0e]/70 px-3 py-2 text-xs text-cyan-100/75">
+            <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-blue-500" />
+            Collisions: <span className="font-semibold text-cyan-50">{collisionFeatures.length}</span>
+          </div>
+          <div className="rounded-[12px] border border-white/5 bg-[#030b0e]/70 px-3 py-2 text-xs text-cyan-100/75">
+            <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-green-500" />
+            User Reported: <span className="font-semibold text-cyan-50">{userReportedFeatures.length}</span>
+          </div>
+        </div>
+
+        {mapEventsErrorMessage ? (
+          <div className="mt-4 rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
+            {mapEventsErrorMessage}
+          </div>
+        ) : null}
+      </div>
+
+      {hasSelectedWatchlistBbox ? (
+        <div className="h-[540px] overflow-hidden rounded-[20px] border border-white/5 bg-[#020a0f]">
+          <WatchlistPolygonMap
+            collisionsFeatureCollection={mapEventsResult?.collisions}
+            crimesFeatureCollection={mapEventsResult?.crimes}
+            polygonPoints={selectedWatchlistPolygonPoints}
+            polygonClosed
+            readOnly
+            userReportedEventsFeatureCollection={mapEventsResult?.user_reported_events}
+          />
+        </div>
+      ) : (
+        <div className="rounded-[16px] border border-amber-300/30 bg-amber-950/60 px-4 py-4 text-sm text-amber-100">
+          This watchlist does not have a valid bbox yet. A map polygon needs: minLon &lt; maxLon and minLat
+          &lt; maxLat.
+          <div className="mt-2 text-xs text-amber-100/80">
+            Current values: minLon={toDisplayValue(selectedWatchlistBbox.minLon)}, minLat=
+            {toDisplayValue(selectedWatchlistBbox.minLat)}, maxLon={toDisplayValue(selectedWatchlistBbox.maxLon)},
+            maxLat={toDisplayValue(selectedWatchlistBbox.maxLat)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MainTab({
+  loadingBasicMetrics,
+  basicMetricsResult,
+  basicMetricsErrorMessage,
+  selectedWatchlist,
+  onRefreshBasicMetrics,
+}) {
+  const dangerousRoads = Array.isArray(basicMetricsResult?.most_dangerous_roads)
+    ? basicMetricsResult.most_dangerous_roads
+    : [];
+  const crimeCategoryBreakdown = Array.isArray(basicMetricsResult?.crime_category_breakdown)
+    ? basicMetricsResult.crime_category_breakdown
+    : [];
+  const maxCrimeCategoryCount = Math.max(
+    1,
+    ...crimeCategoryBreakdown.map((item) => Number(item?.count) || 0),
+  );
+  const startMonth = formatMonthLabel(selectedWatchlist?.preference?.startMonth);
+  const endMonth = formatMonthLabel(selectedWatchlist?.preference?.endMonth);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Main Analytics</p>
+            <h3 className="mt-2 text-xl font-semibold text-cyan-50">Watchlist Basic Metrics</h3>
+            <p className="mt-1 text-sm text-cyan-100/60">
+              Window: {startMonth} to {endMonth}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRefreshBasicMetrics}
+            className="rounded-[14px] border border-cyan-100/10 bg-cyan-100/5 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
+          >
+            {loadingBasicMetrics ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        {basicMetricsErrorMessage ? (
+          <div className="mt-4 rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
+            {basicMetricsErrorMessage}
+          </div>
+        ) : null}
+      </div>
+
+      {basicMetricsResult ? (
+        <>
+          <div className="grid gap-3 md:grid-cols-3">
+            <MetricCard
+              label="Number of Crimes"
+              value={toDisplayValue(basicMetricsResult.number_of_crimes)}
+            />
+            <MetricCard
+              label="Number of Collisions"
+              value={toDisplayValue(basicMetricsResult.number_of_collisions)}
+            />
+            <MetricCard
+              label="User Reported Events"
+              value={toDisplayValue(basicMetricsResult.number_of_user_reported_events)}
+            />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Most Dangerous Roads</p>
+              {dangerousRoads.length ? (
+                <div className="mt-3 space-y-3">
+                  {dangerousRoads.map((road, index) => (
+                    <div
+                      key={`${road.segment_id}-${index}`}
+                      className="rounded-[12px] border border-white/5 bg-[#071316]/70 p-3"
+                    >
+                      <p className="text-sm font-semibold text-cyan-50">
+                        {road.road_name || `Segment ${toDisplayValue(road.segment_id)}`}
+                      </p>
+                      <p className="mt-1 text-xs text-cyan-100/60">
+                        Danger Score: {formatMetricNumber(road.danger_score, 2)}
+                      </p>
+                      <p className="mt-1 text-xs text-cyan-100/60">
+                        Crimes {toDisplayValue(road.crime_count)} · Collisions {toDisplayValue(road.collision_count)} · User Reports{" "}
+                        {toDisplayValue(road.user_reported_event_count)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-cyan-100/60">No dangerous roads returned for this window.</p>
+              )}
+            </article>
+
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Crime Category Breakdown</p>
+              {crimeCategoryBreakdown.length ? (
+                <div className="mt-3 space-y-3">
+                  {crimeCategoryBreakdown.map((item, index) => {
+                    const count = Number(item?.count) || 0;
+                    const widthPct = Math.max(3, (count / maxCrimeCategoryCount) * 100);
+                    return (
+                      <div key={`${item?.crime_type || "crime"}-${index}`} className="space-y-1">
+                        <div className="flex items-center justify-between gap-3 text-xs">
+                          <span className="text-cyan-100/80">{item?.crime_type || "Unknown"}</span>
+                          <span className="font-semibold text-cyan-50">{toDisplayValue(item?.count)}</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-cyan-100/10">
+                          <div
+                            className="h-2 rounded-full bg-cyan-300/60"
+                            style={{ width: `${Math.min(100, widthPct)}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-cyan-100/60">No crime category breakdown returned for this window.</p>
+              )}
+            </article>
+          </div>
+        </>
+      ) : (
+        <div className="rounded-[16px] border border-dashed border-cyan-100/10 bg-[#030b0e]/65 px-4 py-5 text-sm text-cyan-100/60">
+          {loadingBasicMetrics
+            ? "Loading basic metrics..."
+            : "No basic metrics available yet. Click Refresh to load analytics for this watchlist."}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RiskScoringTab({
   computingRiskScore,
   latestRiskResult,
@@ -741,28 +1119,50 @@ function RiskScoringTab({
   riskActionMessage,
   riskRuns,
   riskRunsErrorMessage,
+  selectedWatchlist,
   onRefreshRuns,
   onRunRiskScore,
 }) {
+  const resolvedLatestResult = latestRiskResult || riskRuns?.[0]?.data || null;
   const riskResult =
-    latestRiskResult?.risk_result ||
-    latestRiskResult?.riskResult ||
-    latestRiskResult?.risk ||
+    resolvedLatestResult?.risk_result ||
+    resolvedLatestResult?.riskResult ||
+    resolvedLatestResult?.risk ||
     {};
-  const comparison = latestRiskResult?.comparison || {};
+  const comparison =
+    resolvedLatestResult?.comparison ||
+    (isComparisonPayload(resolvedLatestResult) ? resolvedLatestResult : {});
   const components = riskResult?.components || {};
   const distribution = comparison?.distribution || {};
-  const computedScore = extractRiskScoreValue(latestRiskResult);
+  const computedScore = extractRiskScoreValue(resolvedLatestResult);
+  const riskBand = getRiskBandFromScore(computedScore);
+  const riskMessage = getRiskBandMessage(riskBand);
+  const cohortSize = Number(comparison?.cohort_size ?? comparison?.sample_size);
+  const mostRecentRun = riskRuns?.[0]?.data || {};
+  const startMonth = formatMonthLabel(
+      resolvedLatestResult?.start_month ??
+      resolvedLatestResult?.startMonth ??
+      mostRecentRun?.start_month ??
+      mostRecentRun?.startMonth ??
+      selectedWatchlist?.preference?.startMonth,
+  );
+  const endMonth = formatMonthLabel(
+      resolvedLatestResult?.end_month ??
+      resolvedLatestResult?.endMonth ??
+      mostRecentRun?.end_month ??
+      mostRecentRun?.endMonth ??
+      selectedWatchlist?.preference?.endMonth,
+  );
+  const noCrimes = extractIncidentCount(resolvedLatestResult, mostRecentRun, "crime");
+  const noCollisions = extractIncidentCount(resolvedLatestResult, mostRecentRun, "collision");
+  const noUserReportedEvents = extractIncidentCount(resolvedLatestResult, mostRecentRun, "user");
 
   return (
     <div className="space-y-5">
       <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
         <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Risk Scoring</p>
-        <h3 className="mt-2 text-xl font-semibold text-cyan-50">Run and inspect watchlist risk score</h3>
-        <p className="mt-2 text-sm text-cyan-100/60">
-          Runs <code>POST /watchlists/{`{watchlist_id}`}/analytics/risk-score</code> and lists
-          history from <code>GET /watchlists/{`{watchlist_id}`}/analytics/risk-score/runs</code>.
-        </p>
+        <h3 className="mt-2 text-xl font-semibold text-cyan-50">Run a Risk Score too see how risky your watchlist area is</h3>
+
 
         <div className="mt-4 flex flex-wrap gap-3">
           <button
@@ -790,41 +1190,52 @@ function RiskScoringTab({
         ) : null}
       </div>
 
-      {latestRiskResult ? (
+      {resolvedLatestResult ? (
         <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
           <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Latest Result</p>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-            <MetricCard label="Watchlist ID" value={toDisplayValue(latestRiskResult.watchlist_id)} />
-            <MetricCard
-              label="Computed Score"
-              value={<span className={getRiskScoreTextClass(computedScore)}>{formatRiskScore(computedScore)}</span>}
-            />
-            <MetricCard label="Raw Score" value={formatMetricNumber(riskResult.raw_score, 3)} />
-            <MetricCard label="Percentile" value={formatMetricNumber(comparison.percentile, 2)} />
+          <div className="mt-4 rounded-[18px] border border-cyan-200/20 bg-gradient-to-r from-[#0c1f23] via-[#0b1a1e] to-[#1f1111] p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/50">Computed Score</p>
+            <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
+              <p className={`text-4xl font-bold ${getRiskScoreTextClass(computedScore)}`}>{formatRiskScore(computedScore)}</p>
+              <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${getRiskScoreTextClass(computedScore)}`}>
+                {riskBand}
+              </p>
+            </div>
+            <p className="mt-3 text-sm text-cyan-100/80">{riskMessage}</p>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <MetricCard label="Crime Component" value={formatMetricNumber(components.crime_component, 4)} />
+            <MetricCard label="Collision Density" value={formatMetricNumber(components.collision_density, 6)} />
+            <MetricCard label="User Reported" value={formatMetricNumber(components.user_support, 6)} />
+          </div>
+
+          <div className="mt-4 rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4 text-sm leading-7 text-cyan-100/80">
+            In your area from <span className="font-semibold text-cyan-50">{startMonth}</span> to{" "}
+            <span className="font-semibold text-cyan-50">{endMonth}</span>, there were exactly{" "}
+            <span className="font-semibold text-cyan-50">{toDisplayValue(noCrimes)}</span> number of crimes,{" "}
+            <span className="font-semibold text-cyan-50">{toDisplayValue(noCollisions)}</span> number of collisions,
+            and <span className="font-semibold text-cyan-50">{toDisplayValue(noUserReportedEvents)}</span> number of
+            reported events by users. This deems it a risky place, as compared by{" "}
+            <span className="font-semibold text-cyan-50">{toDisplayValue(cohortSize)}</span> different areas.
+            Your Area Ranked <span className="font-semibold text-cyan-50">{toDisplayValue(comparison.rank)}</span> out of <span className="font-semibold text-cyan-50">{toDisplayValue(comparison.rank_out_of)}</span> areas.
           </div>
 
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Risk Components</p>
-              <DetailRow label="Crime Component" value={formatMetricNumber(components.crime_component, 4)} />
-              <DetailRow label="Collision Density" value={formatMetricNumber(components.collision_density, 6)} />
-              <DetailRow label="User Support" value={formatMetricNumber(components.user_support, 6)} />
-            </article>
-
-            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
               <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Comparison</p>
               <DetailRow label="Cohort Type" value={toDisplayValue(comparison.cohort_type)} />
               <DetailRow label="Cohort Size" value={toDisplayValue(comparison.cohort_size)} />
-              <DetailRow
-                label="Rank"
-                value={`${toDisplayValue(comparison.rank)} / ${toDisplayValue(comparison.rank_out_of)}`}
-              />
               <DetailRow label="Percentile" value={formatMetricNumber(comparison.percentile, 2)} />
-              <DetailRow
-                label="Distribution"
-                value={`min ${toDisplayValue(distribution.min)}, median ${toDisplayValue(distribution.median)}, max ${toDisplayValue(distribution.max)}`}
-              />
+            </article>
+
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Distribution</p>
+              <DetailRow label="Minimum" value={toDisplayValue(distribution.min)} />
+              <DetailRow label="Median" value={toDisplayValue(distribution.median)} />
+              <DetailRow label="Maximum" value={toDisplayValue(distribution.max)} />
+              <DetailRow label="Raw Score" value={formatMetricNumber(riskResult.raw_score, 3)} />
             </article>
           </div>
         </section>
@@ -895,8 +1306,8 @@ function ForecastTab({
   const forecastPayload = forecastResult?.forecast || forecastResult || {};
   const intervalCrimes = forecastPayload?.intervals?.crimes || {};
   const intervalCollisions = forecastPayload?.intervals?.collisions_count || {};
-  const forecastComponents = forecastPayload?.components || {};
   const bandClass = getForecastBandTextClass(forecastPayload.band);
+  const summaryCopy = getForecastSummaryCopy(forecastPayload.band);
 
   return (
     <div className="space-y-5">
@@ -970,66 +1381,29 @@ function ForecastTab({
       {forecastResult ? (
         <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
           <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Forecast Result</p>
-          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            <MetricCard label="Generated At" value={forecastResult.generated_at || "—"} />
-            <MetricCard
-              label="Score"
-              value={toDisplayValue(forecastPayload.score)}
-              valueClass={bandClass}
-            />
-            <MetricCard
-              label="Band"
-              value={String(toDisplayValue(forecastPayload.band)).toUpperCase()}
-              valueClass={bandClass}
-            />
-            <MetricCard
-              label="Expected Crimes"
-              value={toDisplayValue(forecastPayload.expected_crime_count)}
-            />
-            <MetricCard
-              label="Expected Collisions"
-              value={toDisplayValue(forecastPayload.expected_collision_count)}
-            />
-            <MetricCard
-              label="Expected Collision Points"
-              value={formatMetricNumber(forecastPayload.expected_collision_points, 4)}
-            />
+
+          <div className="mt-4 rounded-[18px] border border-cyan-200/20 bg-gradient-to-r from-[#0c1f23] via-[#0b1a1e] to-[#1f1111] p-5">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/50">Computed Score</p>
+            <p className={`mt-2 text-5xl font-bold ${bandClass}`}>
+              {Number.isFinite(Number(forecastPayload.score)) ? `${Math.round(Number(forecastPayload.score))}%` : "—"}
+            </p>
+            <p className={`mt-3 text-base font-semibold ${bandClass}`}>{summaryCopy}</p>
+
+            <p className="mt-4 text-lg text-cyan-50">
+              Expected crimes <span className="font-bold">{toDisplayValue(forecastPayload.expected_crime_count)}</span>, expected
+              collisions <span className="font-bold">{toDisplayValue(forecastPayload.expected_collision_count)}</span>.
+            </p>
           </div>
 
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Intervals</p>
-              <DetailRow
-                label="Crimes (low-high)"
-                value={`${toDisplayValue(intervalCrimes.low)} - ${toDisplayValue(intervalCrimes.high)}`}
-              />
-              <DetailRow
-                label="Collisions Count (low-high)"
-                value={`${toDisplayValue(intervalCollisions.low)} - ${toDisplayValue(intervalCollisions.high)}`}
-              />
-            </article>
-
-            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Components</p>
-              <DetailRow label="Mu Crime" value={formatMetricNumber(forecastComponents.mu_crime, 4)} />
-              <DetailRow
-                label="Mu Collision Points"
-                value={formatMetricNumber(forecastComponents.mu_collision_points, 4)}
-              />
-              <DetailRow
-                label="Mu Collision Count"
-                value={formatMetricNumber(forecastComponents.mu_collision_count, 4)}
-              />
-              <DetailRow
-                label="Projected Combined Value"
-                value={formatMetricNumber(forecastComponents.projected_combined_value, 4)}
-              />
-              <DetailRow
-                label="Baseline Combined Mean"
-                value={formatMetricNumber(forecastComponents.baseline_combined_mean, 4)}
-              />
-              <DetailRow label="Ratio" value={formatMetricNumber(forecastComponents.ratio, 4)} />
-            </article>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <MetricCard
+              label="Crime Count Band"
+              value={`${toDisplayValue(intervalCrimes.low)} - ${toDisplayValue(intervalCrimes.high)}`}
+            />
+            <MetricCard
+              label="Collision Count Band"
+              value={`${toDisplayValue(intervalCollisions.low)} - ${toDisplayValue(intervalCollisions.high)}`}
+            />
           </div>
         </section>
       ) : null}
@@ -1059,9 +1433,13 @@ function extractRiskScoreValue(payload) {
     payload?.risk_result?.risk_score ??
       payload?.riskResult?.riskScore ??
       payload?.risk_result?.score ??
-    payload?.risk_score ??
+      payload?.risk_score ??
       payload?.riskScore ??
       payload?.score ??
+      payload?.subject_score ??
+      payload?.subjectScore ??
+      payload?.comparison?.subject_score ??
+      payload?.comparison?.subjectScore ??
       payload?.risk?.risk_score ??
       payload?.risk?.riskScore ??
       payload?.risk?.score,
@@ -1070,8 +1448,52 @@ function extractRiskScoreValue(payload) {
   return Number.isFinite(score) ? score : null;
 }
 
+function isComparisonPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  return (
+    Object.prototype.hasOwnProperty.call(payload, "cohort_type") ||
+    Object.prototype.hasOwnProperty.call(payload, "subject_score") ||
+    Object.prototype.hasOwnProperty.call(payload, "distribution")
+  );
+}
+
 function formatRiskScore(score) {
   return Number.isFinite(score) ? `${Math.round(score)}%` : "Unavailable";
+}
+
+function getRiskBandFromScore(score) {
+  if (!Number.isFinite(score)) {
+    return "Unknown";
+  }
+
+  if (score > 60) {
+    return "Red";
+  }
+
+  if (score > 30) {
+    return "Orange";
+  }
+
+  return "Green";
+}
+
+function getRiskBandMessage(riskBand) {
+  if (riskBand === "Red") {
+    return "Your area is deemed to be risky.";
+  }
+
+  if (riskBand === "Orange") {
+    return "Your area is deemed to have elevated risk.";
+  }
+
+  if (riskBand === "Green") {
+    return "Your area is deemed to be lower risk right now.";
+  }
+
+  return "Risk status is currently unavailable.";
 }
 
 function getRiskScoreTextClass(score) {
@@ -1090,6 +1512,43 @@ function getRiskScoreTextClass(score) {
   return "text-[#39ef7d]";
 }
 
+function formatMonthLabel(value) {
+  if (!value) {
+    return "N/A";
+  }
+
+  const stringValue = String(value);
+  const date = new Date(stringValue);
+
+  if (!Number.isNaN(date.getTime())) {
+    return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  }
+
+  return stringValue;
+}
+
+function extractIncidentCount(latestRiskResult, mostRecentRun, kind) {
+  const candidatesByKind = {
+    crime: [
+      latestRiskResult?.data_used?.official_crime_count,
+      mostRecentRun?.data_used?.official_crime_count,
+    ],
+    collision: [
+      latestRiskResult?.data_used?.collision_count,
+      mostRecentRun?.data_used?.collision_count,
+    ],
+    user: [
+      latestRiskResult?.data_used?.approved_user_report_count,
+      mostRecentRun?.data_used?.approved_user_report_count,
+    ],
+  };
+
+  const candidates = candidatesByKind[kind] || [];
+  const firstNumber = candidates.find((value) => Number.isFinite(Number(value)));
+
+  return Number.isFinite(Number(firstNumber)) ? Number(firstNumber) : "N/A";
+}
+
 function getForecastBandTextClass(band) {
   const normalizedBand = String(band || "").toLowerCase();
 
@@ -1102,6 +1561,20 @@ function getForecastBandTextClass(band) {
   }
 
   return "text-[#39ef7d]";
+}
+
+function getForecastSummaryCopy(band) {
+  const normalizedBand = String(band || "").toLowerCase();
+
+  if (normalizedBand === "red") {
+    return "This is deemed bad.";
+  }
+
+  if (normalizedBand === "orange" || normalizedBand === "amber") {
+    return "This is deemed concerning.";
+  }
+
+  return "This is deemed relatively safer.";
 }
 
 function formatMetricNumber(value, digits = 2) {

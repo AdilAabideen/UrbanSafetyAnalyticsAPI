@@ -5,7 +5,5 @@ RUN apt-get update \
         postgresql-16-postgis-3 \
         postgresql-16-postgis-3-scripts \
         postgresql-contrib \
-        xz-utils \
+        osm2pgsql \
     && rm -rf /var/lib/apt/lists/*
-
-COPY docker/db/init/ /docker-entrypoint-initdb.d/

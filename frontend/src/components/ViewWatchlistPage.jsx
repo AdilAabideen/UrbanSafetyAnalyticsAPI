@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import TopBar from "./TopBar";
+import WatchlistPolygonMap from "./watchlist/WatchlistPolygonMap";
 import WatchlistField from "./watchlist/WatchlistField";
 import WatchlistCrimeTypeMultiSelect from "./watchlist/WatchlistCrimeTypeMultiSelect";
 import WatchlistModeSelect from "./watchlist/WatchlistModeSelect";
@@ -12,9 +13,11 @@ import {
 } from "../utils/watchlistUtils";
 
 const PAGE_TABS = [
-  { id: "overview", label: "Overview and Edit" },
+  { id: "main", label: "Main" },
+  { id: "map", label: "Map" },
   { id: "risk-scoring", label: "Risk Scoring" },
   { id: "forecast", label: "Forecast" },
+  { id: "overview", label: "Overview and Edit" },
 ];
 
 function createEditForm(watchlist) {
@@ -69,7 +72,7 @@ function ViewWatchlistPage({
   onSelectWatchlist,
   onCreateNew,
 }) {
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState("main");
   const [watchlists, setWatchlists] = useState([]);
   const [selectedWatchlist, setSelectedWatchlist] = useState(null);
   const [editForm, setEditForm] = useState(createEditForm(null));
@@ -94,6 +97,14 @@ function ViewWatchlistPage({
   const [runningForecast, setRunningForecast] = useState(false);
   const [forecastActionMessage, setForecastActionMessage] = useState("");
   const [forecastResult, setForecastResult] = useState(null);
+  const [loadingBasicMetrics, setLoadingBasicMetrics] = useState(false);
+  const [basicMetricsResult, setBasicMetricsResult] = useState(null);
+  const [basicMetricsErrorMessage, setBasicMetricsErrorMessage] = useState("");
+  const [basicMetricsRefreshToken, setBasicMetricsRefreshToken] = useState(0);
+  const [loadingMapEvents, setLoadingMapEvents] = useState(false);
+  const [mapEventsResult, setMapEventsResult] = useState(null);
+  const [mapEventsErrorMessage, setMapEventsErrorMessage] = useState("");
+  const [mapEventsRefreshToken, setMapEventsRefreshToken] = useState(0);
 
   useEffect(() => {
     if (!accessToken) {
@@ -209,7 +220,103 @@ function ViewWatchlistPage({
     setRiskRefreshToken(0);
     setForecastActionMessage("");
     setForecastResult(null);
+    setLoadingBasicMetrics(false);
+    setBasicMetricsResult(null);
+    setBasicMetricsErrorMessage("");
+    setBasicMetricsRefreshToken(0);
+    setLoadingMapEvents(false);
+    setMapEventsResult(null);
+    setMapEventsErrorMessage("");
+    setMapEventsRefreshToken(0);
   }, [selectedWatchlist?.id]);
+
+  useEffect(() => {
+    if (activeTab !== "main" || !accessToken || !selectedWatchlist?.id) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    const loadBasicMetrics = async () => {
+      setLoadingBasicMetrics(true);
+      setBasicMetricsErrorMessage("");
+
+      try {
+        const response = await watchlistService.getWatchlistBasicMetrics(
+          selectedWatchlist.id,
+          accessToken,
+          { signal: controller.signal },
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setBasicMetricsResult(response);
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        setBasicMetricsResult(null);
+        setBasicMetricsErrorMessage(error?.message || "Failed to load basic metrics.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingBasicMetrics(false);
+        }
+      }
+    };
+
+    void loadBasicMetrics();
+
+    return () => {
+      controller.abort();
+    };
+  }, [accessToken, activeTab, basicMetricsRefreshToken, selectedWatchlist?.id]);
+
+  useEffect(() => {
+    if (activeTab !== "map" || !accessToken || !selectedWatchlist?.id) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    const loadMapEvents = async () => {
+      setLoadingMapEvents(true);
+      setMapEventsErrorMessage("");
+
+      try {
+        const response = await watchlistService.getWatchlistMapEvents(
+          selectedWatchlist.id,
+          accessToken,
+          { signal: controller.signal },
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setMapEventsResult(response);
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        setMapEventsResult(null);
+        setMapEventsErrorMessage(error?.message || "Failed to load map event overlays.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingMapEvents(false);
+        }
+      }
+    };
+
+    void loadMapEvents();
+
+    return () => {
+      controller.abort();
+    };
+  }, [accessToken, activeTab, mapEventsRefreshToken, selectedWatchlist?.id]);
 
   useEffect(() => {
     if (activeTab !== "risk-scoring" || !accessToken || !selectedWatchlist?.id) {
@@ -270,6 +377,29 @@ function ViewWatchlistPage({
     [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat].every((value) => Number.isFinite(value)) &&
     bbox.minLon < bbox.maxLon &&
     bbox.minLat < bbox.maxLat;
+  const selectedWatchlistBbox = {
+    minLon: parseOptionalNumber(selectedWatchlist?.minLon),
+    minLat: parseOptionalNumber(selectedWatchlist?.minLat),
+    maxLon: parseOptionalNumber(selectedWatchlist?.maxLon),
+    maxLat: parseOptionalNumber(selectedWatchlist?.maxLat),
+  };
+  const hasSelectedWatchlistBbox =
+    [
+      selectedWatchlistBbox.minLon,
+      selectedWatchlistBbox.minLat,
+      selectedWatchlistBbox.maxLon,
+      selectedWatchlistBbox.maxLat,
+    ].every((value) => Number.isFinite(value)) &&
+    selectedWatchlistBbox.minLon < selectedWatchlistBbox.maxLon &&
+    selectedWatchlistBbox.minLat < selectedWatchlistBbox.maxLat;
+  const selectedWatchlistPolygonPoints = hasSelectedWatchlistBbox
+    ? [
+        [selectedWatchlistBbox.minLon, selectedWatchlistBbox.minLat],
+        [selectedWatchlistBbox.maxLon, selectedWatchlistBbox.minLat],
+        [selectedWatchlistBbox.maxLon, selectedWatchlistBbox.maxLat],
+        [selectedWatchlistBbox.minLon, selectedWatchlistBbox.maxLat],
+      ]
+    : [];
 
   const canSave =
     Boolean(selectedWatchlist?.id) &&
@@ -362,7 +492,7 @@ function ViewWatchlistPage({
     }
 
     const confirmed = window.confirm(
-      `Delete watchlist \"${selectedWatchlist.name}\" (ID ${selectedWatchlist.id})?`,
+      `Delete watchlist "${selectedWatchlist.name}" (ID ${selectedWatchlist.id})?`,
     );
 
     if (!confirmed) {
@@ -411,6 +541,14 @@ function ViewWatchlistPage({
     setRiskRefreshToken((current) => current + 1);
   };
 
+  const handleRefreshBasicMetrics = () => {
+    setBasicMetricsRefreshToken((current) => current + 1);
+  };
+
+  const handleRefreshMapEvents = () => {
+    setMapEventsRefreshToken((current) => current + 1);
+  };
+
   const canRunForecast =
     Boolean(selectedWatchlist?.id) &&
     Boolean(forecastForm.startMonth) &&
@@ -442,7 +580,6 @@ function ViewWatchlistPage({
     };
 
     try {
-      console.log(payload);
       const response = await watchlistService.forecastWatchlistNextMonth(
         selectedWatchlist.id,
         payload,
@@ -587,7 +724,26 @@ function ViewWatchlistPage({
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
               {selectedWatchlist ? (
-                activeTab === "overview" ? (
+                activeTab === "main" ? (
+                  <MainTab
+                    loadingBasicMetrics={loadingBasicMetrics}
+                    basicMetricsResult={basicMetricsResult}
+                    basicMetricsErrorMessage={basicMetricsErrorMessage}
+                    selectedWatchlist={selectedWatchlist}
+                    onRefreshBasicMetrics={handleRefreshBasicMetrics}
+                  />
+                ) : activeTab === "map" ? (
+                  <MapTab
+                    hasSelectedWatchlistBbox={hasSelectedWatchlistBbox}
+                    loadingMapEvents={loadingMapEvents}
+                    mapEventsErrorMessage={mapEventsErrorMessage}
+                    mapEventsResult={mapEventsResult}
+                    selectedWatchlist={selectedWatchlist}
+                    selectedWatchlistBbox={selectedWatchlistBbox}
+                    selectedWatchlistPolygonPoints={selectedWatchlistPolygonPoints}
+                    onRefreshMapEvents={handleRefreshMapEvents}
+                  />
+                ) : activeTab === "overview" ? (
                   <div className="space-y-5">
                     <div className="grid gap-3 lg:grid-cols-4">
                       {summaryCards.map((card) => (
@@ -735,6 +891,227 @@ function ViewWatchlistPage({
   );
 }
 
+function MapTab({
+  hasSelectedWatchlistBbox,
+  loadingMapEvents,
+  mapEventsErrorMessage,
+  mapEventsResult,
+  onRefreshMapEvents,
+  selectedWatchlist,
+  selectedWatchlistBbox,
+  selectedWatchlistPolygonPoints,
+}) {
+  const crimeFeatures = Array.isArray(mapEventsResult?.crimes?.features)
+    ? mapEventsResult.crimes.features
+    : [];
+  const collisionFeatures = Array.isArray(mapEventsResult?.collisions?.features)
+    ? mapEventsResult.collisions.features
+    : [];
+  const userReportedFeatures = Array.isArray(mapEventsResult?.user_reported_events?.features)
+    ? mapEventsResult.user_reported_events.features
+    : [];
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Map Overlay</p>
+            <h3 className="mt-2 text-xl font-semibold text-cyan-50">Watchlist Aerial View</h3>
+            <p className="mt-1 text-sm text-cyan-100/60">
+              Event points and bbox overlay for watchlist #{selectedWatchlist?.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onRefreshMapEvents}
+            className="rounded-[14px] border border-cyan-100/10 bg-cyan-100/5 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
+          >
+            {loadingMapEvents ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-[12px] border border-white/5 bg-[#030b0e]/70 px-3 py-2 text-xs text-cyan-100/75">
+            <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-red-500" />
+            Crimes: <span className="font-semibold text-cyan-50">{crimeFeatures.length}</span>
+          </div>
+          <div className="rounded-[12px] border border-white/5 bg-[#030b0e]/70 px-3 py-2 text-xs text-cyan-100/75">
+            <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-blue-500" />
+            Collisions: <span className="font-semibold text-cyan-50">{collisionFeatures.length}</span>
+          </div>
+          <div className="rounded-[12px] border border-white/5 bg-[#030b0e]/70 px-3 py-2 text-xs text-cyan-100/75">
+            <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-green-500" />
+            User Reported: <span className="font-semibold text-cyan-50">{userReportedFeatures.length}</span>
+          </div>
+        </div>
+
+        {mapEventsErrorMessage ? (
+          <div className="mt-4 rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
+            {mapEventsErrorMessage}
+          </div>
+        ) : null}
+      </div>
+
+      {hasSelectedWatchlistBbox ? (
+        <div className="h-[540px] overflow-hidden rounded-[20px] border border-white/5 bg-[#020a0f]">
+          <WatchlistPolygonMap
+            collisionsFeatureCollection={mapEventsResult?.collisions}
+            crimesFeatureCollection={mapEventsResult?.crimes}
+            polygonPoints={selectedWatchlistPolygonPoints}
+            polygonClosed
+            readOnly
+            userReportedEventsFeatureCollection={mapEventsResult?.user_reported_events}
+          />
+        </div>
+      ) : (
+        <div className="rounded-[16px] border border-amber-300/30 bg-amber-950/60 px-4 py-4 text-sm text-amber-100">
+          This watchlist does not have a valid bbox yet. A map polygon needs: minLon &lt; maxLon and minLat
+          &lt; maxLat.
+          <div className="mt-2 text-xs text-amber-100/80">
+            Current values: minLon={toDisplayValue(selectedWatchlistBbox.minLon)}, minLat=
+            {toDisplayValue(selectedWatchlistBbox.minLat)}, maxLon={toDisplayValue(selectedWatchlistBbox.maxLon)},
+            maxLat={toDisplayValue(selectedWatchlistBbox.maxLat)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MainTab({
+  loadingBasicMetrics,
+  basicMetricsResult,
+  basicMetricsErrorMessage,
+  selectedWatchlist,
+  onRefreshBasicMetrics,
+}) {
+  const dangerousRoads = Array.isArray(basicMetricsResult?.most_dangerous_roads)
+    ? basicMetricsResult.most_dangerous_roads
+    : [];
+  const crimeCategoryBreakdown = Array.isArray(basicMetricsResult?.crime_category_breakdown)
+    ? basicMetricsResult.crime_category_breakdown
+    : [];
+  const maxCrimeCategoryCount = Math.max(
+    1,
+    ...crimeCategoryBreakdown.map((item) => Number(item?.count) || 0),
+  );
+  const startMonth = formatMonthLabel(selectedWatchlist?.preference?.startMonth);
+  const endMonth = formatMonthLabel(selectedWatchlist?.preference?.endMonth);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Main Analytics</p>
+            <h3 className="mt-2 text-xl font-semibold text-cyan-50">Watchlist Basic Metrics</h3>
+            <p className="mt-1 text-sm text-cyan-100/60">
+              Window: {startMonth} to {endMonth}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRefreshBasicMetrics}
+            className="rounded-[14px] border border-cyan-100/10 bg-cyan-100/5 px-4 py-2 text-sm font-semibold uppercase tracking-[0.16em] text-cyan-50 transition-colors hover:bg-cyan-100/10"
+          >
+            {loadingBasicMetrics ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        {basicMetricsErrorMessage ? (
+          <div className="mt-4 rounded-[16px] border border-red-300/30 bg-[#4a0f0fd0] px-4 py-3 text-sm text-red-100">
+            {basicMetricsErrorMessage}
+          </div>
+        ) : null}
+      </div>
+
+      {basicMetricsResult ? (
+        <>
+          <div className="grid gap-3 md:grid-cols-3">
+            <MetricCard
+              label="Number of Crimes"
+              value={toDisplayValue(basicMetricsResult.number_of_crimes)}
+            />
+            <MetricCard
+              label="Number of Collisions"
+              value={toDisplayValue(basicMetricsResult.number_of_collisions)}
+            />
+            <MetricCard
+              label="User Reported Events"
+              value={toDisplayValue(basicMetricsResult.number_of_user_reported_events)}
+            />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Most Dangerous Roads</p>
+              {dangerousRoads.length ? (
+                <div className="mt-3 space-y-3">
+                  {dangerousRoads.map((road, index) => (
+                    <div
+                      key={`${road.segment_id}-${index}`}
+                      className="rounded-[12px] border border-white/5 bg-[#071316]/70 p-3"
+                    >
+                      <p className="text-sm font-semibold text-cyan-50">
+                        {road.road_name || `Segment ${toDisplayValue(road.segment_id)}`}
+                      </p>
+                      <p className="mt-1 text-xs text-cyan-100/60">
+                        Danger Score: {formatMetricNumber(road.danger_score, 2)}
+                      </p>
+                      <p className="mt-1 text-xs text-cyan-100/60">
+                        Crimes {toDisplayValue(road.crime_count)} · Collisions {toDisplayValue(road.collision_count)} · User Reports{" "}
+                        {toDisplayValue(road.user_reported_event_count)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-cyan-100/60">No dangerous roads returned for this window.</p>
+              )}
+            </article>
+
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Crime Category Breakdown</p>
+              {crimeCategoryBreakdown.length ? (
+                <div className="mt-3 space-y-3">
+                  {crimeCategoryBreakdown.map((item, index) => {
+                    const count = Number(item?.count) || 0;
+                    const widthPct = Math.max(3, (count / maxCrimeCategoryCount) * 100);
+                    return (
+                      <div key={`${item?.crime_type || "crime"}-${index}`} className="space-y-1">
+                        <div className="flex items-center justify-between gap-3 text-xs">
+                          <span className="text-cyan-100/80">{item?.crime_type || "Unknown"}</span>
+                          <span className="font-semibold text-cyan-50">{toDisplayValue(item?.count)}</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-cyan-100/10">
+                          <div
+                            className="h-2 rounded-full bg-cyan-300/60"
+                            style={{ width: `${Math.min(100, widthPct)}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-cyan-100/60">No crime category breakdown returned for this window.</p>
+              )}
+            </article>
+          </div>
+        </>
+      ) : (
+        <div className="rounded-[16px] border border-dashed border-cyan-100/10 bg-[#030b0e]/65 px-4 py-5 text-sm text-cyan-100/60">
+          {loadingBasicMetrics
+            ? "Loading basic metrics..."
+            : "No basic metrics available yet. Click Refresh to load analytics for this watchlist."}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RiskScoringTab({
   computingRiskScore,
   latestRiskResult,
@@ -779,8 +1156,6 @@ function RiskScoringTab({
   const noCrimes = extractIncidentCount(resolvedLatestResult, mostRecentRun, "crime");
   const noCollisions = extractIncidentCount(resolvedLatestResult, mostRecentRun, "collision");
   const noUserReportedEvents = extractIncidentCount(resolvedLatestResult, mostRecentRun, "user");
-
-  console.log(latestRiskResult);
 
   return (
     <div className="space-y-5">
@@ -933,8 +1308,6 @@ function ForecastTab({
   const intervalCollisions = forecastPayload?.intervals?.collisions_count || {};
   const bandClass = getForecastBandTextClass(forecastPayload.band);
   const summaryCopy = getForecastSummaryCopy(forecastPayload.band);
-
-  console.log(forecastResult);
 
   return (
     <div className="space-y-5">

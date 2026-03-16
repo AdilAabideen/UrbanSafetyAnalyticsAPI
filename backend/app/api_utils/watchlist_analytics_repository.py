@@ -220,6 +220,133 @@ def fetch_watchlist_basic_metrics(
     }
 
 
+def fetch_watchlist_map_event_rows(
+    db: Session,
+    *,
+    start_month,
+    end_month,
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    crime_types: List[str],
+    limit_per_source: int,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Load raw event rows for map rendering from the watchlist bbox/month window."""
+    base_params: Dict[str, Any] = {
+        "start_month": start_month,
+        "end_month": end_month,
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
+        "limit_per_source": limit_per_source,
+    }
+    if crime_types:
+        base_params["crime_types"] = crime_types
+
+    crime_type_filter = "AND ce.crime_type = ANY(:crime_types)" if crime_types else ""
+    user_crime_type_filter = (
+        "AND (ure.event_kind = 'collision' OR urc.crime_type = ANY(:crime_types))"
+        if crime_types
+        else ""
+    )
+
+    crimes_query = text(
+        f"""
+        SELECT
+            ce.id AS event_id,
+            ce.crime_id,
+            ce.month,
+            ce.crime_type,
+            ce.last_outcome_category,
+            COALESCE(ce.lon, ST_X(ce.geom)) AS longitude,
+            COALESCE(ce.lat, ST_Y(ce.geom)) AS latitude
+        FROM crime_events ce
+        WHERE ce.month BETWEEN :start_month AND :end_month
+          AND (
+                (ce.geom IS NOT NULL
+                 AND ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+                 AND ST_Intersects(ce.geom, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)))
+             OR (ce.lon BETWEEN :min_lon AND :max_lon AND ce.lat BETWEEN :min_lat AND :max_lat)
+          )
+          {crime_type_filter}
+        ORDER BY ce.month DESC, ce.id DESC
+        LIMIT :limit_per_source
+        """
+    )
+
+    collisions_query = text(
+        """
+        SELECT
+            ce.collision_index AS event_id,
+            ce.month,
+            ce.collision_date,
+            ce.collision_severity_label,
+            ce.number_of_casualties,
+            ce.fatal_casualty_count,
+            ce.serious_casualty_count,
+            ce.slight_casualty_count,
+            COALESCE(ce.longitude, ST_X(ce.geom)) AS longitude,
+            COALESCE(ce.latitude, ST_Y(ce.geom)) AS latitude
+        FROM collision_events ce
+        WHERE ce.month BETWEEN :start_month AND :end_month
+          AND (
+                (ce.geom IS NOT NULL
+                 AND ce.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+                 AND ST_Intersects(ce.geom, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)))
+             OR (ce.longitude BETWEEN :min_lon AND :max_lon AND ce.latitude BETWEEN :min_lat AND :max_lat)
+          )
+        ORDER BY ce.month DESC, ce.collision_index DESC
+        LIMIT :limit_per_source
+        """
+    )
+
+    user_query = text(
+        f"""
+        SELECT
+            ure.id AS event_id,
+            ure.event_kind,
+            ure.reporter_type,
+            ure.month,
+            ure.event_date,
+            ure.event_time,
+            ure.description,
+            ure.admin_approved,
+            urc.crime_type,
+            urcol.weather_condition,
+            urcol.light_condition,
+            urcol.number_of_vehicles,
+            ure.longitude,
+            ure.latitude
+        FROM user_reported_events ure
+        LEFT JOIN user_reported_crime_details urc ON urc.event_id = ure.id
+        LEFT JOIN user_reported_collision_details urcol ON urcol.event_id = ure.id
+        WHERE ure.admin_approved = TRUE
+          AND ure.month BETWEEN :start_month AND :end_month
+          AND (
+                (ure.geom IS NOT NULL
+                 AND ure.geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+                 AND ST_Intersects(ure.geom, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)))
+             OR (ure.longitude BETWEEN :min_lon AND :max_lon AND ure.latitude BETWEEN :min_lat AND :max_lat)
+          )
+          {user_crime_type_filter}
+        ORDER BY ure.month DESC, ure.id DESC
+        LIMIT :limit_per_source
+        """
+    )
+
+    crime_rows = execute(db, crimes_query, base_params).mappings().all()
+    collision_rows = execute(db, collisions_query, base_params).mappings().all()
+    user_rows = execute(db, user_query, base_params).mappings().all()
+
+    return {
+        "crimes": [dict(row) for row in crime_rows],
+        "collisions": [dict(row) for row in collision_rows],
+        "user_reported_events": [dict(row) for row in user_rows],
+    }
+
+
 def compute_risk_components(
     db: Session,
     *,

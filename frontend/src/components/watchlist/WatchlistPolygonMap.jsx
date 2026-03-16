@@ -16,19 +16,73 @@ const DRAW_SOURCE_ID = "watchlist-draw";
 const DRAW_FILL_LAYER_ID = "watchlist-draw-fill";
 const DRAW_LINE_LAYER_ID = "watchlist-draw-line";
 const DRAW_POINT_LAYER_ID = "watchlist-draw-point";
+const CRIME_EVENTS_SOURCE_ID = "watchlist-crime-events";
+const COLLISION_EVENTS_SOURCE_ID = "watchlist-collision-events";
+const USER_EVENTS_SOURCE_ID = "watchlist-user-events";
+const CRIME_EVENTS_LAYER_ID = "watchlist-crime-events-layer";
+const COLLISION_EVENTS_LAYER_ID = "watchlist-collision-events-layer";
+const USER_EVENTS_LAYER_ID = "watchlist-user-events-layer";
+const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+
+function toFeatureCollection(value) {
+  const features = Array.isArray(value?.features) ? value.features : [];
+  return {
+    type: "FeatureCollection",
+    features,
+  };
+}
+
+function appendPointCoordinates(target, featureCollection) {
+  const features = Array.isArray(featureCollection?.features) ? featureCollection.features : [];
+  for (const feature of features) {
+    const coordinates = feature?.geometry?.coordinates;
+    const lng = Number(Array.isArray(coordinates) ? coordinates[0] : NaN);
+    const lat = Number(Array.isArray(coordinates) ? coordinates[1] : NaN);
+    if (Number.isFinite(lng) && Number.isFinite(lat)) {
+      target.push([lng, lat]);
+    }
+  }
+}
+
+function fitMapToCoordinates(map, coordinates, options = {}) {
+  if (!map || !Array.isArray(coordinates) || coordinates.length === 0) {
+    return;
+  }
+
+  const [firstLng, firstLat] = coordinates[0];
+  const bounds = new mapboxgl.LngLatBounds([firstLng, firstLat], [firstLng, firstLat]);
+
+  for (let index = 1; index < coordinates.length; index += 1) {
+    bounds.extend(coordinates[index]);
+  }
+
+  map.fitBounds(bounds, {
+    padding: 60,
+    duration: 350,
+    maxZoom: 15,
+    ...options,
+  });
+}
 
 function WatchlistPolygonMap({
   polygonPoints,
   polygonClosed,
-  onStartPolygon,
-  onPolygonDraft,
-  onPolygonComplete,
-  onClearPolygon,
+  onStartPolygon = () => {},
+  onPolygonDraft = () => {},
+  onPolygonComplete = () => {},
+  onClearPolygon = () => {},
+  readOnly = false,
+  crimesFeatureCollection = EMPTY_FEATURE_COLLECTION,
+  collisionsFeatureCollection = EMPTY_FEATURE_COLLECTION,
+  userReportedEventsFeatureCollection = EMPTY_FEATURE_COLLECTION,
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const polygonPointsRef = useRef(polygonPoints);
   const polygonClosedRef = useRef(polygonClosed);
+  const crimesFeatureCollectionRef = useRef(crimesFeatureCollection);
+  const collisionsFeatureCollectionRef = useRef(collisionsFeatureCollection);
+  const userReportedEventsFeatureCollectionRef = useRef(userReportedEventsFeatureCollection);
   const drawModeRef = useRef(false);
   const onStartPolygonRef = useRef(onStartPolygon);
   const onPolygonDraftRef = useRef(onPolygonDraft);
@@ -52,7 +106,20 @@ function WatchlistPolygonMap({
     onPolygonDraftRef.current = onPolygonDraft;
     onPolygonCompleteRef.current = onPolygonComplete;
     onClearPolygonRef.current = onClearPolygon;
-  }, [onClearPolygon, onPolygonComplete, onPolygonDraft, onStartPolygon, polygonClosed, polygonPoints]);
+    crimesFeatureCollectionRef.current = toFeatureCollection(crimesFeatureCollection);
+    collisionsFeatureCollectionRef.current = toFeatureCollection(collisionsFeatureCollection);
+    userReportedEventsFeatureCollectionRef.current = toFeatureCollection(userReportedEventsFeatureCollection);
+  }, [
+    collisionsFeatureCollection,
+    crimesFeatureCollection,
+    onClearPolygon,
+    onPolygonComplete,
+    onPolygonDraft,
+    onStartPolygon,
+    polygonClosed,
+    polygonPoints,
+    userReportedEventsFeatureCollection,
+  ]);
 
   useEffect(() => {
     drawModeRef.current = drawMode;
@@ -168,11 +235,71 @@ function WatchlistPolygonMap({
         type: "circle",
         source: DRAW_SOURCE_ID,
         filter: ["==", ["geometry-type"], "Point"],
+        layout: {
+          visibility: readOnly ? "none" : "visible",
+        },
         paint: {
           "circle-radius": 5,
           "circle-color": "#22c55e",
           "circle-stroke-color": "#021116",
           "circle-stroke-width": 2,
+        },
+      });
+
+      map.addSource(CRIME_EVENTS_SOURCE_ID, {
+        type: "geojson",
+        data: crimesFeatureCollectionRef.current,
+      });
+
+      map.addLayer({
+        id: CRIME_EVENTS_LAYER_ID,
+        type: "circle",
+        source: CRIME_EVENTS_SOURCE_ID,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 4.5,
+          "circle-color": "#ef4444",
+          "circle-stroke-color": "#020617",
+          "circle-stroke-width": 1.2,
+          "circle-opacity": 0.9,
+        },
+      });
+
+      map.addSource(COLLISION_EVENTS_SOURCE_ID, {
+        type: "geojson",
+        data: collisionsFeatureCollectionRef.current,
+      });
+
+      map.addLayer({
+        id: COLLISION_EVENTS_LAYER_ID,
+        type: "circle",
+        source: COLLISION_EVENTS_SOURCE_ID,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 4.5,
+          "circle-color": "#3b82f6",
+          "circle-stroke-color": "#020617",
+          "circle-stroke-width": 1.2,
+          "circle-opacity": 0.9,
+        },
+      });
+
+      map.addSource(USER_EVENTS_SOURCE_ID, {
+        type: "geojson",
+        data: userReportedEventsFeatureCollectionRef.current,
+      });
+
+      map.addLayer({
+        id: USER_EVENTS_LAYER_ID,
+        type: "circle",
+        source: USER_EVENTS_SOURCE_ID,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 4.5,
+          "circle-color": "#22c55e",
+          "circle-stroke-color": "#020617",
+          "circle-stroke-width": 1.2,
+          "circle-opacity": 0.9,
         },
       });
 
@@ -183,10 +310,21 @@ function WatchlistPolygonMap({
         ],
         { padding: 40, duration: 0 },
       );
+
+      if (readOnly) {
+        const autoZoomCoordinates = [];
+        if (polygonClosedRef.current && polygonPointsRef.current.length >= 3) {
+          autoZoomCoordinates.push(...polygonPointsRef.current);
+        }
+        appendPointCoordinates(autoZoomCoordinates, crimesFeatureCollectionRef.current);
+        appendPointCoordinates(autoZoomCoordinates, collisionsFeatureCollectionRef.current);
+        appendPointCoordinates(autoZoomCoordinates, userReportedEventsFeatureCollectionRef.current);
+        fitMapToCoordinates(map, autoZoomCoordinates);
+      }
     });
 
     map.on("click", (event) => {
-      if (!drawModeRef.current || polygonClosedRef.current) {
+      if (readOnly || !drawModeRef.current || polygonClosedRef.current) {
         return;
       }
 
@@ -206,7 +344,7 @@ function WatchlistPolygonMap({
       map.remove();
       mapRef.current = null;
     };
-  }, [mapIsSupported, roadsTileUrl]);
+  }, [mapIsSupported, readOnly, roadsTileUrl]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -231,6 +369,92 @@ function WatchlistPolygonMap({
       source.setData(buildDrawFeatureCollection(polygonPoints, polygonClosed));
     }
   }, [polygonClosed, polygonPoints]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) {
+      return;
+    }
+
+    const crimesSource = map.getSource(CRIME_EVENTS_SOURCE_ID);
+    if (crimesSource) {
+      crimesSource.setData(toFeatureCollection(crimesFeatureCollection));
+    }
+  }, [crimesFeatureCollection]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) {
+      return;
+    }
+
+    const collisionsSource = map.getSource(COLLISION_EVENTS_SOURCE_ID);
+    if (collisionsSource) {
+      collisionsSource.setData(toFeatureCollection(collisionsFeatureCollection));
+    }
+  }, [collisionsFeatureCollection]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) {
+      return;
+    }
+
+    const userEventsSource = map.getSource(USER_EVENTS_SOURCE_ID);
+    if (userEventsSource) {
+      userEventsSource.setData(toFeatureCollection(userReportedEventsFeatureCollection));
+    }
+  }, [userReportedEventsFeatureCollection]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (readOnly || !map || !map.isStyleLoaded() || !polygonClosed || polygonPoints.length < 3) {
+      return;
+    }
+
+    const longitudes = polygonPoints.map((point) => Number(point?.[0]));
+    const latitudes = polygonPoints.map((point) => Number(point?.[1]));
+    const minLon = Math.min(...longitudes);
+    const minLat = Math.min(...latitudes);
+    const maxLon = Math.max(...longitudes);
+    const maxLat = Math.max(...latitudes);
+
+    if (![minLon, minLat, maxLon, maxLat].every((value) => Number.isFinite(value))) {
+      return;
+    }
+
+    map.fitBounds(
+      [
+        [minLon, minLat],
+        [maxLon, maxLat],
+      ],
+      { padding: 60, duration: 350 },
+    );
+  }, [polygonClosed, polygonPoints, readOnly]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!readOnly || !map || !map.isStyleLoaded()) {
+      return;
+    }
+
+    const autoZoomCoordinates = [];
+    if (polygonClosed && polygonPoints.length >= 3) {
+      autoZoomCoordinates.push(...polygonPoints);
+    }
+    appendPointCoordinates(autoZoomCoordinates, crimesFeatureCollection);
+    appendPointCoordinates(autoZoomCoordinates, collisionsFeatureCollection);
+    appendPointCoordinates(autoZoomCoordinates, userReportedEventsFeatureCollection);
+    fitMapToCoordinates(map, autoZoomCoordinates);
+  }, [
+    collisionsFeatureCollection,
+    crimesFeatureCollection,
+    polygonClosed,
+    polygonPoints,
+    readOnly,
+    userReportedEventsFeatureCollection,
+  ]);
 
   const handleStartPolygon = () => {
     drawModeRef.current = true;
@@ -275,36 +499,42 @@ function WatchlistPolygonMap({
     <section className="relative h-full min-h-0 overflow-hidden bg-[#020a0f]">
       <div className="absolute left-4 right-4 top-4 z-10 flex flex-wrap items-start justify-between gap-3">
         <div className="rounded-[18px] border border-white/10 bg-[#030b0e]/80 px-4 py-3 backdrop-blur-sm">
-          <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/40">Polygon Draw</p>
+          <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/40">
+            {readOnly ? "Watchlist Area" : "Polygon Draw"}
+          </p>
           <p className="mt-2 text-sm text-cyan-50">
-            Start a polygon, place vertices on the map, then complete it to fill the bbox fields.
+            {readOnly
+              ? "This map shows the stored watchlist bbox polygon."
+              : "Start a polygon, place vertices on the map, then complete it to fill the bbox fields."}
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={handleStartPolygon}
-            className="rounded-full bg-cyan-50 px-4 py-2 text-sm font-semibold text-[#021116] transition-colors hover:bg-white"
-          >
-            {polygonPoints.length ? "Redraw Polygon" : "Start Polygon"}
-          </button>
-          <button
-            type="button"
-            onClick={handleCompletePolygon}
-            disabled={polygonPoints.length < 3}
-            className="rounded-full border border-cyan-100/10 bg-[#030b0e]/80 px-4 py-2 text-sm text-cyan-50 transition-colors hover:bg-cyan-100/10 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Complete Polygon
-          </button>
-          <button
-            type="button"
-            onClick={handleClearPolygon}
-            className="rounded-full border border-cyan-100/10 bg-[#030b0e]/80 px-4 py-2 text-sm text-cyan-50 transition-colors hover:bg-cyan-100/10"
-          >
-            Clear
-          </button>
-        </div>
+        {!readOnly ? (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleStartPolygon}
+              className="rounded-full bg-cyan-50 px-4 py-2 text-sm font-semibold text-[#021116] transition-colors hover:bg-white"
+            >
+              {polygonPoints.length ? "Redraw Polygon" : "Start Polygon"}
+            </button>
+            <button
+              type="button"
+              onClick={handleCompletePolygon}
+              disabled={polygonPoints.length < 3}
+              className="rounded-full border border-cyan-100/10 bg-[#030b0e]/80 px-4 py-2 text-sm text-cyan-50 transition-colors hover:bg-cyan-100/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Complete Polygon
+            </button>
+            <button
+              type="button"
+              onClick={handleClearPolygon}
+              className="rounded-full border border-cyan-100/10 bg-[#030b0e]/80 px-4 py-2 text-sm text-cyan-50 transition-colors hover:bg-cyan-100/10"
+            >
+              Clear
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {resolvedMapErrorMessage ? (
@@ -315,7 +545,9 @@ function WatchlistPolygonMap({
 
       <div className="absolute bottom-4 left-4 z-10 rounded-[16px] border border-white/10 bg-[#030b0e]/80 px-4 py-3 backdrop-blur-sm">
         <p className="text-xs text-cyan-100/55">
-          {drawMode
+          {readOnly
+            ? "Read-only overlay"
+            : drawMode
             ? "Drawing mode active"
             : polygonClosed
               ? "Polygon completed"

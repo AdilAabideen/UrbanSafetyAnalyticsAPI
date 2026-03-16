@@ -304,6 +304,66 @@ class WatchlistBasicMetricsResponse(BaseModel):
     )
 
 
+class WatchlistMapFeature(BaseModel):
+    """Generic GeoJSON feature for watchlist map event layers."""
+
+    type: str = Field(..., description="GeoJSON object type. Always `Feature`.", example="Feature")
+    geometry: dict = Field(..., description="GeoJSON geometry object for the event point.")
+    properties: dict = Field(..., description="Event attributes for UI rendering.")
+
+
+class WatchlistMapFeatureCollection(BaseModel):
+    """GeoJSON FeatureCollection for one event source."""
+
+    type: str = Field(
+        ...,
+        description="GeoJSON collection type. Always `FeatureCollection`.",
+        example="FeatureCollection",
+    )
+    features: List[WatchlistMapFeature] = Field(default_factory=list, description="GeoJSON point features.")
+
+
+class WatchlistMapEventsResponse(BaseModel):
+    """Bundled watchlist map events for crimes, collisions, and approved user reports."""
+
+    crimes: WatchlistMapFeatureCollection = Field(
+        ...,
+        description="Official crime event points within watchlist bbox and month window.",
+    )
+    collisions: WatchlistMapFeatureCollection = Field(
+        ...,
+        description="Official collision event points within watchlist bbox and month window.",
+    )
+    user_reported_events: WatchlistMapFeatureCollection = Field(
+        ...,
+        description="Approved user-reported event points within watchlist bbox and month window.",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "crimes": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": [-1.5487, 53.7992]},
+                            "properties": {
+                                "event_id": 928321,
+                                "crime_id": "abc-123",
+                                "month": "2026-01-01",
+                                "crime_type": "Robbery",
+                            },
+                        }
+                    ],
+                },
+                "collisions": {"type": "FeatureCollection", "features": []},
+                "user_reported_events": {"type": "FeatureCollection", "features": []},
+            }
+        }
+    )
+
+
 class WatchlistForecastRequest(BaseModel):
     """Input payload for next-month watchlist forecast."""
 

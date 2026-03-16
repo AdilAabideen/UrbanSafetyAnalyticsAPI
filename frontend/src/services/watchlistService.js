@@ -106,6 +106,29 @@ function extractRiskScoreResponse(payload) {
   return payload?.result || payload?.data || payload;
 }
 
+function extractBasicMetricsResponse(payload) {
+  return payload?.result || payload?.data || payload;
+}
+
+function normalizeMapFeatureCollection(rawCollection) {
+  const rawFeatures = Array.isArray(rawCollection?.features) ? rawCollection.features : [];
+  return {
+    type: "FeatureCollection",
+    features: rawFeatures.filter((feature) => feature && feature.type === "Feature"),
+  };
+}
+
+function extractMapEventsResponse(payload) {
+  const raw = payload?.result || payload?.data || payload || {};
+  return {
+    crimes: normalizeMapFeatureCollection(raw?.crimes),
+    collisions: normalizeMapFeatureCollection(raw?.collisions),
+    user_reported_events: normalizeMapFeatureCollection(
+      raw?.user_reported_events ?? raw?.userReportedEvents,
+    ),
+  };
+}
+
 function normalizeRiskRun(rawRun) {
   if (!rawRun || typeof rawRun !== "object") {
     return null;
@@ -247,6 +270,34 @@ export const watchlistService = {
     );
 
     return extractRiskScoreResponse(response);
+  },
+
+  async getWatchlistBasicMetrics(watchlistId, accessToken, requestOptions = {}) {
+    const response = await requestWatchlist(
+      `/watchlists/${watchlistId}/analytics/basic-metrics`,
+      "Failed to load watchlist basic metrics.",
+      {
+        ...requestOptions,
+        method: "GET",
+        accessToken,
+      },
+    );
+
+    return extractBasicMetricsResponse(response);
+  },
+
+  async getWatchlistMapEvents(watchlistId, accessToken, requestOptions = {}) {
+    const response = await requestWatchlist(
+      `/watchlists/${watchlistId}/analytics/map-events`,
+      "Failed to load watchlist map events.",
+      {
+        ...requestOptions,
+        method: "GET",
+        accessToken,
+      },
+    );
+
+    return extractMapEventsResponse(response);
   },
 
   async forecastWatchlistNextMonth(watchlistId, payload, accessToken, requestOptions = {}) {

@@ -6,6 +6,7 @@ from ..schemas.watchlist_analytics_schemas import (
     WatchlistBasicMetricsResponse,
     WatchlistForecastRequest,
     WatchlistForecastResponse,
+    WatchlistMapEventsResponse,
     WatchlistRiskRunsResponse,
     WatchlistRiskScoreResponse,
 )
@@ -13,6 +14,7 @@ from ..services.auth_service import get_current_user
 from ..services.watchlist_analytics_service import (
     build_watchlist_basic_metrics_service,
     build_watchlist_forecast_service,
+    build_watchlist_map_events_service,
     build_watchlist_risk_score_service,
     list_watchlist_risk_runs_service,
 )
@@ -137,6 +139,39 @@ def get_watchlist_basic_metrics(
     db: Session = Depends(get_db),
 ) -> WatchlistBasicMetricsResponse:
     return build_watchlist_basic_metrics_service(
+        db=db,
+        user_id=current_user["id"],
+        watchlist_id=watchlist_id,
+    )
+
+
+@router.get(
+    "/watchlists/{watchlist_id}/analytics/map-events",
+    response_model=WatchlistMapEventsResponse,
+    summary="Get Watchlist Map Events",
+    description=(
+        "Returns GeoJSON point layers scoped to the watchlist bbox and stored month window "
+        "(start_month to end_month). The payload includes three FeatureCollections: "
+        "official crimes, official collisions, and approved user-reported events. "
+        "Designed for frontend map overlays alongside road tiles."
+    ),
+    responses={
+        200: {"description": "Watchlist map event layers returned successfully."},
+        400: {"description": "Watchlist has missing/invalid month window or bbox values."},
+        404: {"description": "Watchlist not found for the authenticated user."},
+    },
+)
+def get_watchlist_map_events(
+    watchlist_id: int = Path(
+        ...,
+        gt=0,
+        description="Unique watchlist identifier owned by the authenticated user.",
+        example=42,
+    ),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WatchlistMapEventsResponse:
+    return build_watchlist_map_events_service(
         db=db,
         user_id=current_user["id"],
         watchlist_id=watchlist_id,

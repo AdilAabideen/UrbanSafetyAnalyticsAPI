@@ -43,6 +43,7 @@ REFERENCE_BBOX_COUNT = 2
 SIGNATURE_VERSION = "v2_log_norm"
 
 FORECAST_RECENCY_LAMBDA = 0.85
+MAP_EVENTS_LIMIT_PER_SOURCE = 500
 
 
 def _safe_float(value: Any) -> float:
@@ -101,6 +102,44 @@ def _weights_for_mode(mode: str) -> Dict[str, float]:
         return dict(WALK_WEIGHTS)
     # Return the drive weights.
     return dict(DRIVE_WEIGHTS)
+
+
+def _serialize_geojson_property(value: Any) -> Any:
+    """Serialize date/time-like values for GeoJSON properties."""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _rows_to_feature_collection(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Convert raw event rows into a GeoJSON FeatureCollection."""
+    features: List[Dict[str, Any]] = []
+    for row in rows:
+        lon = row.get("longitude")
+        lat = row.get("latitude")
+        if lon is None or lat is None:
+            continue
+        try:
+            lon_value = float(lon)
+            lat_value = float(lat)
+        except (TypeError, ValueError):
+            continue
+
+        properties = {
+            key: _serialize_geojson_property(value)
+            for key, value in row.items()
+            if key not in {"longitude", "latitude"}
+        }
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon_value, lat_value]},
+                "properties": properties,
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
 
 
 def _score_from_raw(raw_score: float) -> int:
@@ -564,6 +603,64 @@ def build_watchlist_basic_metrics_service(
         max_lat=bbox["max_lat"],
         crime_types=crime_types,
     )
+
+
+def build_watchlist_map_events_service(
+    db: Session,
+    *,
+    user_id: int,
+    watchlist_id: int,
+):
+    """Return watchlist-scoped GeoJSON event layers for map rendering."""
+    row = watchlist_analytics_repository.get_watchlist_for_analytics(
+        db,
+        watchlist_id=watchlist_id,
+        user_id=user_id,
+    )
+    if not row:
+        raise NotFoundError(error="WATCHLIST_NOT_FOUND", message="Watchlist not found")
+
+    start_month = row["start_month"]
+    end_month = row["end_month"]
+    if start_month is None or end_month is None:
+        raise ValidationError(
+            error="MISSING_MONTH_WINDOW",
+            message="watchlist must have start_month and end_month before running analytics",
+            details={"watchlist_id": watchlist_id},
+        )
+    if start_month > end_month:
+        raise ValidationError(
+            error="INVALID_MONTH_RANGE",
+            message="start_month must be less than or equal to end_month",
+            details={"watchlist_id": watchlist_id},
+        )
+
+    bbox = {
+        "min_lon": float(row["min_lon"]),
+        "min_lat": float(row["min_lat"]),
+        "max_lon": float(row["max_lon"]),
+        "max_lat": float(row["max_lat"]),
+    }
+    _validate_bbox(**bbox)
+
+    crime_types = _canonical_crime_types(list(row.get("crime_types") or []))
+    event_rows = watchlist_analytics_repository.fetch_watchlist_map_event_rows(
+        db,
+        start_month=start_month,
+        end_month=end_month,
+        min_lon=bbox["min_lon"],
+        min_lat=bbox["min_lat"],
+        max_lon=bbox["max_lon"],
+        max_lat=bbox["max_lat"],
+        crime_types=crime_types,
+        limit_per_source=MAP_EVENTS_LIMIT_PER_SOURCE,
+    )
+
+    return {
+        "crimes": _rows_to_feature_collection(event_rows.get("crimes", [])),
+        "collisions": _rows_to_feature_collection(event_rows.get("collisions", [])),
+        "user_reported_events": _rows_to_feature_collection(event_rows.get("user_reported_events", [])),
+    }
 
 
 def _to_month_start(value: date) -> date:

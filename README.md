@@ -261,6 +261,31 @@ Forecasting is intentionally lightweight:
 - baseline-history mean with simple uncertainty bounds,
 - strict month-coverage checks before returning output.
 
+### Forecast Backtest Snapshot
+
+Backtest script:
+
+```bash
+python backend/scripts/backtest_forecast.py --watchlist-id 2
+```
+
+Snapshot result from a local run (`watchlist_id=2`, `mode=walk`, `window=2021-01 -> 2026-03`, `n=60`):
+
+- `score_mae`: `5.3500`
+- `score_rmse`: `19.5521`
+- `score_bias`: `0.6833`
+- `crime_count_mae`: `49.1500`
+- `crime_count_rmse`: `84.8225`
+- `collision_count_mae`: `0.4000`
+- `collision_count_rmse`: `1.0488`
+- `crime_interval_coverage_pct`: `51.67`
+- `collision_interval_coverage_pct`: `96.67`
+- `current_model_score_mae`: `5.3500`
+- `trailing_mean_score_mae`: `8.4333`
+
+Interpretation:
+- On this run, the current forecast model outperformed the trailing-mean baseline on score MAE (about `36.5%` lower error).
+
 ## Testing and Reliability
 
 ### How To Run Tests

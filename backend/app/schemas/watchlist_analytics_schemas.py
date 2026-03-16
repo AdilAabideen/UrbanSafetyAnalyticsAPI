@@ -45,51 +45,19 @@ class WatchlistRiskResult(BaseModel):
     )
 
 
-class WatchlistComparisonDistribution(BaseModel):
-    """Distribution summary of compared cohort scores."""
-
-    min: Optional[float] = Field(
-        default=None,
-        description="Minimum risk score found in the comparison cohort.",
-        example=50.0,
-    )
-    median: Optional[float] = Field(
-        default=None,
-        description="Median risk score for the comparison cohort.",
-        example=67.5,
-    )
-    max: Optional[float] = Field(
-        default=None,
-        description="Maximum risk score found in the comparison cohort.",
-        example=92.0,
-    )
-
-
 class WatchlistComparisonSummary(BaseModel):
     """Condensed proof that the score was compared against other runs."""
 
-    cohort_type: str = Field(
-        ...,
-        description="Comparison source used: historical_same_signature, reference_bboxes, or none.",
-        example="reference_bboxes",
-    )
     cohort_size: int = Field(
         ...,
         ge=0,
         description="Number of rows used for the final comparison.",
         example=2,
     )
-    subject_score: int = Field(
-        ...,
-        ge=0,
-        le=100,
-        description="The current watchlist run's risk score being compared.",
-        example=63,
-    )
     rank: Optional[int] = Field(
         default=None,
         ge=1,
-        description="Rank of subject_score within cohort (1 = highest risk).",
+        description="Rank within cohort (1 = highest risk).",
         example=3,
     )
     rank_out_of: Optional[int] = Field(
@@ -98,39 +66,62 @@ class WatchlistComparisonSummary(BaseModel):
         description="Total cohort size used for rank display.",
         example=2,
     )
-    percentile: Optional[float] = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description="Percentile position of subject_score within the comparison cohort.",
-        example=0.0,
-    )
-    distribution: WatchlistComparisonDistribution = Field(
-        ...,
-        description="Simple distribution stats of the comparison cohort.",
-    )
-    sample_size: int = Field(
-        ...,
-        ge=0,
-        description="Alias of cohort_size retained for compatibility.",
-        example=2,
-    )
-    historical_count: int = Field(
-        ...,
-        ge=0,
-        description="Count of matching historical rows found before fallback decisions.",
-        example=1,
-    )
-    threshold: int = Field(
-        ...,
-        ge=1,
-        description="Minimum historical cohort size required before fallback to reference bboxes.",
-        example=2,
-    )
     reference_ids: List[int] = Field(
         default_factory=list,
         description="Run IDs used when comparison cohort is built from reference bboxes.",
         example=[9, 5],
+    )
+
+class WatchlistRiskDataUsed(BaseModel):
+    """Counts of source data records used by this run."""
+
+    official_crime_count: int = Field(
+        ...,
+        ge=0,
+        description="Total official crimes included in the selected bbox/month window after crime-type filtering.",
+        example=937822,
+    )
+    collision_count: int = Field(
+        ...,
+        ge=0,
+        description="Total collisions included in the selected bbox/month window.",
+        example=714,
+    )
+    approved_user_report_count: int = Field(
+        ...,
+        ge=0,
+        description="Total approved user-reported events included in the selected bbox/month window.",
+        example=25,
+    )
+
+
+class WatchlistRiskWindow(BaseModel):
+    """Month-window metadata used by the algorithm."""
+
+    start_month: date = Field(..., description="Window start month.", example="2025-10-01")
+    end_month: date = Field(..., description="Window end month.", example="2026-01-01")
+    months_in_window: int = Field(
+        ...,
+        ge=1,
+        description="Number of months included in the scoring window (inclusive).",
+        example=4,
+    )
+
+
+class WatchlistRiskNormalizationContext(BaseModel):
+    """Normalization context values used by component density calculations."""
+
+    area_km2: float = Field(
+        ...,
+        ge=0,
+        description="Area of the selected bbox in square kilometers.",
+        example=12.41,
+    )
+    road_km: float = Field(
+        ...,
+        ge=0,
+        description="Total road length inside the selected bbox in kilometers.",
+        example=185.22,
     )
 
 
@@ -150,6 +141,12 @@ class WatchlistRiskScoreResponse(BaseModel):
         ...,
         description="Condensed comparison proof block.",
     )
+    data_used: WatchlistRiskDataUsed = Field(..., description="Counts of source data used by this run.")
+    window: WatchlistRiskWindow = Field(..., description="Month-window metadata used by this run.")
+    normalization_context: WatchlistRiskNormalizationContext = Field(
+        ...,
+        description="Normalization context values for this run.",
+    )
 
     class Config:
         schema_extra = {
@@ -165,21 +162,24 @@ class WatchlistRiskScoreResponse(BaseModel):
                     },
                 },
                 "comparison": {
-                    "cohort_type": "reference_bboxes",
                     "cohort_size": 2,
-                    "subject_score": 63,
                     "rank": 3,
                     "rank_out_of": 2,
-                    "percentile": 0.0,
-                    "distribution": {
-                        "min": 85.0,
-                        "median": 92.5,
-                        "max": 100.0,
-                    },
-                    "sample_size": 2,
-                    "historical_count": 1,
-                    "threshold": 2,
                     "reference_ids": [9, 5],
+                },
+                "data_used": {
+                    "official_crime_count": 937822,
+                    "collision_count": 714,
+                    "approved_user_report_count": 25,
+                },
+                "window": {
+                    "start_month": "2025-10-01",
+                    "end_month": "2026-01-01",
+                    "months_in_window": 4,
+                },
+                "normalization_context": {
+                    "area_km2": 12.41,
+                    "road_km": 185.22,
                 },
             }
         }
@@ -223,6 +223,85 @@ class WatchlistRiskRunsResponse(BaseModel):
 
     watchlist_id: int = Field(..., description="Watchlist identifier.", example=42)
     items: List[WatchlistRiskRunItem] = Field(default_factory=list, description="Most recent runs first.")
+
+
+class WatchlistDangerousRoadItem(BaseModel):
+    """One road segment ranked by danger score within a watchlist window."""
+
+    segment_id: int = Field(..., description="Road segment identifier.", example=145233)
+    road_name: str = Field(
+        ...,
+        description="Road name if available; falls back to 'Unnamed road'.",
+        example="Boar Lane",
+    )
+    danger_score: float = Field(
+        ...,
+        ge=0,
+        description="Lightweight composite score from crime + collisions + approved user reports.",
+        example=87.25,
+    )
+    crime_count: int = Field(..., ge=0, description="Official crimes on this segment in the window.", example=32)
+    collision_count: int = Field(..., ge=0, description="Collisions on this segment in the window.", example=3)
+    user_reported_event_count: int = Field(
+        ...,
+        ge=0,
+        description="Approved user-reported events on this segment in the window.",
+        example=2,
+    )
+
+
+class WatchlistCrimeCategoryItem(BaseModel):
+    """Crime count grouped by category for bar-chart style frontend rendering."""
+
+    crime_type: str = Field(..., description="Crime category label.", example="Anti-social behaviour")
+    count: int = Field(..., ge=0, description="Total count for this category in the window.", example=418)
+
+
+class WatchlistBasicMetricsResponse(BaseModel):
+    """
+    Basic watchlist analytics response with exactly 5 top-level fields.
+    """
+
+    number_of_crimes: int = Field(..., ge=0, description="Total official crimes in the watchlist window.", example=1834)
+    number_of_collisions: int = Field(..., ge=0, description="Total collisions in the watchlist window.", example=27)
+    number_of_user_reported_events: int = Field(
+        ...,
+        ge=0,
+        description="Total approved user-reported events in the watchlist window.",
+        example=11,
+    )
+    most_dangerous_roads: List[WatchlistDangerousRoadItem] = Field(
+        default_factory=list,
+        description="Top 5 road segments ranked by a lightweight danger score.",
+    )
+    crime_category_breakdown: List[WatchlistCrimeCategoryItem] = Field(
+        default_factory=list,
+        description="Crime counts grouped by category for charting.",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "number_of_crimes": 1834,
+                "number_of_collisions": 27,
+                "number_of_user_reported_events": 11,
+                "most_dangerous_roads": [
+                    {
+                        "segment_id": 145233,
+                        "road_name": "Boar Lane",
+                        "danger_score": 87.25,
+                        "crime_count": 32,
+                        "collision_count": 3,
+                        "user_reported_event_count": 2,
+                    }
+                ],
+                "crime_category_breakdown": [
+                    {"crime_type": "Anti-social behaviour", "count": 418},
+                    {"crime_type": "Public order", "count": 201},
+                ],
+            }
+        }
+    )
 
 
 class WatchlistForecastRequest(BaseModel):

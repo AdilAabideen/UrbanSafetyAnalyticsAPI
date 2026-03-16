@@ -488,7 +488,7 @@ function ViewWatchlistPage({
       />
 
       <div className="min-h-0 flex-1 p-4">
-        <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[360px,minmax(0,1fr)]">
+        <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[300px,minmax(0,1fr)]">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-[26px] border border-white/5 bg-[#030b0e]/90 shadow-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
               <div>
@@ -702,6 +702,7 @@ function ViewWatchlistPage({
                     riskActionMessage={riskActionMessage}
                     riskRuns={riskRuns}
                     riskRunsErrorMessage={riskRunsErrorMessage}
+                    selectedWatchlist={selectedWatchlist}
                     onRefreshRuns={handleRefreshRiskRuns}
                     onRunRiskScore={handleRunRiskScore}
                   />
@@ -741,28 +742,52 @@ function RiskScoringTab({
   riskActionMessage,
   riskRuns,
   riskRunsErrorMessage,
+  selectedWatchlist,
   onRefreshRuns,
   onRunRiskScore,
 }) {
+  const resolvedLatestResult = latestRiskResult || riskRuns?.[0]?.data || null;
   const riskResult =
-    latestRiskResult?.risk_result ||
-    latestRiskResult?.riskResult ||
-    latestRiskResult?.risk ||
+    resolvedLatestResult?.risk_result ||
+    resolvedLatestResult?.riskResult ||
+    resolvedLatestResult?.risk ||
     {};
-  const comparison = latestRiskResult?.comparison || {};
+  const comparison =
+    resolvedLatestResult?.comparison ||
+    (isComparisonPayload(resolvedLatestResult) ? resolvedLatestResult : {});
   const components = riskResult?.components || {};
   const distribution = comparison?.distribution || {};
-  const computedScore = extractRiskScoreValue(latestRiskResult);
+  const computedScore = extractRiskScoreValue(resolvedLatestResult);
+  const riskBand = getRiskBandFromScore(computedScore);
+  const riskMessage = getRiskBandMessage(riskBand);
+  const cohortSize = Number(comparison?.cohort_size ?? comparison?.sample_size);
+  const mostRecentRun = riskRuns?.[0]?.data || {};
+  const startMonth = formatMonthLabel(
+      resolvedLatestResult?.start_month ??
+      resolvedLatestResult?.startMonth ??
+      mostRecentRun?.start_month ??
+      mostRecentRun?.startMonth ??
+      selectedWatchlist?.preference?.startMonth,
+  );
+  const endMonth = formatMonthLabel(
+      resolvedLatestResult?.end_month ??
+      resolvedLatestResult?.endMonth ??
+      mostRecentRun?.end_month ??
+      mostRecentRun?.endMonth ??
+      selectedWatchlist?.preference?.endMonth,
+  );
+  const noCrimes = extractIncidentCount(resolvedLatestResult, mostRecentRun, "crime");
+  const noCollisions = extractIncidentCount(resolvedLatestResult, mostRecentRun, "collision");
+  const noUserReportedEvents = extractIncidentCount(resolvedLatestResult, mostRecentRun, "user");
+
+  console.log(latestRiskResult);
 
   return (
     <div className="space-y-5">
       <div className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
         <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Risk Scoring</p>
-        <h3 className="mt-2 text-xl font-semibold text-cyan-50">Run and inspect watchlist risk score</h3>
-        <p className="mt-2 text-sm text-cyan-100/60">
-          Runs <code>POST /watchlists/{`{watchlist_id}`}/analytics/risk-score</code> and lists
-          history from <code>GET /watchlists/{`{watchlist_id}`}/analytics/risk-score/runs</code>.
-        </p>
+        <h3 className="mt-2 text-xl font-semibold text-cyan-50">Run a Risk Score too see how risky your watchlist area is</h3>
+
 
         <div className="mt-4 flex flex-wrap gap-3">
           <button
@@ -790,41 +815,52 @@ function RiskScoringTab({
         ) : null}
       </div>
 
-      {latestRiskResult ? (
+      {resolvedLatestResult ? (
         <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
           <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Latest Result</p>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-            <MetricCard label="Watchlist ID" value={toDisplayValue(latestRiskResult.watchlist_id)} />
-            <MetricCard
-              label="Computed Score"
-              value={<span className={getRiskScoreTextClass(computedScore)}>{formatRiskScore(computedScore)}</span>}
-            />
-            <MetricCard label="Raw Score" value={formatMetricNumber(riskResult.raw_score, 3)} />
-            <MetricCard label="Percentile" value={formatMetricNumber(comparison.percentile, 2)} />
+          <div className="mt-4 rounded-[18px] border border-cyan-200/20 bg-gradient-to-r from-[#0c1f23] via-[#0b1a1e] to-[#1f1111] p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/50">Computed Score</p>
+            <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
+              <p className={`text-4xl font-bold ${getRiskScoreTextClass(computedScore)}`}>{formatRiskScore(computedScore)}</p>
+              <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${getRiskScoreTextClass(computedScore)}`}>
+                {riskBand}
+              </p>
+            </div>
+            <p className="mt-3 text-sm text-cyan-100/80">{riskMessage}</p>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <MetricCard label="Crime Component" value={formatMetricNumber(components.crime_component, 4)} />
+            <MetricCard label="Collision Density" value={formatMetricNumber(components.collision_density, 6)} />
+            <MetricCard label="User Reported" value={formatMetricNumber(components.user_support, 6)} />
+          </div>
+
+          <div className="mt-4 rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4 text-sm leading-7 text-cyan-100/80">
+            In your area from <span className="font-semibold text-cyan-50">{startMonth}</span> to{" "}
+            <span className="font-semibold text-cyan-50">{endMonth}</span>, there were exactly{" "}
+            <span className="font-semibold text-cyan-50">{toDisplayValue(noCrimes)}</span> number of crimes,{" "}
+            <span className="font-semibold text-cyan-50">{toDisplayValue(noCollisions)}</span> number of collisions,
+            and <span className="font-semibold text-cyan-50">{toDisplayValue(noUserReportedEvents)}</span> number of
+            reported events by users. This deems it a risky place, as compared by{" "}
+            <span className="font-semibold text-cyan-50">{toDisplayValue(cohortSize)}</span> different areas.
+            Your Area Ranked <span className="font-semibold text-cyan-50">{toDisplayValue(comparison.rank)}</span> out of <span className="font-semibold text-cyan-50">{toDisplayValue(comparison.rank_out_of)}</span> areas.
           </div>
 
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Risk Components</p>
-              <DetailRow label="Crime Component" value={formatMetricNumber(components.crime_component, 4)} />
-              <DetailRow label="Collision Density" value={formatMetricNumber(components.collision_density, 6)} />
-              <DetailRow label="User Support" value={formatMetricNumber(components.user_support, 6)} />
-            </article>
-
-            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
               <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Comparison</p>
               <DetailRow label="Cohort Type" value={toDisplayValue(comparison.cohort_type)} />
               <DetailRow label="Cohort Size" value={toDisplayValue(comparison.cohort_size)} />
-              <DetailRow
-                label="Rank"
-                value={`${toDisplayValue(comparison.rank)} / ${toDisplayValue(comparison.rank_out_of)}`}
-              />
               <DetailRow label="Percentile" value={formatMetricNumber(comparison.percentile, 2)} />
-              <DetailRow
-                label="Distribution"
-                value={`min ${toDisplayValue(distribution.min)}, median ${toDisplayValue(distribution.median)}, max ${toDisplayValue(distribution.max)}`}
-              />
+            </article>
+
+            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Distribution</p>
+              <DetailRow label="Minimum" value={toDisplayValue(distribution.min)} />
+              <DetailRow label="Median" value={toDisplayValue(distribution.median)} />
+              <DetailRow label="Maximum" value={toDisplayValue(distribution.max)} />
+              <DetailRow label="Raw Score" value={formatMetricNumber(riskResult.raw_score, 3)} />
             </article>
           </div>
         </section>
@@ -895,8 +931,10 @@ function ForecastTab({
   const forecastPayload = forecastResult?.forecast || forecastResult || {};
   const intervalCrimes = forecastPayload?.intervals?.crimes || {};
   const intervalCollisions = forecastPayload?.intervals?.collisions_count || {};
-  const forecastComponents = forecastPayload?.components || {};
   const bandClass = getForecastBandTextClass(forecastPayload.band);
+  const summaryCopy = getForecastSummaryCopy(forecastPayload.band);
+
+  console.log(forecastResult);
 
   return (
     <div className="space-y-5">
@@ -970,66 +1008,29 @@ function ForecastTab({
       {forecastResult ? (
         <section className="rounded-[20px] border border-white/5 bg-[#071316]/70 p-4">
           <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/40">Forecast Result</p>
-          <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            <MetricCard label="Generated At" value={forecastResult.generated_at || "—"} />
-            <MetricCard
-              label="Score"
-              value={toDisplayValue(forecastPayload.score)}
-              valueClass={bandClass}
-            />
-            <MetricCard
-              label="Band"
-              value={String(toDisplayValue(forecastPayload.band)).toUpperCase()}
-              valueClass={bandClass}
-            />
-            <MetricCard
-              label="Expected Crimes"
-              value={toDisplayValue(forecastPayload.expected_crime_count)}
-            />
-            <MetricCard
-              label="Expected Collisions"
-              value={toDisplayValue(forecastPayload.expected_collision_count)}
-            />
-            <MetricCard
-              label="Expected Collision Points"
-              value={formatMetricNumber(forecastPayload.expected_collision_points, 4)}
-            />
+
+          <div className="mt-4 rounded-[18px] border border-cyan-200/20 bg-gradient-to-r from-[#0c1f23] via-[#0b1a1e] to-[#1f1111] p-5">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/50">Computed Score</p>
+            <p className={`mt-2 text-5xl font-bold ${bandClass}`}>
+              {Number.isFinite(Number(forecastPayload.score)) ? `${Math.round(Number(forecastPayload.score))}%` : "—"}
+            </p>
+            <p className={`mt-3 text-base font-semibold ${bandClass}`}>{summaryCopy}</p>
+
+            <p className="mt-4 text-lg text-cyan-50">
+              Expected crimes <span className="font-bold">{toDisplayValue(forecastPayload.expected_crime_count)}</span>, expected
+              collisions <span className="font-bold">{toDisplayValue(forecastPayload.expected_collision_count)}</span>.
+            </p>
           </div>
 
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Intervals</p>
-              <DetailRow
-                label="Crimes (low-high)"
-                value={`${toDisplayValue(intervalCrimes.low)} - ${toDisplayValue(intervalCrimes.high)}`}
-              />
-              <DetailRow
-                label="Collisions Count (low-high)"
-                value={`${toDisplayValue(intervalCollisions.low)} - ${toDisplayValue(intervalCollisions.high)}`}
-              />
-            </article>
-
-            <article className="rounded-[16px] border border-white/5 bg-[#030b0e]/75 p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/40">Components</p>
-              <DetailRow label="Mu Crime" value={formatMetricNumber(forecastComponents.mu_crime, 4)} />
-              <DetailRow
-                label="Mu Collision Points"
-                value={formatMetricNumber(forecastComponents.mu_collision_points, 4)}
-              />
-              <DetailRow
-                label="Mu Collision Count"
-                value={formatMetricNumber(forecastComponents.mu_collision_count, 4)}
-              />
-              <DetailRow
-                label="Projected Combined Value"
-                value={formatMetricNumber(forecastComponents.projected_combined_value, 4)}
-              />
-              <DetailRow
-                label="Baseline Combined Mean"
-                value={formatMetricNumber(forecastComponents.baseline_combined_mean, 4)}
-              />
-              <DetailRow label="Ratio" value={formatMetricNumber(forecastComponents.ratio, 4)} />
-            </article>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <MetricCard
+              label="Crime Count Band"
+              value={`${toDisplayValue(intervalCrimes.low)} - ${toDisplayValue(intervalCrimes.high)}`}
+            />
+            <MetricCard
+              label="Collision Count Band"
+              value={`${toDisplayValue(intervalCollisions.low)} - ${toDisplayValue(intervalCollisions.high)}`}
+            />
           </div>
         </section>
       ) : null}
@@ -1059,9 +1060,13 @@ function extractRiskScoreValue(payload) {
     payload?.risk_result?.risk_score ??
       payload?.riskResult?.riskScore ??
       payload?.risk_result?.score ??
-    payload?.risk_score ??
+      payload?.risk_score ??
       payload?.riskScore ??
       payload?.score ??
+      payload?.subject_score ??
+      payload?.subjectScore ??
+      payload?.comparison?.subject_score ??
+      payload?.comparison?.subjectScore ??
       payload?.risk?.risk_score ??
       payload?.risk?.riskScore ??
       payload?.risk?.score,
@@ -1070,8 +1075,52 @@ function extractRiskScoreValue(payload) {
   return Number.isFinite(score) ? score : null;
 }
 
+function isComparisonPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  return (
+    Object.prototype.hasOwnProperty.call(payload, "cohort_type") ||
+    Object.prototype.hasOwnProperty.call(payload, "subject_score") ||
+    Object.prototype.hasOwnProperty.call(payload, "distribution")
+  );
+}
+
 function formatRiskScore(score) {
   return Number.isFinite(score) ? `${Math.round(score)}%` : "Unavailable";
+}
+
+function getRiskBandFromScore(score) {
+  if (!Number.isFinite(score)) {
+    return "Unknown";
+  }
+
+  if (score > 60) {
+    return "Red";
+  }
+
+  if (score > 30) {
+    return "Orange";
+  }
+
+  return "Green";
+}
+
+function getRiskBandMessage(riskBand) {
+  if (riskBand === "Red") {
+    return "Your area is deemed to be risky.";
+  }
+
+  if (riskBand === "Orange") {
+    return "Your area is deemed to have elevated risk.";
+  }
+
+  if (riskBand === "Green") {
+    return "Your area is deemed to be lower risk right now.";
+  }
+
+  return "Risk status is currently unavailable.";
 }
 
 function getRiskScoreTextClass(score) {
@@ -1090,6 +1139,43 @@ function getRiskScoreTextClass(score) {
   return "text-[#39ef7d]";
 }
 
+function formatMonthLabel(value) {
+  if (!value) {
+    return "N/A";
+  }
+
+  const stringValue = String(value);
+  const date = new Date(stringValue);
+
+  if (!Number.isNaN(date.getTime())) {
+    return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  }
+
+  return stringValue;
+}
+
+function extractIncidentCount(latestRiskResult, mostRecentRun, kind) {
+  const candidatesByKind = {
+    crime: [
+      latestRiskResult?.data_used?.official_crime_count,
+      mostRecentRun?.data_used?.official_crime_count,
+    ],
+    collision: [
+      latestRiskResult?.data_used?.collision_count,
+      mostRecentRun?.data_used?.collision_count,
+    ],
+    user: [
+      latestRiskResult?.data_used?.approved_user_report_count,
+      mostRecentRun?.data_used?.approved_user_report_count,
+    ],
+  };
+
+  const candidates = candidatesByKind[kind] || [];
+  const firstNumber = candidates.find((value) => Number.isFinite(Number(value)));
+
+  return Number.isFinite(Number(firstNumber)) ? Number(firstNumber) : "N/A";
+}
+
 function getForecastBandTextClass(band) {
   const normalizedBand = String(band || "").toLowerCase();
 
@@ -1102,6 +1188,20 @@ function getForecastBandTextClass(band) {
   }
 
   return "text-[#39ef7d]";
+}
+
+function getForecastSummaryCopy(band) {
+  const normalizedBand = String(band || "").toLowerCase();
+
+  if (normalizedBand === "red") {
+    return "This is deemed bad.";
+  }
+
+  if (normalizedBand === "orange" || normalizedBand === "amber") {
+    return "This is deemed concerning.";
+  }
+
+  return "This is deemed relatively safer.";
 }
 
 function formatMetricNumber(value, digits = 2) {

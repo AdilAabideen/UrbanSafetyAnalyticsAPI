@@ -12,6 +12,8 @@ import LoginPage from "./pages/LoginPage";
 import ProfilePage from "./pages/ProfilePage";
 import { authService } from "./services";
 
+const RESTRICTED_PAGES = ["view-reports", "watchlist", "view-watchlist"];
+
 function App() {
   return (
     <BrowserRouter>
@@ -88,6 +90,12 @@ function DashboardRoute() {
       isActive = false;
     };
   }, [session.accessToken]);
+
+  useEffect(() => {
+    if (!isLoggedIn && RESTRICTED_PAGES.includes(activePage)) {
+      setActivePage("map");
+    }
+  }, [activePage, isLoggedIn]);
 
   const handleLogout = useCallback(() => {
     authService.clearStoredSession();

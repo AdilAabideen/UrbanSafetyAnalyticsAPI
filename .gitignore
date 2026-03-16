@@ -1,6 +1,6 @@
 .env
 BACKEND_FILE.md
-data/
+
 mds/
 venv/
 __pycache__/

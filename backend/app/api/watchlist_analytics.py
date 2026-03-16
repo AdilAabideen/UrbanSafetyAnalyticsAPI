@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..schemas.watchlist_analytics_schemas import (
+    WatchlistBasicMetricsResponse,
     WatchlistForecastRequest,
     WatchlistForecastResponse,
     WatchlistRiskRunsResponse,
@@ -10,6 +11,7 @@ from ..schemas.watchlist_analytics_schemas import (
 )
 from ..services.auth_service import get_current_user
 from ..services.watchlist_analytics_service import (
+    build_watchlist_basic_metrics_service,
     build_watchlist_forecast_service,
     build_watchlist_risk_score_service,
     list_watchlist_risk_runs_service,
@@ -104,6 +106,40 @@ def list_watchlist_risk_runs(
         user_id=current_user["id"],
         watchlist_id=watchlist_id,
         limit=limit,
+    )
+
+
+@router.get(
+    "/watchlists/{watchlist_id}/analytics/basic-metrics",
+    response_model=WatchlistBasicMetricsResponse,
+    summary="Get Basic Watchlist Metrics",
+    description=(
+        "Returns a lightweight analytics summary for the watchlist's stored bbox and month window "
+        "(start_month to end_month). "
+        "This endpoint is intentionally condensed and returns exactly 5 top-level outputs: "
+        "number_of_crimes, number_of_collisions, number_of_user_reported_events, "
+        "most_dangerous_roads (top 5), and crime_category_breakdown."
+    ),
+    responses={
+        200: {"description": "Basic metrics returned successfully."},
+        400: {"description": "Watchlist has missing/invalid analytics month window or bbox values."},
+        404: {"description": "Watchlist not found for the authenticated user."},
+    },
+)
+def get_watchlist_basic_metrics(
+    watchlist_id: int = Path(
+        ...,
+        gt=0,
+        description="Unique watchlist identifier owned by the authenticated user.",
+        example=42,
+    ),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WatchlistBasicMetricsResponse:
+    return build_watchlist_basic_metrics_service(
+        db=db,
+        user_id=current_user["id"],
+        watchlist_id=watchlist_id,
     )
 
 

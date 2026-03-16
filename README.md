@@ -68,7 +68,6 @@ This design reduces repeated runtime spatial joins and improves explainability a
 │   │   │   ├── watchlist.py
 │   │   │   ├── watchlist_analytics.py
 │   │   │   ├── report_events.py
-│   │   │   ├── analytics.py
 │   │   │   └── tiles.py
 │   │   ├── services/                         # Business logic / orchestration
 │   │   │   ├── auth_service.py
@@ -85,13 +84,13 @@ This design reduces repeated runtime spatial joins and improves explainability a
 │   │   │   ├── watchlist_schemas.py
 │   │   │   ├── watchlist_analytics_schemas.py
 │   │   │   ├── report_event_schemas.py
-│   │   │   ├── analytics_schemas.py
 │   │   │   └── tiles_schemas.py
 │   │   ├── main.py                           # App factory, router wiring, global handlers
 │   │   ├── bootstrap.py                      # DB schema bootstrap/index creation
 │   │   ├── db.py                             # Engine/session + DB execute wrapper
 │   │   └── errors.py                         # Typed app error hierarchy
 │   ├── scripts/
+│   │   ├── init_database.py                  # Raw data initializer (roads + crime + collisions)
 │   │   └── test_risk_score.py                # Standalone algorithm test runner
 │   └── tests/
 │       ├── smoke_tests.py
@@ -139,40 +138,86 @@ Design pattern used across backend:
 - Docker Desktop installed.
 - Docker Desktop running before executing any `docker compose` commands.
 
-### Start Everything (API + DB + Frontend)
+### Setup and Start (Recommended Order)
 
-From repository root:
+From repository root, run these commands in order:
 
 ```bash
-docker compose up --build -d
+make up-db
+make init-db-force
+make up-app
 ```
 
-This starts:
-- PostgreSQL/PostGIS on `localhost:5432`
-- FastAPI backend on `localhost:8000`
-- Vite frontend on `localhost:5173`
+What each command does:
+- `make up-db`: starts PostgreSQL/PostGIS.
+- `make init-db-force`: performs a full deterministic data initialization from raw datasets.
+- `make up-app`: starts FastAPI + frontend.
 
-Note: on a fresh clone/first run, database initialization imports a bundled seed dataset and can take a few minutes before services are fully ready.
+Initializer input files required:
+- `data/wyosm.pbf`
+- `data/crime/*.csv`
+- `data/master-collision-dataset.csv`
+
+### Expected Runtime
+
+- `make init-db-force` is expected to take some time on first run.
+- Most expensive stages are:
+  - road import from `wyosm.pbf` (`osm2pgsql`)
+  - nearest-road snapping for crime events
+- Laptop fan activity during this stage is normal.
+
+### Fast/Quiet Usage Tips (Assessor Friendly)
+
+- Do not rebuild images every run:
+  - use `docker compose up -d db`
+  - use `docker compose up --build -d db` only after Dockerfile changes
+- Do not use `--force` unless you need a full refresh.
+- Use partial refresh flags when needed:
+  - `--skip-roads --skip-collisions` (crime-only refresh)
+  - `--skip-roads --skip-crime` (collision-only refresh)
+  - `--skip-crime --skip-collisions` (roads-only refresh)
+
+### Why You See `TRUNCATE TABLE`
+
+`TRUNCATE` during initialization is expected.
+
+- With `--force`, the script intentionally rebuilds pipeline tables deterministically.
+- It clears target/staging tables before reloading so there are no duplicates or stale aggregates.
+- Without `--force`, the script exits if data already exists.
 
 ### Verify Services
 
 ```bash
-docker compose ps
+make ps
 ```
 
 Expected: `db` is healthy and both `api` and `frontend` are up.
 
-### Open the App and API Docs
+### Open Frontend and API Docs
 
 - Frontend: `http://localhost:5173`
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
+- API docs PDF (repo): `APIDocs.pdf`
+- Analytics docs files:
+  - `docs/watchlist-analytics-risk-score.md`
+  - `docs/analytics-risk-score-api-diagrams.md`
 
-### Recommended Usage
+### Login and Use the Frontend
 
-We recommend you use the frontend for assessment and demonstration, rather than calling endpoints manually first.
-Open `http://localhost:5173`, authenticate, then exercise map, watchlist, and analytics flows from the UI.
-Use Swagger (`/docs`) only when you want to inspect request/response contracts directly.
+We strongly recommend using the frontend for assessment because it exercises the full API + map workflow.
+
+Login is required for profile and user-scoped features.
+
+- Email: `admin@admin.com`
+- Password: `adminpassword`
+
+After logging in on the frontend, you can:
+- create and manage watchlists,
+- run and view watchlist analytics,
+- browse reported events and related map data.
+
+Swagger (`/docs`) is useful for inspecting endpoint contracts directly.
 
 ### Shutdown
 
@@ -196,7 +241,7 @@ If you see:
 Then:
 1. Start Docker Desktop.
 2. Run `docker info` to verify daemon access.
-3. Retry `docker compose up --build -d`.
+3. Retry `docker compose up -d db`.
 
 ## Risk Scoring Design (Current Watchlist Analytics)
 

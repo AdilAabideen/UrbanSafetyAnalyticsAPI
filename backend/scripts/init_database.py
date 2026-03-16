@@ -166,7 +166,13 @@ def ensure_required_files(skip_roads: bool, skip_crime: bool, skip_collisions: b
 def ensure_db_container_ready(*, require_roads_file: bool) -> None:
     """Start DB container and verify required tools/files are present in-container."""
     run_cmd(["docker", "compose", "up", "-d", "db"])
-    compose_exec(["sh", "-lc", "command -v osm2pgsql >/dev/null"])
+    try:
+        compose_exec(["sh", "-lc", "command -v osm2pgsql >/dev/null"])
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "DB container is missing osm2pgsql. "
+            "Run `make recover-db` to rebuild the db image, then retry initialization."
+        ) from exc
     if require_roads_file:
         compose_exec(["sh", "-lc", "test -f /data/wyosm.pbf"])
 

@@ -4,6 +4,31 @@ Leeds Urban Safety Analytics API is a FastAPI + PostGIS backend that integrates 
 
 This repository focuses on spatial risk analytics over road segments and area windows, with watchlist-based persistence for reproducible user workflows.
 
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [Data Sources](#data-sources)
+- [Data Model and Storage Strategy](#data-model-and-storage-strategy)
+- [System Architecture](#system-architecture)
+- [API Surface (High-Level)](#api-surface-high-level)
+- [Documentation](#documentation)
+- [MCP (Optional)](#mcp-optional)
+- [Assessor Quick Start](#assessor-quick-start)
+- [Risk Scoring Design (Current Watchlist Analytics)](#risk-scoring-design-current-watchlist-analytics)
+- [Forecasting and Backtest](#forecasting-and-backtest)
+- [Testing and Reliability](#testing-and-reliability)
+
+### Quick Links
+
+- [System Architecture → Stack](#stack)
+- [System Architecture → File and Folder Map](#file-and-folder-map)
+- [Assessor Quick Start → Prerequisites](#prerequisites)
+- [Assessor Quick Start → Setup and Start (Recommended Order)](#setup-and-start-recommended-order)
+- [Assessor Quick Start → Open These URLs](#open-these-urls)
+- [Testing and Reliability → How To Run Tests](#how-to-run-tests)
+- [Testing and Reliability → Testing Strategy](#testing-strategy)
+- [Testing and Reliability → Reliability Practices](#reliability-practices)
+
 ## Project Overview
 
 ### Problem
@@ -158,11 +183,15 @@ Optional env vars:
 
 ### Setup and Start (Recommended Order)
 
-From repository root, run these commands in order:
+From repository root, run these commands in order one by one:
 
 ```bash
 make up-db
+```
+```bash
 make init-db-force
+```
+```bash
 make up-app
 ```
 
@@ -170,6 +199,12 @@ What each command does:
 - `make up-db`: starts PostgreSQL/PostGIS.
 - `make init-db-force`: performs a full deterministic data initialization from raw datasets.
 - `make up-app`: starts FastAPI + frontend.
+
+If `make up-db` reports missing `osm2pgsql`, run:
+
+```bash
+make recover-db
+```
 
 ### Open These URLs
 

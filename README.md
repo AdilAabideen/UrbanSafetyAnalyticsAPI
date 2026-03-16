@@ -132,6 +132,24 @@ Design pattern used across backend:
 - Risk score docs: `docs/watchlist-analytics-risk-score.md`
 - Risk score diagrams/index: `docs/analytics-risk-score-api-diagrams.md`
 
+## MCP (Optional)
+
+A minimal MCP server tool is included to wrap the existing reported-event creation API.
+
+- Server file: `backend/mcp/reported_events_mcp_server.py`
+- Tool exposed: `create_reported_event`
+- Wrapped backend route: `POST /reported-events`
+
+Run locally (with API running):
+
+```bash
+python backend/mcp/reported_events_mcp_server.py
+```
+
+Optional env vars:
+- `MCP_API_BASE_URL` (default: `http://localhost:8000`)
+- `MCP_HTTP_TIMEOUT_SECONDS` (default: `15`)
+
 ## Assessor Quick Start
 
 ### Prerequisites

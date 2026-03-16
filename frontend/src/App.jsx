@@ -131,6 +131,7 @@ function DashboardRoute() {
       <Sidebar
         activePage={activePage}
         isAdmin={isAdmin}
+        isLoggedIn={isLoggedIn}
         onSelectPage={setActivePage}
         onLogout={isLoggedIn ? handleLogout : undefined}
       />

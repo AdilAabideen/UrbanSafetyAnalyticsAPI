@@ -69,9 +69,15 @@ const NAV_ITEMS = [
   },
 ];
 
-function Sidebar({ activePage, isAdmin, onSelectPage, onLogout }) {
+const RESTRICTED_NAV_IDS = new Set(["view-reports", "watchlist", "view-watchlist"]);
+
+function Sidebar({ activePage, isAdmin, isLoggedIn, onSelectPage, onLogout }) {
+  const visibleNavItems = NAV_ITEMS.filter(
+    (item) => isLoggedIn || !RESTRICTED_NAV_IDS.has(item.id),
+  );
+
   return (
-    <aside className="flex shrink-0 flex-col border-r border-white/5 bg-[#030b0e] p-4 py-2">
+    <aside className="relative flex shrink-0 flex-col border-r border-white/5 bg-[#030b0e] p-4 py-2">
       <div className="flex h-[62px] items-center">
         <img
           className="h-auto w-[160px] object-contain"
@@ -81,7 +87,7 @@ function Sidebar({ activePage, isAdmin, onSelectPage, onLogout }) {
       </div>
 
       <div className="flex flex-col gap-2 py-4">
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems.map((item) => {
           const isActive = activePage === item.id;
 
           return (
@@ -113,7 +119,7 @@ function Sidebar({ activePage, isAdmin, onSelectPage, onLogout }) {
       </div>
 
       <div className="mt-auto flex flex-col gap-2 py-4">
-        {onLogout ? (
+        {isLoggedIn ? (
           <>
             {isAdmin ? (
               <button
@@ -190,6 +196,12 @@ function Sidebar({ activePage, isAdmin, onSelectPage, onLogout }) {
           </button>
         )}
       </div>
+
+      {!isLoggedIn ? (
+        <div className="absolute bottom-3 right-3 max-w-[230px] rounded-md border border-cyan-200/20 bg-cyan-100/5 px-2 py-1 text-right text-[11px] leading-tight text-cyan-100/70">
+          You have to be logged in to use Advanced Analytical APIs
+        </div>
+      ) : null}
     </aside>
   );
 }

@@ -89,18 +89,16 @@ This design reduces repeated runtime spatial joins and improves explainability a
 │   │   ├── bootstrap.py                      # DB schema bootstrap/index creation
 │   │   ├── db.py                             # Engine/session + DB execute wrapper
 │   │   └── errors.py                         # Typed app error hierarchy
-│   ├── scripts/
-│   │   ├── init_database.py                  # Raw data initializer (roads + crime + collisions)
-│   │   └── test_risk_score.py                # Standalone algorithm test runner
 │   └── tests/
 │       ├── smoke_tests.py
 │       ├── integration_tests/
 │       └── unit_tests/
-├── docs/
-│   ├── watchlist-analytics-risk-score.md
-│   ├── analytics-risk-score-api-diagrams.md
-│   └── analytics-risk-forecast-api-diagrams.md
-└── docker-compose.yml
+├── frontend/
+├── data/
+├── docker/
+├── docker-compose.yml
+├── Makefile
+└── APIDocs.pdf
 ```
 
 Design pattern used across backend:
@@ -123,14 +121,11 @@ Design pattern used across backend:
 - `watchlists`: CRUD for bbox + preference management.
 - `watchlist-analytics`: persisted risk score compute + historical run retrieval.
 - `reported-events`: create/list/moderate user reports.
-- `analytics`: legacy/general analytical endpoints.
 - `tiles`: vector tile and map-facing risk overlays.
 
 ## Documentation
 
 - API Documentation (PDF): [APIDocs.pdf](./APIDocs.pdf)
-- Risk score docs: `docs/watchlist-analytics-risk-score.md`
-- Risk score diagrams/index: `docs/analytics-risk-score-api-diagrams.md`
 
 ## MCP (Optional)
 
@@ -156,6 +151,11 @@ Optional env vars:
 - Docker Desktop installed.
 - Docker Desktop running before executing any `docker compose` commands.
 
+### Initializer Input Files Required
+- `data/wyosm.pbf`
+- `data/crime/*.csv`
+- `data/master-collision-dataset.csv`
+
 ### Setup and Start (Recommended Order)
 
 From repository root, run these commands in order:
@@ -171,59 +171,15 @@ What each command does:
 - `make init-db-force`: performs a full deterministic data initialization from raw datasets.
 - `make up-app`: starts FastAPI + frontend.
 
-Initializer input files required:
-- `data/wyosm.pbf`
-- `data/crime/*.csv`
-- `data/master-collision-dataset.csv`
+### Open These URLs
 
-### Expected Runtime
-
-- `make init-db-force` is expected to take some time on first run.
-- Most expensive stages are:
-  - road import from `wyosm.pbf` (`osm2pgsql`)
-  - nearest-road snapping for crime events
-- Laptop fan activity during this stage is normal.
-
-### Fast/Quiet Usage Tips (Assessor Friendly)
-
-- Do not rebuild images every run:
-  - use `docker compose up -d db`
-  - use `docker compose up --build -d db` only after Dockerfile changes
-- Do not use `--force` unless you need a full refresh.
-- Use partial refresh flags when needed:
-  - `--skip-roads --skip-collisions` (crime-only refresh)
-  - `--skip-roads --skip-crime` (collision-only refresh)
-  - `--skip-crime --skip-collisions` (roads-only refresh)
-
-### Why You See `TRUNCATE TABLE`
-
-`TRUNCATE` during initialization is expected.
-
-- With `--force`, the script intentionally rebuilds pipeline tables deterministically.
-- It clears target/staging tables before reloading so there are no duplicates or stale aggregates.
-- Without `--force`, the script exits if data already exists.
-
-### Verify Services
-
-```bash
-make ps
-```
-
-Expected: `db` is healthy and both `api` and `frontend` are up.
-
-### Open Frontend and API Docs
-
-- Frontend: `http://localhost:5173`
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- API docs PDF (repo): `APIDocs.pdf`
-- Analytics docs files:
-  - `docs/watchlist-analytics-risk-score.md`
-  - `docs/analytics-risk-score-api-diagrams.md`
+## Frontend: `http://localhost:5173`
+## Swagger UI: `http://localhost:8000/docs`
+## API Docs PDF: `APIDocs.pdf`
 
 ### Login and Use the Frontend
 
-We strongly recommend using the frontend for assessment because it exercises the full API + map workflow.
+We strongly recommend using the frontend for the assessment because it exercises the full API + map workflow end-to-end.
 
 Login is required for profile and user-scoped features.
 
@@ -234,8 +190,6 @@ After logging in on the frontend, you can:
 - create and manage watchlists,
 - run and view watchlist analytics,
 - browse reported events and related map data.
-
-Swagger (`/docs`) is useful for inspecting endpoint contracts directly.
 
 ### Shutdown
 
@@ -251,16 +205,6 @@ Stop without removing:
 docker compose stop
 ```
 
-### If Docker Daemon Is Not Running
-
-If you see:
-- `Cannot connect to the Docker daemon ...`
-
-Then:
-1. Start Docker Desktop.
-2. Run `docker info` to verify daemon access.
-3. Retry `docker compose up -d db`.
-
 ## Risk Scoring Design (Current Watchlist Analytics)
 
 Watchlist risk scoring is explainable, persisted, and comparison-aware:
@@ -269,23 +213,19 @@ Watchlist risk scoring is explainable, persisted, and comparison-aware:
 - Blends signals by mode (`walk` / `drive`) into `raw_score`, then normalizes to `0..100`.
 - Persists runs and compares against same-signature historical runs (or reference bboxes when history is insufficient).
 
-For detailed diagrams and formulas, see:
-- `docs/watchlist-analytics-risk-score.md`
-- `docs/analytics-risk-score-api-diagrams.md`
-
-## Forecasting
+## Forecasting and Backtest
 
 Forecasting is intentionally lightweight:
 - baseline-history mean with simple uncertainty bounds,
 - strict month-coverage checks before returning output.
 
-### Forecast Backtest Snapshot
-
 Backtest script:
 
 ```bash
-python backend/scripts/backtest_forecast.py --watchlist-id 2
+python backend/scripts/backtest_forecast.py --watchlist-id <WATCHLIST_ID>
 ```
+
+Please input the ID of the watchlist you want to evaluate.
 
 Snapshot result from a local run (`watchlist_id=2`, `mode=walk`, `window=2021-01 -> 2026-03`, `n=60`):
 
@@ -300,9 +240,6 @@ Snapshot result from a local run (`watchlist_id=2`, `mode=walk`, `window=2021-01
 - `collision_interval_coverage_pct`: `96.67`
 - `current_model_score_mae`: `5.3500`
 - `trailing_mean_score_mae`: `8.4333`
-
-Interpretation:
-- On this run, the current forecast model outperformed the trailing-mean baseline on score MAE (about `36.5%` lower error).
 
 ## Testing and Reliability
 
